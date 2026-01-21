@@ -1,0 +1,18 @@
+# Build / run artifacts
+output/
+*.pdb
+*.pdbqt
+*.sd
+*.sdf
+*.log
+redock_gui.log
+# macOS
+.DS_Store
+**/.DS_Store
+# Virtual envs
+venv/
+ENV/
+# temporary
+*.tmp
+*.bak
+*.swp
