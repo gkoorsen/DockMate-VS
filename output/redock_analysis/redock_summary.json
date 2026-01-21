@@ -1,0 +1,57 @@
+{
+  "total_cases": 18,
+  "threshold": 2.0,
+  "success_rate_best": 22.22222222222222,
+  "success_rate_top1": 50.0,
+  "success_rate_top5": 50.0,
+  "success_rate_top10": 50.0,
+  "mean_best_rmsd": 1.7055414070821082,
+  "median_best_rmsd": 1.93821412479156,
+  "mean_top1_rmsd": 1.717613760910151,
+  "median_top1_rmsd": 1.9444719263360049,
+  "mean_rmsd_best_score": null,
+  "mean_near_native_fraction": 0.5,
+  "mean_pose_count": 5.6875,
+  "mean_score_rmsd_pearson": null,
+  "mean_score_rmsd_spearman": null,
+  "mean_runtime_sec": 10.554465254147848,
+  "median_runtime_sec": 9.865634441375732,
+  "rescore_count": null,
+  "rescore_failures": null,
+  "rescore_methods": null,
+  "control_actives": 8,
+  "control_decoys": 8,
+  "roc_auc": 0.21875,
+  "log_auc": -0.17325737507324912,
+  "charge_count": 16,
+  "mean_charge": -0.25,
+  "median_charge": 0.0,
+  "charge_frac_positive": 0.0,
+  "charge_frac_negative": 25.0,
+  "charge_frac_neutral": 75.0,
+  "charge_top10_frac_positive": 0.0,
+  "charge_top10_frac_negative": 0.0,
+  "charge_top10_frac_neutral": 100.0,
+  "score_charge_pearson": -0.20419910641739575,
+  "score_charge_spearman": 0.02058823529411765,
+  "by_protocol": {
+    "single": {
+      "count": 16,
+      "success": 4,
+      "mean_rmsd": 1.7055414070821082
+    },
+    "N/A": {
+      "count": 2,
+      "success": 0,
+      "mean_rmsd": null
+    }
+  },
+  "by_engine": {
+    "smina": {
+      "count": 18,
+      "success": 4,
+      "mean_rmsd": 1.7055414070821082
+    }
+  },
+  "attempts_by_protocol": {}
+}

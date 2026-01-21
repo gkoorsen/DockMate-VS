@@ -1,0 +1,495 @@
+2026-01-21 11:22:19 | INFO | Starting redock analysis GUI
+2026-01-21 11:24:16 | INFO | Run analysis requested
+2026-01-21 11:24:16 | INFO | Collecting single config | engine=smina box_margin=4.0 size_override=,, exhaustiveness=4 num_modes=20 energy_range=3.0 cpu=8 seed=42 timeout=1200 scoring=vinardo water=selective
+2026-01-21 11:24:16 | INFO | Downloading PDB structure 1YET from RCSB...
+2026-01-21 11:24:17 | INFO | Successfully downloaded 1YET to /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1YET.pdb
+2026-01-21 11:24:17 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:24:17 | INFO | Preparing protein 1YET: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1YET.pdb
+2026-01-21 11:24:17 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:24:18 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:24:18 | INFO | Water handling mode: selective
+2026-01-21 11:24:18 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:24:18 | INFO | Retained 43 structural waters
+2026-01-21 11:24:18 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:24:18 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:24:18 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:24:19 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:24:19 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:24:19 | INFO | Validating structure
+2026-01-21 11:24:19 | WARNING | Potential missing atoms: 228 CA atoms for 272 residues
+2026-01-21 11:24:19 | INFO | Protein preparation complete: 1YET
+2026-01-21 11:24:19 | INFO |   Waters: 43 retained, 231 removed
+2026-01-21 11:24:19 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1YET_GDM_Geldanamycin/receptor_prepared.pdbqt
+2026-01-21 11:24:19 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1YET_GDM_Geldanamycin/receptor_prepared.pdbqt
+2026-01-21 11:24:19 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:24:19 | INFO | Preparing ligand Geldanamycin: COC1=C2C[C@@H](C)C[C@H](OC)[C@H](O)[C@@H](C)/C=C(\C)[C@H](OC(N)=O)[C@@H](OC)/C=C\C=C(/C)C(=O)NC(=CC1=O)C2=O
+2026-01-21 11:28:15 | INFO | Prepared 240 variants for Geldanamycin
+2026-01-21 11:28:15 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:28:15 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1YET.pdb
+2026-01-21 11:28:15 | INFO | Found ligand 'GDM' with 40 atoms
+2026-01-21 11:28:15 | INFO | Binding site defined: center=[ 41.20164995 -46.54820004  65.60334997], size=[16.675999 17.013    15.494999], ligand_atoms=40
+2026-01-21 11:28:15 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:28:15 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:28:15 | INFO | Using scoring function: vinardo
+2026-01-21 11:28:15 | INFO | Docking Geldanamycin_v39...
+2026-01-21 11:28:25 | INFO | Docking completed: Geldanamycin_v39, best_score=23.52 kcal/mol, runtime=10.2s
+2026-01-21 11:28:25 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:28:25 | INFO | Preparing protein 1YET: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1YET.pdb
+2026-01-21 11:28:25 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:28:26 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:28:26 | INFO | Water handling mode: selective
+2026-01-21 11:28:26 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:28:26 | INFO | Retained 43 structural waters
+2026-01-21 11:28:26 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:28:26 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:28:26 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:28:27 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:28:27 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:28:27 | INFO | Validating structure
+2026-01-21 11:28:27 | WARNING | Potential missing atoms: 228 CA atoms for 272 residues
+2026-01-21 11:28:27 | INFO | Protein preparation complete: 1YET
+2026-01-21 11:28:27 | INFO |   Waters: 43 retained, 231 removed
+2026-01-21 11:28:27 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1YET_GDM_C03404518/receptor_prepared.pdbqt
+2026-01-21 11:28:27 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1YET_GDM_C03404518/receptor_prepared.pdbqt
+2026-01-21 11:28:27 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:28:27 | INFO | Preparing ligand C03404518: Cc1cccc(c1)[N-]S(=O)(=O)c2cccc(c2)C(=O)Nc3ccc(cc3)S(=O)(=O)N4CCOCC4
+2026-01-21 11:28:46 | INFO | Prepared 60 variants for C03404518
+2026-01-21 11:28:46 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:28:46 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1YET.pdb
+2026-01-21 11:28:46 | INFO | Found ligand 'GDM' with 40 atoms
+2026-01-21 11:28:46 | INFO | Binding site defined: center=[ 41.20164995 -46.54820004  65.60334997], size=[16.675999 17.013    15.494999], ligand_atoms=40
+2026-01-21 11:28:46 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:28:46 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:28:46 | INFO | Using scoring function: vinardo
+2026-01-21 11:28:46 | INFO | Docking C03404518_v15...
+2026-01-21 11:29:09 | INFO | Docking completed: C03404518_v15, best_score=-4.44 kcal/mol, runtime=22.8s
+2026-01-21 11:29:09 | INFO | Downloading PDB structure 1A4H from RCSB...
+2026-01-21 11:29:11 | INFO | Successfully downloaded 1A4H to /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1A4H.pdb
+2026-01-21 11:29:12 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:29:12 | INFO | Preparing protein 1A4H: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1A4H.pdb
+2026-01-21 11:29:12 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:29:12 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:29:12 | INFO | Water handling mode: selective
+2026-01-21 11:29:12 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:29:12 | INFO | Retained 38 structural waters
+2026-01-21 11:29:12 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:29:12 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:29:12 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:29:14 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:29:14 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:29:14 | INFO | Validating structure
+2026-01-21 11:29:14 | WARNING | Potential missing atoms: 230 CA atoms for 269 residues
+2026-01-21 11:29:14 | INFO | Protein preparation complete: 1A4H
+2026-01-21 11:29:14 | INFO |   Waters: 38 retained, 116 removed
+2026-01-21 11:29:14 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1A4H_GDM_Geldanamycin/receptor_prepared.pdbqt
+2026-01-21 11:29:14 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1A4H_GDM_Geldanamycin/receptor_prepared.pdbqt
+2026-01-21 11:29:14 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:29:14 | INFO | Preparing ligand Geldanamycin: COC1=C2C[C@@H](C)C[C@H](OC)[C@H](O)[C@@H](C)/C=C(\C)[C@H](OC(N)=O)[C@@H](OC)/C=C\C=C(/C)C(=O)NC(=CC1=O)C2=O
+2026-01-21 11:33:16 | INFO | Prepared 240 variants for Geldanamycin
+2026-01-21 11:33:16 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:33:16 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1A4H.pdb
+2026-01-21 11:33:16 | INFO | Found ligand 'GDM' with 40 atoms
+2026-01-21 11:33:16 | INFO | Binding site defined: center=[14.3914   -2.769675 -5.03455 ], size=[17.984001 16.555    17.424   ], ligand_atoms=40
+2026-01-21 11:33:16 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:33:16 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:33:16 | INFO | Using scoring function: vinardo
+2026-01-21 11:33:16 | INFO | Docking Geldanamycin_v39...
+2026-01-21 11:33:28 | INFO | Docking completed: Geldanamycin_v39, best_score=-2.75 kcal/mol, runtime=12.5s
+2026-01-21 11:33:29 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:33:29 | INFO | Preparing protein 1A4H: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1A4H.pdb
+2026-01-21 11:33:29 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:33:29 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:33:29 | INFO | Water handling mode: selective
+2026-01-21 11:33:29 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:33:29 | INFO | Retained 38 structural waters
+2026-01-21 11:33:29 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:33:29 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:33:29 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:33:30 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:33:30 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:33:30 | INFO | Validating structure
+2026-01-21 11:33:30 | WARNING | Potential missing atoms: 230 CA atoms for 269 residues
+2026-01-21 11:33:30 | INFO | Protein preparation complete: 1A4H
+2026-01-21 11:33:30 | INFO |   Waters: 38 retained, 116 removed
+2026-01-21 11:33:30 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1A4H_GDM_C03404518/receptor_prepared.pdbqt
+2026-01-21 11:33:30 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1A4H_GDM_C03404518/receptor_prepared.pdbqt
+2026-01-21 11:33:30 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:33:30 | INFO | Preparing ligand C03404518: Cc1cccc(c1)[N-]S(=O)(=O)c2cccc(c2)C(=O)Nc3ccc(cc3)S(=O)(=O)N4CCOCC4
+2026-01-21 11:33:49 | INFO | Prepared 60 variants for C03404518
+2026-01-21 11:33:49 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:33:49 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1A4H.pdb
+2026-01-21 11:33:49 | INFO | Found ligand 'GDM' with 40 atoms
+2026-01-21 11:33:49 | INFO | Binding site defined: center=[14.3914   -2.769675 -5.03455 ], size=[17.984001 16.555    17.424   ], ligand_atoms=40
+2026-01-21 11:33:49 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:33:49 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:33:49 | INFO | Using scoring function: vinardo
+2026-01-21 11:33:49 | INFO | Docking C03404518_v15...
+2026-01-21 11:34:12 | INFO | Docking completed: C03404518_v15, best_score=-4.43 kcal/mol, runtime=23.2s
+2026-01-21 11:34:12 | INFO | Downloading PDB structure 2YGA from RCSB...
+2026-01-21 11:34:13 | INFO | Successfully downloaded 2YGA to /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2YGA.pdb
+2026-01-21 11:34:14 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:34:14 | INFO | Preparing protein 2YGA: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2YGA.pdb
+2026-01-21 11:34:14 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:34:14 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:34:14 | INFO | Water handling mode: selective
+2026-01-21 11:34:14 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:34:14 | INFO | Retained 17 structural waters
+2026-01-21 11:34:14 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:34:14 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:34:14 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:34:15 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:34:15 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:34:15 | INFO | Validating structure
+2026-01-21 11:34:15 | INFO | Protein preparation complete: 2YGA
+2026-01-21 11:34:15 | INFO |   Waters: 17 retained, 24 removed
+2026-01-21 11:34:15 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2YGA_GDM_Geldanamycin/receptor_prepared.pdbqt
+2026-01-21 11:34:15 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2YGA_GDM_Geldanamycin/receptor_prepared.pdbqt
+2026-01-21 11:34:15 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:34:15 | INFO | Preparing ligand Geldanamycin: COC1=C2C[C@@H](C)C[C@H](OC)[C@H](O)[C@@H](C)/C=C(\C)[C@H](OC(N)=O)[C@@H](OC)/C=C\C=C(/C)C(=O)NC(=CC1=O)C2=O
+2026-01-21 11:38:16 | INFO | Prepared 240 variants for Geldanamycin
+2026-01-21 11:38:16 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:38:16 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2YGA.pdb
+2026-01-21 11:38:16 | INFO | Found ligand 'GDM' with 80 atoms
+2026-01-21 11:38:16 | INFO | Binding site defined: center=[ 22.80428748 -34.77650008  -5.02876249], size=[18.805    17.182001 18.310001], ligand_atoms=80
+2026-01-21 11:38:16 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:38:16 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:38:16 | INFO | Using scoring function: vinardo
+2026-01-21 11:38:16 | INFO | Docking Geldanamycin_v39...
+2026-01-21 11:38:30 | INFO | Docking completed: Geldanamycin_v39, best_score=-2.41 kcal/mol, runtime=13.2s
+2026-01-21 11:38:30 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:38:30 | INFO | Preparing protein 2YGA: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2YGA.pdb
+2026-01-21 11:38:30 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:38:30 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:38:30 | INFO | Water handling mode: selective
+2026-01-21 11:38:30 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:38:30 | INFO | Retained 17 structural waters
+2026-01-21 11:38:30 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:38:30 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:38:30 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:38:31 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:38:31 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:38:31 | INFO | Validating structure
+2026-01-21 11:38:31 | INFO | Protein preparation complete: 2YGA
+2026-01-21 11:38:31 | INFO |   Waters: 17 retained, 24 removed
+2026-01-21 11:38:31 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2YGA_GDM_C03404518/receptor_prepared.pdbqt
+2026-01-21 11:38:31 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2YGA_GDM_C03404518/receptor_prepared.pdbqt
+2026-01-21 11:38:31 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:38:31 | INFO | Preparing ligand C03404518: Cc1cccc(c1)[N-]S(=O)(=O)c2cccc(c2)C(=O)Nc3ccc(cc3)S(=O)(=O)N4CCOCC4
+2026-01-21 11:38:50 | INFO | Prepared 60 variants for C03404518
+2026-01-21 11:38:50 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:38:50 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2YGA.pdb
+2026-01-21 11:38:50 | INFO | Found ligand 'GDM' with 80 atoms
+2026-01-21 11:38:50 | INFO | Binding site defined: center=[ 22.80428748 -34.77650008  -5.02876249], size=[18.805    17.182001 18.310001], ligand_atoms=80
+2026-01-21 11:38:50 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:38:50 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:38:50 | INFO | Using scoring function: vinardo
+2026-01-21 11:38:50 | INFO | Docking C03404518_v15...
+2026-01-21 11:39:14 | INFO | Docking completed: C03404518_v15, best_score=-4.05 kcal/mol, runtime=23.6s
+2026-01-21 11:39:14 | INFO | Downloading PDB structure 2WEQ from RCSB...
+2026-01-21 11:39:14 | INFO | Successfully downloaded 2WEQ to /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2WEQ.pdb
+2026-01-21 11:39:15 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:39:15 | INFO | Preparing protein 2WEQ: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2WEQ.pdb
+2026-01-21 11:39:15 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:39:15 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:39:15 | INFO | Water handling mode: selective
+2026-01-21 11:39:15 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:39:15 | INFO | Retained 38 structural waters
+2026-01-21 11:39:15 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:39:15 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:39:15 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:39:16 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:39:16 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:39:16 | INFO | Validating structure
+2026-01-21 11:39:16 | WARNING | Potential missing atoms: 220 CA atoms for 261 residues
+2026-01-21 11:39:16 | INFO | Protein preparation complete: 2WEQ
+2026-01-21 11:39:16 | INFO |   Waters: 38 retained, 77 removed
+2026-01-21 11:39:16 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2WEQ_GDM_Geldanamycin/receptor_prepared.pdbqt
+2026-01-21 11:39:17 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2WEQ_GDM_Geldanamycin/receptor_prepared.pdbqt
+2026-01-21 11:39:17 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:39:17 | INFO | Preparing ligand Geldanamycin: COC1=C2C[C@@H](C)C[C@H](OC)[C@H](O)[C@@H](C)/C=C(\C)[C@H](OC(N)=O)[C@@H](OC)/C=C\C=C(/C)C(=O)NC(=CC1=O)C2=O
+2026-01-21 11:43:20 | INFO | Prepared 240 variants for Geldanamycin
+2026-01-21 11:43:20 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:43:20 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2WEQ.pdb
+2026-01-21 11:43:20 | INFO | Found ligand 'GDM' with 40 atoms
+2026-01-21 11:43:20 | INFO | Binding site defined: center=[-22.84662495  34.64109979  -4.84127499], size=[17.706 16.555 17.683], ligand_atoms=40
+2026-01-21 11:43:20 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:43:20 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:43:20 | INFO | Using scoring function: vinardo
+2026-01-21 11:43:20 | INFO | Docking Geldanamycin_v39...
+2026-01-21 11:43:37 | INFO | Docking completed: Geldanamycin_v39, best_score=-1.43 kcal/mol, runtime=16.8s
+2026-01-21 11:43:37 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:43:37 | INFO | Preparing protein 2WEQ: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2WEQ.pdb
+2026-01-21 11:43:37 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:43:37 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:43:37 | INFO | Water handling mode: selective
+2026-01-21 11:43:37 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:43:37 | INFO | Retained 38 structural waters
+2026-01-21 11:43:37 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:43:37 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:43:37 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:43:38 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:43:38 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:43:38 | INFO | Validating structure
+2026-01-21 11:43:38 | WARNING | Potential missing atoms: 220 CA atoms for 261 residues
+2026-01-21 11:43:38 | INFO | Protein preparation complete: 2WEQ
+2026-01-21 11:43:38 | INFO |   Waters: 38 retained, 77 removed
+2026-01-21 11:43:38 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2WEQ_GDM_C03404518/receptor_prepared.pdbqt
+2026-01-21 11:43:38 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2WEQ_GDM_C03404518/receptor_prepared.pdbqt
+2026-01-21 11:43:38 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:43:38 | INFO | Preparing ligand C03404518: Cc1cccc(c1)[N-]S(=O)(=O)c2cccc(c2)C(=O)Nc3ccc(cc3)S(=O)(=O)N4CCOCC4
+2026-01-21 11:43:57 | INFO | Prepared 60 variants for C03404518
+2026-01-21 11:43:57 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:43:57 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2WEQ.pdb
+2026-01-21 11:43:57 | INFO | Found ligand 'GDM' with 40 atoms
+2026-01-21 11:43:57 | INFO | Binding site defined: center=[-22.84662495  34.64109979  -4.84127499], size=[17.706 16.555 17.683], ligand_atoms=40
+2026-01-21 11:43:57 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:43:57 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:43:57 | INFO | Using scoring function: vinardo
+2026-01-21 11:43:57 | INFO | Docking C03404518_v15...
+2026-01-21 11:44:23 | INFO | Docking completed: C03404518_v15, best_score=-3.87 kcal/mol, runtime=25.3s
+2026-01-21 11:44:23 | INFO | Downloading PDB structure 1BGQ from RCSB...
+2026-01-21 11:44:23 | INFO | Successfully downloaded 1BGQ to /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1BGQ.pdb
+2026-01-21 11:44:23 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:44:23 | INFO | Preparing protein 1BGQ: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1BGQ.pdb
+2026-01-21 11:44:23 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:44:24 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:44:24 | INFO | Water handling mode: selective
+2026-01-21 11:44:24 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:44:24 | INFO | Retained 28 structural waters
+2026-01-21 11:44:24 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:44:24 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:44:24 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:44:26 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:44:26 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:44:26 | INFO | Validating structure
+2026-01-21 11:44:26 | WARNING | Potential missing atoms: 225 CA atoms for 254 residues
+2026-01-21 11:44:26 | INFO | Protein preparation complete: 1BGQ
+2026-01-21 11:44:26 | INFO |   Waters: 28 retained, 66 removed
+2026-01-21 11:44:26 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1BGQ_RDC_Radicicol/receptor_prepared.pdbqt
+2026-01-21 11:44:26 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1BGQ_RDC_Radicicol/receptor_prepared.pdbqt
+2026-01-21 11:44:26 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:44:26 | INFO | Preparing ligand Radicicol: C[C@@H]1C[C@H]2O[C@@H]2/C=C\C=C\C(=O)Cc2c(Cl)c(O)cc(O)c2C(=O)O1
+2026-01-21 11:45:36 | INFO | Prepared 240 variants for Radicicol
+2026-01-21 11:45:36 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:45:36 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1BGQ.pdb
+2026-01-21 11:45:36 | INFO | Found ligand 'RDC' with 25 atoms
+2026-01-21 11:45:36 | INFO | Binding site defined: center=[16.81428005 -3.28892    -5.20067997], size=[14.186 13.541 16.633], ligand_atoms=25
+2026-01-21 11:45:36 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:45:37 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:45:37 | INFO | Using scoring function: vinardo
+2026-01-21 11:45:37 | INFO | Docking Radicicol_v70...
+2026-01-21 11:45:38 | INFO | Docking completed: Radicicol_v70, best_score=-3.87 kcal/mol, runtime=1.9s
+2026-01-21 11:45:39 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:45:39 | INFO | Preparing protein 1BGQ: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1BGQ.pdb
+2026-01-21 11:45:39 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:45:39 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:45:39 | INFO | Water handling mode: selective
+2026-01-21 11:45:39 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:45:39 | INFO | Retained 28 structural waters
+2026-01-21 11:45:39 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:45:39 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:45:39 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:45:40 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:45:40 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:45:40 | INFO | Validating structure
+2026-01-21 11:45:40 | WARNING | Potential missing atoms: 225 CA atoms for 254 residues
+2026-01-21 11:45:40 | INFO | Protein preparation complete: 1BGQ
+2026-01-21 11:45:40 | INFO |   Waters: 28 retained, 66 removed
+2026-01-21 11:45:40 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1BGQ_RDC_C08346183/receptor_prepared.pdbqt
+2026-01-21 11:45:40 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/1BGQ_RDC_C08346183/receptor_prepared.pdbqt
+2026-01-21 11:45:40 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:45:40 | INFO | Preparing ligand C08346183: c1nc(c2c3c(sc2n1)CCCCC3)N4CCC[C@H](C4)C(=O)N
+2026-01-21 11:46:01 | INFO | Prepared 90 variants for C08346183
+2026-01-21 11:46:01 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:46:01 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/1BGQ.pdb
+2026-01-21 11:46:01 | INFO | Found ligand 'RDC' with 25 atoms
+2026-01-21 11:46:01 | INFO | Binding site defined: center=[16.81428005 -3.28892    -5.20067997], size=[14.186 13.541 16.633], ligand_atoms=25
+2026-01-21 11:46:01 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:46:01 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:46:01 | INFO | Using scoring function: vinardo
+2026-01-21 11:46:01 | INFO | Docking C08346183_v27...
+2026-01-21 11:46:05 | INFO | Docking completed: C08346183_v27, best_score=-3.75 kcal/mol, runtime=4.5s
+2026-01-21 11:46:05 | INFO | Downloading PDB structure 4EGK from RCSB...
+2026-01-21 11:46:07 | INFO | Successfully downloaded 4EGK to /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/4EGK.pdb
+2026-01-21 11:46:08 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:46:08 | INFO | Preparing protein 4EGK: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/4EGK.pdb
+2026-01-21 11:46:08 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:46:09 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:46:09 | INFO | Water handling mode: selective
+2026-01-21 11:46:09 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:46:09 | INFO | Retained 37 structural waters
+2026-01-21 11:46:09 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:46:09 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:46:09 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:46:10 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:46:10 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:46:10 | INFO | Validating structure
+2026-01-21 11:46:10 | WARNING | Potential missing atoms: 232 CA atoms for 270 residues
+2026-01-21 11:46:10 | INFO | Protein preparation complete: 4EGK
+2026-01-21 11:46:10 | INFO |   Waters: 37 retained, 75 removed
+2026-01-21 11:46:10 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/4EGK_RDC_Radicicol/receptor_prepared.pdbqt
+2026-01-21 11:46:10 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/4EGK_RDC_Radicicol/receptor_prepared.pdbqt
+2026-01-21 11:46:10 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:46:10 | INFO | Preparing ligand Radicicol: C[C@@H]1C[C@H]2O[C@@H]2/C=C\C=C\C(=O)Cc2c(Cl)c(O)cc(O)c2C(=O)O1
+2026-01-21 11:47:23 | INFO | Prepared 240 variants for Radicicol
+2026-01-21 11:47:23 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:47:23 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/4EGK.pdb
+2026-01-21 11:47:23 | INFO | Found ligand 'RDC' with 25 atoms
+2026-01-21 11:47:23 | INFO | Binding site defined: center=[10.51091991 -5.75860003 14.06348003], size=[16.178999 14.667001 14.088   ], ligand_atoms=25
+2026-01-21 11:47:23 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:47:23 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:47:23 | INFO | Using scoring function: vinardo
+2026-01-21 11:47:23 | INFO | Docking Radicicol_v70...
+2026-01-21 11:47:25 | INFO | Docking completed: Radicicol_v70, best_score=-1.31 kcal/mol, runtime=2.0s
+2026-01-21 11:47:25 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:47:25 | INFO | Preparing protein 4EGK: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/4EGK.pdb
+2026-01-21 11:47:25 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:47:26 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:47:26 | INFO | Water handling mode: selective
+2026-01-21 11:47:26 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:47:26 | INFO | Retained 36 structural waters
+2026-01-21 11:47:26 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:47:26 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:47:26 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:47:27 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:47:27 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:47:27 | INFO | Validating structure
+2026-01-21 11:47:27 | WARNING | Potential missing atoms: 232 CA atoms for 269 residues
+2026-01-21 11:47:27 | INFO | Protein preparation complete: 4EGK
+2026-01-21 11:47:27 | INFO |   Waters: 36 retained, 76 removed
+2026-01-21 11:47:27 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/4EGK_RDC_C08346183/receptor_prepared.pdbqt
+2026-01-21 11:47:27 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/4EGK_RDC_C08346183/receptor_prepared.pdbqt
+2026-01-21 11:47:27 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:47:27 | INFO | Preparing ligand C08346183: c1nc(c2c3c(sc2n1)CCCCC3)N4CCC[C@H](C4)C(=O)N
+2026-01-21 11:47:47 | INFO | Prepared 90 variants for C08346183
+2026-01-21 11:47:47 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:47:47 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/4EGK.pdb
+2026-01-21 11:47:47 | INFO | Found ligand 'RDC' with 25 atoms
+2026-01-21 11:47:47 | INFO | Binding site defined: center=[10.51091991 -5.75860003 14.06348003], size=[16.178999 14.667001 14.088   ], ligand_atoms=25
+2026-01-21 11:47:47 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:47:47 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:47:47 | INFO | Using scoring function: vinardo
+2026-01-21 11:47:47 | INFO | Docking C08346183_v27...
+2026-01-21 11:47:53 | INFO | Docking completed: C08346183_v27, best_score=-2.60 kcal/mol, runtime=5.4s
+2026-01-21 11:47:53 | INFO | Downloading PDB structure 2WER from RCSB...
+2026-01-21 11:47:54 | INFO | Successfully downloaded 2WER to /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2WER.pdb
+2026-01-21 11:47:54 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:47:54 | INFO | Preparing protein 2WER: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2WER.pdb
+2026-01-21 11:47:54 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:47:56 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:47:56 | INFO | Water handling mode: selective
+2026-01-21 11:47:56 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:47:56 | INFO | Retained 110 structural waters
+2026-01-21 11:47:56 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:47:56 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:47:56 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:47:57 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:47:57 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:47:57 | INFO | Validating structure
+2026-01-21 11:47:57 | WARNING | Potential missing atoms: 440 CA atoms for 552 residues
+2026-01-21 11:47:57 | INFO | Protein preparation complete: 2WER
+2026-01-21 11:47:57 | INFO |   Waters: 110 retained, 174 removed
+2026-01-21 11:47:57 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2WER_RDC_Radicicol/receptor_prepared.pdbqt
+2026-01-21 11:47:58 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2WER_RDC_Radicicol/receptor_prepared.pdbqt
+2026-01-21 11:47:58 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:47:58 | INFO | Preparing ligand Radicicol: C[C@@H]1C[C@H]2O[C@@H]2/C=C\C=C\C(=O)Cc2c(Cl)c(O)cc(O)c2C(=O)O1
+2026-01-21 11:49:14 | INFO | Prepared 240 variants for Radicicol
+2026-01-21 11:49:14 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:49:14 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2WER.pdb
+2026-01-21 11:49:14 | INFO | Found ligand 'RDC' with 25 atoms
+2026-01-21 11:49:14 | INFO | Binding site defined: center=[ 3.44819999 54.07131989 -4.95688001], size=[13.59     14.376999 15.976   ], ligand_atoms=25
+2026-01-21 11:49:14 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:49:14 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:49:14 | INFO | Using scoring function: vinardo
+2026-01-21 11:49:14 | INFO | Docking Radicicol_v70...
+2026-01-21 11:49:17 | INFO | Docking completed: Radicicol_v70, best_score=-3.02 kcal/mol, runtime=3.7s
+2026-01-21 11:49:18 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:49:18 | INFO | Preparing protein 2WER: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2WER.pdb
+2026-01-21 11:49:18 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:49:19 | INFO | PDBFixer does not support addMissingResidues; skipping loop modeling
+2026-01-21 11:49:19 | INFO | Water handling mode: selective
+2026-01-21 11:49:19 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:49:19 | INFO | Retained 112 structural waters
+2026-01-21 11:49:19 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:49:19 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:49:19 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:49:21 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:49:21 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:49:21 | INFO | Validating structure
+2026-01-21 11:49:21 | WARNING | Potential missing atoms: 440 CA atoms for 554 residues
+2026-01-21 11:49:21 | INFO | Protein preparation complete: 2WER
+2026-01-21 11:49:21 | INFO |   Waters: 112 retained, 172 removed
+2026-01-21 11:49:21 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2WER_RDC_C08346183/receptor_prepared.pdbqt
+2026-01-21 11:49:21 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2WER_RDC_C08346183/receptor_prepared.pdbqt
+2026-01-21 11:49:21 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:49:21 | INFO | Preparing ligand C08346183: c1nc(c2c3c(sc2n1)CCCCC3)N4CCC[C@H](C4)C(=O)N
+2026-01-21 11:49:43 | INFO | Prepared 90 variants for C08346183
+2026-01-21 11:49:43 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:49:43 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2WER.pdb
+2026-01-21 11:49:43 | INFO | Found ligand 'RDC' with 25 atoms
+2026-01-21 11:49:43 | INFO | Binding site defined: center=[ 3.44819999 54.07131989 -4.95688001], size=[13.59     14.376999 15.976   ], ligand_atoms=25
+2026-01-21 11:49:43 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:49:44 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:49:44 | INFO | Using scoring function: vinardo
+2026-01-21 11:49:44 | INFO | Docking C08346183_v27...
+2026-01-21 11:49:53 | INFO | Docking completed: C08346183_v27, best_score=-3.63 kcal/mol, runtime=9.4s
+2026-01-21 11:49:53 | INFO | Downloading PDB structure 2IWU from RCSB...
+2026-01-21 11:49:54 | INFO | Successfully downloaded 2IWU to /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2IWU.pdb
+2026-01-21 11:49:54 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:49:54 | INFO | Preparing protein 2IWU: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2IWU.pdb
+2026-01-21 11:49:54 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:49:55 | INFO | Water handling mode: selective
+2026-01-21 11:49:55 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:49:55 | INFO | Retained 1 structural waters
+2026-01-21 11:49:55 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:49:55 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:49:55 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:49:56 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:49:56 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:49:56 | INFO | Validating structure
+2026-01-21 11:49:56 | INFO | Protein preparation complete: 2IWU
+2026-01-21 11:49:56 | INFO |   Waters: 1 retained, 5 removed
+2026-01-21 11:49:56 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2IWU_NP5_Radicicol/receptor_prepared.pdbqt
+2026-01-21 11:49:56 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2IWU_NP5_Radicicol/receptor_prepared.pdbqt
+2026-01-21 11:49:56 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:49:56 | INFO | Preparing ligand Radicicol: O=C1CCC/C=C/CCOC(=O)c2c(O)cc(O)c(Cl)c2C1
+2026-01-21 11:50:49 | INFO | Prepared 240 variants for Radicicol
+2026-01-21 11:50:49 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:50:49 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2IWU.pdb
+2026-01-21 11:50:49 | INFO | Found ligand 'NP5' with 22 atoms
+2026-01-21 11:50:49 | INFO | Binding site defined: center=[ 19.95627282 -34.2339546   -4.78886362], size=[14.097    12.893999 14.779   ], ligand_atoms=22
+2026-01-21 11:50:49 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:50:49 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:50:49 | INFO | Using scoring function: vinardo
+2026-01-21 11:50:49 | INFO | Docking Radicicol_v43...
+2026-01-21 11:50:53 | INFO | Docking completed: Radicicol_v43, best_score=-6.04 kcal/mol, runtime=3.9s
+2026-01-21 11:50:53 | INFO | ProteinPreparation initialized: pH 7.4, water_handling=selective
+2026-01-21 11:50:53 | INFO | Preparing protein 2IWU: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2IWU.pdb
+2026-01-21 11:50:53 | INFO | Fixing structure with PDBFixer
+2026-01-21 11:50:54 | INFO | Water handling mode: selective
+2026-01-21 11:50:54 | INFO | Selective water retention: protein_dist=3.0Å, site_dist=3.0Å
+2026-01-21 11:50:54 | INFO | Retained 1 structural waters
+2026-01-21 11:50:54 | INFO | Running PROPKA for pKa prediction
+2026-01-21 11:50:54 | WARNING | PROPKA execution failed: signal only works in main thread of the main interpreter
+2026-01-21 11:50:54 | INFO | Adding hydrogens at pH 7.4
+2026-01-21 11:50:54 | INFO | Optimizing H-bonds with Reduce
+2026-01-21 11:50:54 | INFO | Reduce not available, skipping H-bond optimization
+2026-01-21 11:50:54 | INFO | Validating structure
+2026-01-21 11:50:54 | INFO | Protein preparation complete: 2IWU
+2026-01-21 11:50:54 | INFO |   Waters: 1 retained, 5 removed
+2026-01-21 11:50:54 | INFO | Converting to PDBQT: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2IWU_NP5_C08346183/receptor_prepared.pdbqt
+2026-01-21 11:50:54 | INFO | PDBQT saved: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/2IWU_NP5_C08346183/receptor_prepared.pdbqt
+2026-01-21 11:50:54 | INFO | LigandPreparation initialized: pH (7.0, 7.4), max_tautomers=8
+2026-01-21 11:50:54 | INFO | Preparing ligand C08346183: c1nc(c2c3c(sc2n1)CCCCC3)N4CCC[C@H](C4)C(=O)N
+2026-01-21 11:51:18 | INFO | Prepared 90 variants for C08346183
+2026-01-21 11:51:19 | INFO | Initialized BindingSiteDefinition with 4.0Å margin
+2026-01-21 11:51:19 | INFO | Loading co-crystal structure: /Users/gerritkoorsen/docking_platform_gui/output/redock_analysis/pdbs/2IWU.pdb
+2026-01-21 11:51:19 | INFO | Found ligand 'NP5' with 22 atoms
+2026-01-21 11:51:19 | INFO | Binding site defined: center=[ 19.95627282 -34.2339546   -4.78886362], size=[14.097    12.893999 14.779   ], ligand_atoms=22
+2026-01-21 11:51:19 | INFO | Initialized SminaDockingEngine with exhaustiveness=4, num_modes=20, cpu=8
+2026-01-21 11:51:19 | INFO | Smina version: Smina Oct 15 2019.  Based on AutoDock Vina 1.1.2.
+2026-01-21 11:51:19 | INFO | Using scoring function: vinardo
+2026-01-21 11:51:19 | INFO | Docking C08346183_v27...
+2026-01-21 11:51:29 | INFO | Docking completed: C08346183_v27, best_score=-5.40 kcal/mol, runtime=10.1s
+2026-01-21 11:51:29 | INFO | Downloading PDB structure 9FMM from RCSB...
+2026-01-21 11:51:30 | INFO | Downloading PDB structure 9FMM from RCSB...

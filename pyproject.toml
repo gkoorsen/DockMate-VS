@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docking_platform_gui"
+version = "0.1.0"
+description = "Redock analysis GUI with adaptive docking pipeline"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+authors = [
+  { name = "Gerrit Koorsen" }
+]
+
+dependencies = [
+  "numpy",
+  "pandas",
+  "openpyxl",
+  "rdkit",
+  "loguru",
+  "biopython",
+  "pydantic",
+  "MDAnalysis"
+]
+
+[project.scripts]
+redock-gui = "docking_platform_gui.cli:main"
