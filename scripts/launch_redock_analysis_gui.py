@@ -9,6 +9,7 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
+import multiprocessing as mp  # ← ADDED: For parallel processing fix
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -71,10 +72,21 @@ def main():
         default=None,
         help="Path to Smina binary"
     )
+    parser.add_argument(
+        "--serial",
+        action="store_true",
+        help="Force serial processing (disable parallel RMSD calculation)"
+    )
     args = parser.parse_args()
 
     from loguru import logger
     from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp
+    import os
+
+    # Set serial mode if requested
+    if args.serial:
+        os.environ['LIGAND_PREP_FORCE_SERIAL'] = '1'
+        logger.info("Serial processing mode enabled via --serial flag")
 
     logger.add(
         "redock_gui.log",
@@ -102,4 +114,13 @@ def main():
 
 
 if __name__ == "__main__":
+    # ← ADDED: Fix multiprocessing for GUI compatibility
+    # Use 'spawn' method instead of 'fork' to avoid deadlocks with Tkinter
+    # This enables parallel RMSD processing in ligand preparation
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        # Start method already set (e.g., in tests or when imported)
+        pass
+    
     main()

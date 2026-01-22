@@ -21,12 +21,17 @@ Strategy:
 
 import logging
 import time
-import os
+from rdkit import Chem
+from rdkit.Chem import Descriptors
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
+from docking_platform_gui.utils.rmsd_safe import (
+    calculate_rmsd_safe,
+    detect_molecule_type
+)
 
 from docking_platform_gui.preparation.protein import (
     ProteinPreparation,
@@ -37,6 +42,9 @@ from docking_platform_gui.preparation.ligand import (
     LigandPreparation,
     LigandPreparationConfig
 )
+
+from docking_platform_gui.preparation.ligand_cache import LigandCache
+
 from docking_platform_gui.binding_site.cocrystal import BindingSiteDefinition
 from docking_platform_gui.docking.smina import SminaDockingEngine
 from docking_platform_gui.utils.rmsd import calculate_rmsd
@@ -98,7 +106,10 @@ class AdaptiveDockingPipeline:
         ligand_variant_mode: str = "first",
         variant_select_by: str = "rmsd",
         max_tautomers: int = 8,
-        max_conformers: int = 10
+        max_conformers: int = 10,
+        n_cpus: Optional[int] = None,
+        molecule_type: str = "active",  # ADD: 'active' or 'decoy'
+        skip_rmsd_for_decoys: bool = True  # ADD
     ):
         """
         Initialize adaptive pipeline.
@@ -114,6 +125,13 @@ class AdaptiveDockingPipeline:
             smina_timeout_sec: Smina timeout in seconds
             smina_exhaustiveness: Base Smina exhaustiveness for protocols
             use_vina: Use Vina binary instead of Smina (vina scoring only)
+            ligand_variant_mode: How to select ligand variants ("first", "best", "all")
+            variant_select_by: Criterion for "best" variant ("rmsd" or "energy")
+            max_tautomers: Maximum tautomers to generate (default 8)
+            max_conformers: Maximum conformers to generate (default 10)
+            n_cpus: Number of CPUs for parallel ligand preparation (None = auto-detect, capped at 8)
+            molecule_type: Type of molecule ('active' or 'decoy')
+            skip_rmsd_for_decoys: Whether to skip RMSD calculation for decoys
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -131,8 +149,10 @@ class AdaptiveDockingPipeline:
         self.variant_select_by = variant_select_by
         self.max_tautomers = max_tautomers
         self.max_conformers = max_conformers
+        self.n_cpus = n_cpus  # Store for ligand preparation
         self.docking_binary = self.vina_binary if self.use_vina else self.smina_binary
         self.allow_custom_scoring = not self.use_vina
+        self.ligand_cache = LigandCache(cache_dir="ligand_cache")
 
         # Initialize protocol cascade
         self.protocols = self._build_protocol_cascade()
@@ -141,6 +161,16 @@ class AdaptiveDockingPipeline:
         logger.info(f"RMSD threshold: {rmsd_threshold}Å")
         logger.info(f"rDock available: {rdock_available}")
         logger.info(f"Docking binary: {self.docking_binary}")
+        if n_cpus:
+            logger.info(f"Ligand preparation CPUs: {n_cpus}")
+        else:
+            logger.info(f"Ligand preparation CPUs: auto-detect (capped at 8)")
+
+        self.molecule_type = molecule_type
+        self.skip_rmsd_for_decoys = skip_rmsd_for_decoys
+    
+        if molecule_type == 'decoy' and skip_rmsd_for_decoys:
+            logger.info("Decoy molecule - RMSD calculation will be skipped")
 
     def _build_protocol_cascade(self) -> List[DockingProtocol]:
         """
@@ -265,17 +295,28 @@ class AdaptiveDockingPipeline:
         if not enumerate_states:
             logger.info("Skipping protonation/tautomer enumeration for metal-containing ligand")
 
-        variants = self._prepare_ligand_variants(
+        # First, prepare with reduced settings for efficiency
+        reduced_tautomers = 4  # Reduce computational cost
+        reduced_conformers = 5
+
+        variants_all = self._prepare_ligand_variants(
             ligand_smiles=ligand_smiles,
             ligand_name=ligand_name,
-            enumerate_states=enumerate_states
+            enumerate_states=enumerate_states,
+            max_tautomers=reduced_tautomers,
+            max_conformers=reduced_conformers
         )
 
-        mode = self.ligand_variant_mode
-        if mode == "best":
-            variants = [self._select_best_variant(variants)]
-        elif mode == "first":
-            variants = variants[:1]
+        logger.info(f"Prepared {len(variants_all)} initial variants")
+
+        # ADAPTIVE VARIANT SELECTION (early - before docking)
+        variants = self._adaptive_variant_selection(
+            variants=variants_all,
+            ligand_smiles=ligand_smiles,
+            ligand_name=ligand_name
+        )
+
+        logger.info(f"Selected {len(variants)} variants for docking")
 
         all_results: List[DockingResult] = []
         best_result: Optional[DockingResult] = None
@@ -418,18 +459,23 @@ class AdaptiveDockingPipeline:
             ligand_pdbqt = prepared_ligand_pdbqt
             logger.info("  Using cached ligand PDBQT: %s", ligand_pdbqt)
         else:
-            prep_ligand = LigandPreparation(LigandPreparationConfig(
+            # Use cache for ligand preparation
+            config = LigandPreparationConfig(
                 max_tautomers=self.max_tautomers,
                 max_conformers=self.max_conformers,
                 use_etkdg_v3=True,
                 mmff_minimize=True
-            ))
+            )
+            # This will use cached ligands if available
+            ligands = self.ligand_cache.get(
+                smiles=ligand_smiles,  # Note: you need ligand_smiles variable here
+                mol_id=ligand_name,
+                config=config,
+                n_cpus=getattr(self, 'n_cpus', 4)
+            )
+            # Take first variant and save as PDBQT
             ligand_pdbqt = protocol_dir / f"{ligand_name}.pdbqt"
-            prepared_ligands = prep_ligand.prepare_from_smiles(ligand_smiles, ligand_name)
-            if not prepared_ligands:
-                raise ValueError(f"Failed to prepare ligand from SMILES: {ligand_smiles}")
-            # Use the first (lowest energy) variant
-            prepared_ligands[0].to_pdbqt_file(str(ligand_pdbqt))
+            ligands[0].to_pdbqt_file(str(ligand_pdbqt))
 
         # Step 3: Define binding site
         logger.info(f"  [3/5] Defining binding site (margin={protocol.margin}Å)...")
@@ -485,8 +531,40 @@ class AdaptiveDockingPipeline:
                 error_message=f"Docking failed: {error_message}"
             )
 
+        # Check if this is a decoy and we should skip RMSD
+        if self.molecule_type == 'decoy' and self.skip_rmsd_for_decoys:
+            logger.info("  Skipping RMSD calculation (decoy molecule)")
+            return DockingResult(
+                protocol_name=protocol.name,
+                rmsd=None,  # No RMSD for decoys
+                score=result['score'],
+                num_poses=result['num_poses'],
+                runtime_sec=runtime_sec,
+                output_file=result['output_file'],
+                success=None,  # Can't determine success without RMSD
+                error_message=None
+            )
+
+        # Calculate RMSD using safe method
         try:
-            rmsd = calculate_rmsd(crystal_ligand_pdb, result['output_file'])
+            rmsd = calculate_rmsd_safe(
+                crystal_ligand_pdb, 
+                result['output_file'],
+                check_similarity=True
+            )
+            
+            if rmsd is None:
+                logger.warning("RMSD calculation returned None (molecules may be different)")
+                return DockingResult(
+                    protocol_name=protocol.name,
+                    rmsd=None,
+                    score=result['score'],
+                    num_poses=result['num_poses'],
+                    runtime_sec=runtime_sec,
+                    output_file=result['output_file'],
+                    success=None,
+                    error_message="Molecules are different (decoy)"
+                )
         except Exception as e:
             logger.warning("  RMSD calculation failed: %s", e)
             return DockingResult(
@@ -513,29 +591,38 @@ class AdaptiveDockingPipeline:
 
     def _prepare_ligand(self, ligand_smiles: str, ligand_name: str) -> Path:
         """Prepare ligand once per pipeline run and return PDBQT path."""
-        prep_ligand = LigandPreparation(LigandPreparationConfig(
+        # Define config first
+        config = LigandPreparationConfig(
             max_tautomers=self.max_tautomers,
             max_conformers=self.max_conformers,
             use_etkdg_v3=True,
             mmff_minimize=True
-        ))
+        )
+        
         enumerate_states = not self._contains_metal(ligand_smiles)
+        
         if not enumerate_states:
             logger.info(
                 "Skipping protonation/tautomer enumeration for metal-containing ligand"
             )
-
-        prepared_ligands = prep_ligand.prepare_from_smiles(
-            ligand_smiles,
-            ligand_name,
+        
+        # Use cache for ligand preparation (replaces all the old prep_ligand code)
+        prepared_ligands = self.ligand_cache.get(
+            smiles=ligand_smiles,
+            mol_id=ligand_name,
+            config=config,
+            n_cpus=getattr(self, 'n_cpus', 4),
             enumerate_states=enumerate_states
         )
+        
         if not prepared_ligands:
             raise ValueError(f"Failed to prepare ligand from SMILES: {ligand_smiles}")
 
+        # Save to PDBQT
         ligand_pdbqt = self.output_dir / f"{ligand_name}_prepared.pdbqt"
         prepared_ligands[0].to_pdbqt_file(str(ligand_pdbqt))
         return ligand_pdbqt
+
 
     def _prepare_ligand_variants(
         self,
@@ -543,17 +630,23 @@ class AdaptiveDockingPipeline:
         ligand_name: str,
         enumerate_states: bool = True
     ) -> List[dict]:
-        prep_ligand = LigandPreparation(LigandPreparationConfig(
+        # Define config
+        config = LigandPreparationConfig(
             max_tautomers=self.max_tautomers,
             max_conformers=self.max_conformers,
             use_etkdg_v3=True,
             mmff_minimize=True
-        ))
-        prepared_ligands = prep_ligand.prepare_from_smiles(
-            ligand_smiles,
-            ligand_name,
+        )
+        
+        # Use cache for ligand preparation
+        prepared_ligands = self.ligand_cache.get(
+            smiles=ligand_smiles,
+            mol_id=ligand_name,
+            config=config,
+            n_cpus=getattr(self, 'n_cpus', 4),
             enumerate_states=enumerate_states
         )
+        
         if not prepared_ligands:
             raise ValueError(f"Failed to prepare ligand from SMILES: {ligand_smiles}")
 
@@ -591,6 +684,178 @@ class AdaptiveDockingPipeline:
         if successes:
             return min(successes, key=_key)
         return min(results, key=_key)
+    
+    def _adaptive_variant_selection(
+        self,
+        variants: List[dict],
+        ligand_smiles: str,
+        ligand_name: str
+    ) -> List[dict]:
+        """
+        Intelligently select variants based on molecular properties.
+        
+        Strategy:
+        - Rigid molecules (few rotatable bonds): dock 1-2 variants
+        - Semi-flexible molecules: dock 3-5 variants
+        - Highly flexible molecules: dock 5-10 variants
+        - Very large molecules: dock more variants
+        
+        Args:
+            variants: List of prepared ligand variants
+            ligand_smiles: SMILES string for property calculation
+            ligand_name: Ligand name for logging
+            
+        Returns:
+            Selected subset of variants
+        """
+        if not variants:
+            logger.warning(f"No variants available for {ligand_name}")
+            return variants
+        
+        # Parse molecule to analyze properties
+        try:
+            mol = Chem.MolFromSmiles(ligand_smiles)
+            if mol is None:
+                logger.warning(f"Could not parse SMILES for {ligand_name}, using default selection")
+                return self._default_variant_selection(variants)
+        except Exception as e:
+            logger.warning(f"Error analyzing {ligand_name}: {e}, using default selection")
+            return self._default_variant_selection(variants)
+        
+        # Calculate molecular properties
+        n_rotatable = Descriptors.NumRotatableBonds(mol)
+        n_heavy_atoms = mol.GetNumHeavyAtoms()
+        molecular_weight = Descriptors.MolWt(mol)
+        
+        logger.info(f"Ligand properties: {n_rotatable} rotatable bonds, "
+                   f"{n_heavy_atoms} heavy atoms, MW={molecular_weight:.1f}")
+        
+        # Determine flexibility category
+        if n_rotatable == 0:
+            flexibility = "rigid"
+            n_variants = 1
+        elif n_rotatable <= 3:
+            flexibility = "semi-rigid"
+            n_variants = 2
+        elif n_rotatable <= 6:
+            flexibility = "flexible"
+            n_variants = 5
+        elif n_rotatable <= 10:
+            flexibility = "very-flexible"
+            n_variants = 8
+        else:
+            flexibility = "highly-flexible"
+            n_variants = 10
+        
+        # Adjust for size (larger molecules need more sampling)
+        if n_heavy_atoms > 40:
+            n_variants = min(n_variants + 3, 10)
+            logger.info(f"Large molecule ({n_heavy_atoms} atoms): increasing variants")
+        elif n_heavy_atoms > 30:
+            n_variants = min(n_variants + 2, 10)
+        
+        # Cap at available variants
+        n_variants = min(n_variants, len(variants))
+        
+        logger.info(f"Flexibility: {flexibility} → docking {n_variants} variants "
+                   f"(out of {len(variants)} available)")
+        
+        # Select variants intelligently
+        if n_variants >= len(variants):
+            # Dock all variants
+            selected = variants
+        elif n_variants == 1:
+            # Pick single best by energy
+            selected = [self._select_best_variant(variants)]
+        else:
+            # Pick diverse set: best energy + diverse conformers
+            selected = self._select_diverse_variants(variants, n_variants)
+        
+        logger.info(f"Selected {len(selected)} variants for docking:")
+        for i, var in enumerate(selected[:5], 1):  # Show first 5
+            energy = var.get('energy', 0.0)
+            label = var.get('label', 'unknown')
+            logger.info(f"  {i}. {label} (energy: {energy:.2f} kcal/mol)")
+        if len(selected) > 5:
+            logger.info(f"  ... and {len(selected) - 5} more")
+        
+        return selected
+    
+    def _default_variant_selection(self, variants: List[dict]) -> List[dict]:
+        """Fallback selection based on configured mode."""
+        mode = self.ligand_variant_mode
+        
+        if mode == "best":
+            return [self._select_best_variant(variants)]
+        elif mode == "first":
+            return variants[:1]
+        else:
+            # Default: pick top 5 by energy
+            return sorted(variants, key=lambda v: v.get('energy', 0.0))[:5]
+    
+    def _select_diverse_variants(
+        self,
+        variants: List[dict],
+        n_select: int
+    ) -> List[dict]:
+        """
+        Select diverse variants combining energy and diversity.
+        
+        Strategy:
+        1. Always include lowest energy variant
+        2. Group by protonation state and tautomer
+        3. Within each group, pick diverse conformers
+        4. Fill remaining slots with next best energies
+        
+        Args:
+            variants: List of variant dicts
+            n_select: Number of variants to select
+            
+        Returns:
+            Selected diverse variants
+        """
+        if len(variants) <= n_select:
+            return variants
+        
+        # Sort by energy
+        sorted_variants = sorted(variants, key=lambda v: v.get('energy', 0.0))
+        
+        # Always include best energy
+        selected = [sorted_variants[0]]
+        best_label = sorted_variants[0].get('label', '')
+        
+        # Extract protonation/tautomer prefix (before last underscore)
+        # e.g., "ligand_p0_t2_c3" -> "ligand_p0_t2"
+        def get_state_prefix(label: str) -> str:
+            parts = label.rsplit('_', 1)
+            return parts[0] if len(parts) > 1 else label
+        
+        best_state = get_state_prefix(best_label)
+        
+        # Try to get different protonation/tautomer states first
+        seen_states = {best_state}
+        
+        for variant in sorted_variants[1:]:
+            if len(selected) >= n_select:
+                break
+            
+            label = variant.get('label', '')
+            state = get_state_prefix(label)
+            
+            # Prioritize different states
+            if state not in seen_states:
+                selected.append(variant)
+                seen_states.add(state)
+        
+        # Fill remaining with next best energies (different conformers)
+        for variant in sorted_variants[1:]:
+            if len(selected) >= n_select:
+                break
+            
+            if variant not in selected:
+                selected.append(variant)
+        
+        return selected
 
     def _prepare_receptor(
         self,
@@ -1060,10 +1325,36 @@ def run_adaptive_docking(
     output_dir: Path,
     rmsd_threshold: float = 2.0,
     rdock_available: bool = False,
-    rdock_root: Optional[Path] = None
+    rdock_root: Optional[Path] = None,
+    smina_binary: str = "smina",
+    vina_binary: str = "vina",
+    use_vina: bool = False,
+    max_tautomers: int = 8,
+    max_conformers: int = 10,
+    n_cpus: Optional[int] = None
 ) -> Tuple[DockingResult, List[DockingResult]]:
     """
     Convenience function to run adaptive docking pipeline.
+
+    Args:
+        pdb_file: Receptor PDB file
+        ligand_smiles: Ligand SMILES string
+        ligand_name: Ligand identifier
+        ligand_resname: Ligand residue name in PDB
+        ligand_chain: Chain ID of ligand in PDB
+        output_dir: Output directory for results
+        rmsd_threshold: RMSD threshold for success (default 2.0Å)
+        rdock_available: Whether rDock is available
+        rdock_root: Path to rDock installation
+        smina_binary: Path to Smina binary
+        vina_binary: Path to Vina binary
+        use_vina: Use Vina instead of Smina
+        max_tautomers: Maximum tautomers to generate (default 8)
+        max_conformers: Maximum conformers to generate (default 10)
+        n_cpus: Number of CPUs for ligand preparation (None = auto-detect)
+
+    Returns:
+        Tuple of (best_result, all_results)
 
     Example:
         best_result, all_results = run_adaptive_docking(
@@ -1072,7 +1363,10 @@ def run_adaptive_docking(
             ligand_name="BUM",
             ligand_resname="BUM",
             ligand_chain="A",
-            output_dir=Path("output/adaptive_docking")
+            output_dir=Path("output/adaptive_docking"),
+            max_tautomers=5,
+            max_conformers=8,
+            n_cpus=8
         )
 
         print(f"Best RMSD: {best_result.rmsd:.2f}Å")
@@ -1082,7 +1376,13 @@ def run_adaptive_docking(
         output_dir=output_dir,
         rmsd_threshold=rmsd_threshold,
         rdock_available=rdock_available,
-        rdock_root=rdock_root
+        rdock_root=rdock_root,
+        smina_binary=smina_binary,
+        vina_binary=vina_binary,
+        use_vina=use_vina,
+        max_tautomers=max_tautomers,
+        max_conformers=max_conformers,
+        n_cpus=n_cpus
     )
 
     return pipeline.run_adaptive_docking(

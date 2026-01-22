@@ -104,7 +104,7 @@ class LigandPreparationConfig(BaseModel):
         description="Maximum tautomers per compound"
     )
     max_conformers: int = Field(
-        default=1,
+        default=10,
         ge=1,
         le=10,
         description="Maximum conformers to generate (typically 1 for docking)"
