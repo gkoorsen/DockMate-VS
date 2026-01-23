@@ -1,0 +1,35 @@
+======================================================================
+ENSEMBLE VALIDATION EXPERIMENT - SUMMARY REPORT
+======================================================================
+
+Generated: 2026-01-23 01:08:05
+
+DATASET
+----------------------------------------------------------------------
+Total compounds: 28
+Actives: 14
+Decoys: 14
+
+ENRICHMENT METRICS
+----------------------------------------------------------------------
+Metric                Single     Ensemble         Diff
+-------------------------------------------------------
+AUC                    0.398        0.648       +0.250
+EF_1%                  7.143        0.000       -7.143
+EF_5%                  1.429        0.000       -1.429
+EF_10%                 0.714        0.000       -0.714
+BEDROC_20              0.000        0.000       +0.000
+
+STATISTICAL VALIDATION (Bootstrap)
+----------------------------------------------------------------------
+AUC p-value: 0.0510
+AUC significant: False
+EF1% p-value: 0.9930
+EF1% significant: False
+
+RECOMMENDATION
+======================================================================
+Decision: USE_SINGLE
+Reason: Ensemble shows improvement but not statistically significant.
+AUC improvement: +62.8%
+EF1% improvement: -100.0%
