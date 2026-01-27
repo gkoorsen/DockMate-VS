@@ -3836,30 +3836,45 @@ class RedockAnalysisApp(tk.Tk):
                         smiles_text = str(smiles_val).strip()
                         if smiles_text and smiles_text.lower() != "nan":
                             active_smiles = smiles_text
-                _add_pair(
-                    pdb_id=pdb_id,
-                    ligand=ligand,
-                    chain=chain,
-                    smiles=active_smiles,
-                    control_label=1,
-                    dock_name=active_name,
-                    site_ligand=ligand,
-                    case_id=f"{pdb_id}_{ligand}_{active_name}"
-                )
 
                 decoy_smiles_list = _split_list(row.get(decoy_smiles_col))
                 decoy_name_list = _split_list(row.get(decoy_compound_col)) if decoy_compound_col else []
-                for j, decoy_smiles in enumerate(decoy_smiles_list, 1):
-                    decoy_name = decoy_name_list[j - 1] if j - 1 < len(decoy_name_list) else f"decoy_{j}"
+                has_decoy = bool(decoy_smiles_list)
+
+                if has_decoy:
                     _add_pair(
                         pdb_id=pdb_id,
                         ligand=ligand,
                         chain=chain,
-                        smiles=decoy_smiles,
-                        control_label=0,
-                        dock_name=decoy_name,
+                        smiles=active_smiles,
+                        control_label=1,
+                        dock_name=active_name,
                         site_ligand=ligand,
-                        case_id=f"{pdb_id}_{ligand}_{decoy_name}"
+                        case_id=f"{pdb_id}_{ligand}_{active_name}"
+                    )
+                    for j, decoy_smiles in enumerate(decoy_smiles_list, 1):
+                        decoy_name = decoy_name_list[j - 1] if j - 1 < len(decoy_name_list) else f"decoy_{j}"
+                        _add_pair(
+                            pdb_id=pdb_id,
+                            ligand=ligand,
+                            chain=chain,
+                            smiles=decoy_smiles,
+                            control_label=0,
+                            dock_name=decoy_name,
+                            site_ligand=ligand,
+                            case_id=f"{pdb_id}_{ligand}_{decoy_name}"
+                        )
+                else:
+                    # No decoy provided: treat as regular (non-control) docking case
+                    _add_pair(
+                        pdb_id=pdb_id,
+                        ligand=ligand,
+                        chain=chain,
+                        smiles=active_smiles,
+                        control_label=None,
+                        dock_name=active_name,
+                        site_ligand=ligand,
+                        case_id=f"{pdb_id}_{ligand}_{active_name}"
                     )
                 continue
 

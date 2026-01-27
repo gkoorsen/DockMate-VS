@@ -92,8 +92,12 @@ class RedockAnalyzer:
         
         df['molecule_type'] = df.apply(classify_row, axis=1)
         
-        # Also check ligand names for explicit active/decoy markers
+        # Override with explicit control labels when present
         if 'control_label' in df.columns:
+            # numeric labels
+            df.loc[df['control_label'] == 0, 'molecule_type'] = 'decoy'
+            df.loc[df['control_label'] == 1, 'molecule_type'] = 'active'
+            # string labels
             df.loc[df['control_label'] == 'decoy', 'molecule_type'] = 'decoy'
             df.loc[df['control_label'] == 'active', 'molecule_type'] = 'active'
         
@@ -151,8 +155,14 @@ class RedockAnalyzer:
         Returns:
             EnrichmentStatistics object
         """
-        actives = df[df['molecule_type'] == 'active'].copy()
-        decoys = df[df['molecule_type'] == 'decoy'].copy()
+        # Only include explicit controls (labelled actives/decoys)
+        if 'control_label' in df.columns:
+            control_df = df[df['control_label'].isin([0, 1])].copy()
+            actives = control_df[control_df['control_label'] == 1].copy()
+            decoys = control_df[control_df['control_label'] == 0].copy()
+        else:
+            actives = df[df['molecule_type'] == 'active'].copy()
+            decoys = df[df['molecule_type'] == 'decoy'].copy()
         
         if len(actives) == 0 or len(decoys) == 0:
             logger.warning("Need both actives and decoys for enrichment analysis")

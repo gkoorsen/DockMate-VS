@@ -20,6 +20,7 @@ Strategy:
 """
 
 import logging
+import os
 import time
 from rdkit import Chem
 from rdkit.Chem import Descriptors
