@@ -16,6 +16,19 @@ except ImportError:
     # Pydantic v1
     from pydantic import BaseModel, Field, validator, root_validator
     PYDANTIC_V2 = False
+else:
+    # Provide v1-compatible decorator names when running on Pydantic v2.
+    def validator(*fields, **kwargs):
+        if "pre" in kwargs:
+            kwargs["mode"] = "before" if kwargs.pop("pre") else "after"
+        # v2 doesn't support always/each_item in the same way; ignore to keep compatibility.
+        kwargs.pop("always", None)
+        kwargs.pop("each_item", None)
+        return field_validator(*fields, **kwargs)
+
+    def root_validator(*, pre=False, **kwargs):
+        kwargs.pop("skip_on_failure", None)
+        return model_validator(mode="before" if pre else "after", **kwargs)
 
 
 # Enums for configuration options

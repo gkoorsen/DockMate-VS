@@ -220,6 +220,15 @@ class EnsembleValidationExperiment:
         
         results['single_metrics'] = single_metrics
         results['ensemble_metrics'] = ensemble_metrics
+
+        # Additional ensemble aggregation diagnostics
+        logger.info("-"*70)
+        logger.info("[3b/5] ENSEMBLE VARIANT ANALYSIS")
+        logger.info("-"*70)
+        results['ensemble_variants'] = self._evaluate_ensemble_variants(
+            benchmark_dataset,
+            self.ensemble_results
+        )
         
         # Print summaries
         single_analysis.print_summary("Single Structure")
@@ -270,6 +279,190 @@ class EnsembleValidationExperiment:
         logger.info(f"Results saved to: {self.output_dir}")
         
         return results
+
+    def _evaluate_ensemble_variants(self, benchmark_dataset, ensemble_results):
+        """Evaluate alternative ensemble aggregation strategies and diagnostics."""
+        results = {}
+        variants = self._build_ensemble_variants(ensemble_results)
+
+        # Early enrichment diagnostics at broader cutoffs
+        fractions = [0.01, 0.05, 0.10, 0.20, 0.30]
+        results['early_fractions'] = fractions
+        results['variant_metrics'] = {}
+        results['top_rank_summary'] = []
+
+        for name, df in variants.items():
+            analysis = EnrichmentAnalysis(df)
+            metrics = analysis.calculate_all_metrics()
+            early = {f: analysis.calculate_ef(fraction=f) for f in fractions}
+            results['variant_metrics'][name] = {
+                'metrics': metrics,
+                'early_ef': early
+            }
+
+            top_summary = self._build_top_rank_summary(df, fractions, name)
+            results['top_rank_summary'].extend(top_summary)
+
+        # Diversity diagnostics (optional)
+        results['diversity_summary'] = self._compute_diversity_summary(
+            benchmark_dataset,
+            variants,
+            fractions=[0.10, 0.20, 0.30]
+        )
+
+        # Rescoring candidates for downstream workflows
+        results['rescoring_candidates'] = self._build_rescoring_candidates(
+            variants,
+            fractions=[0.10, 0.20]
+        )
+
+        return results
+
+    def _build_ensemble_variants(self, ensemble_results):
+        """Create alternative ensemble score aggregations."""
+        df = ensemble_results.copy()
+
+        def _safe_scores(val):
+            if isinstance(val, list):
+                return val
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except Exception:
+                    return []
+            return []
+
+        scores_list = df['individual_scores'].apply(_safe_scores)
+
+        def _score_or_zero(values, func):
+            return float(func(values)) if values else 0.0
+
+        df_best = df.copy()
+        df_best['docking_score'] = scores_list.apply(lambda v: _score_or_zero(v, min))
+
+        df_mean = df.copy()
+        df_mean['docking_score'] = scores_list.apply(lambda v: _score_or_zero(v, np.mean))
+
+        df_median = df.copy()
+        df_median['docking_score'] = scores_list.apply(lambda v: _score_or_zero(v, np.median))
+
+        df_rank = df.copy()
+        df_rank['docking_score'] = self._rank_vote_score(scores_list)
+
+        return {
+            'ensemble_best': df_best,
+            'ensemble_mean': df_mean,
+            'ensemble_median': df_median,
+            'ensemble_rank_vote': df_rank
+        }
+
+    def _rank_vote_score(self, scores_series):
+        """Average rank across structures (lower rank = better)."""
+        scores = scores_series.tolist()
+        if not scores:
+            return pd.Series([])
+
+        max_len = max((len(s) for s in scores), default=0)
+        if max_len == 0:
+            return pd.Series([0.0] * len(scores))
+
+        matrix = []
+        for row in scores:
+            padded = row + [0.0] * (max_len - len(row))
+            matrix.append(padded)
+        matrix = np.array(matrix, dtype=float)
+
+        ranks = np.zeros_like(matrix)
+        for col in range(matrix.shape[1]):
+            order = np.argsort(matrix[:, col])
+            ranks[order, col] = np.arange(1, len(scores) + 1)
+
+        avg_rank = ranks.mean(axis=1)
+        return pd.Series(avg_rank)
+
+    def _build_top_rank_summary(self, df, fractions, method_name):
+        """Build top-N active/decoy summary for a given method."""
+        df_sorted = df.sort_values('docking_score', ascending=True).reset_index(drop=True)
+        n_total = len(df_sorted)
+        summary = []
+
+        for frac in fractions:
+            n_top = max(1, int(n_total * frac))
+            top = df_sorted.head(n_top)
+            n_actives = int(top['is_active'].sum())
+            n_decoys = int(n_top - n_actives)
+            summary.append({
+                'method': method_name,
+                'fraction': frac,
+                'n_top': n_top,
+                'n_actives': n_actives,
+                'n_decoys': n_decoys
+            })
+
+        return summary
+
+    def _compute_diversity_summary(self, benchmark_dataset, variants, fractions):
+        """Compute diversity statistics for top selections (requires RDKit)."""
+        try:
+            from rdkit import DataStructs
+            from rdkit.Chem import AllChem
+        except Exception:
+            logger.warning("RDKit not available for diversity analysis.")
+            return []
+
+        id_to_mol = {
+            row['compound_id']: row['compound_data']
+            for _, row in benchmark_dataset.iterrows()
+        }
+
+        diversity_summary = []
+
+        for method, df in variants.items():
+            df_sorted = df.sort_values('docking_score', ascending=True).reset_index(drop=True)
+            n_total = len(df_sorted)
+            for frac in fractions:
+                n_top = max(1, int(n_total * frac))
+                ids = df_sorted.head(n_top)['compound_id'].tolist()
+                mols = [id_to_mol.get(cid) for cid in ids if id_to_mol.get(cid) is not None]
+                if len(mols) < 2:
+                    continue
+
+                fps = [AllChem.GetMorganFingerprintAsBitVect(m, 2, nBits=2048) for m in mols]
+                sims = []
+                for i in range(len(fps)):
+                    for j in range(i + 1, len(fps)):
+                        sims.append(DataStructs.TanimotoSimilarity(fps[i], fps[j]))
+                if not sims:
+                    continue
+
+                diversity_summary.append({
+                    'method': method,
+                    'fraction': frac,
+                    'n_top': n_top,
+                    'mean_tanimoto': float(np.mean(sims)),
+                    'max_tanimoto': float(np.max(sims))
+                })
+
+        return diversity_summary
+
+    def _build_rescoring_candidates(self, variants, fractions):
+        """Create candidate lists for rescoring."""
+        candidates = []
+        for method, df in variants.items():
+            df_sorted = df.sort_values('docking_score', ascending=True).reset_index(drop=True)
+            n_total = len(df_sorted)
+            for frac in fractions:
+                n_top = max(1, int(n_total * frac))
+                top = df_sorted.head(n_top)
+                for _, row in top.iterrows():
+                    candidates.append({
+                        'method': method,
+                        'fraction': frac,
+                        'compound_id': row['compound_id'],
+                        'is_active': bool(row['is_active']),
+                        'docking_score': float(row['docking_score'])
+                    })
+        return candidates
     
     def _run_single_experiment(self, dataset, structure, grid_params):
         """Run docking with single structure."""
@@ -570,6 +763,11 @@ class EnsembleValidationExperiment:
                 bins=30, alpha=0.5, label='Single - Actives', color='green')
         ax.hist(single_df[~single_df['is_active']]['docking_score'],
                 bins=30, alpha=0.3, label='Single - Decoys', color='red')
+
+        ax.hist(ensemble_df[ensemble_df['is_active']]['docking_score'],
+                bins=30, alpha=0.4, label='Ensemble - Actives', color='blue')
+        ax.hist(ensemble_df[~ensemble_df['is_active']]['docking_score'],
+                bins=30, alpha=0.2, label='Ensemble - Decoys', color='orange')
         
         ax.set_xlabel('Docking Score')
         ax.set_ylabel('Count')
@@ -631,6 +829,16 @@ class EnsembleValidationExperiment:
             'recommendation': _to_jsonable(results['recommendation']),
             'bootstrap': _to_jsonable(results['bootstrap'])
         }
+
+        if 'ensemble_variants' in results:
+            metrics_dict['ensemble_variants'] = {
+                name: {
+                    k: _to_jsonable(v)
+                    for k, v in payload['metrics'].items()
+                    if k not in ['enrichment_curve', 'roc_curve']
+                }
+                for name, payload in results['ensemble_variants']['variant_metrics'].items()
+            }
         
         with open(metrics_file, 'w') as f:
             json.dump(metrics_dict, f, indent=2)
@@ -643,6 +851,24 @@ class EnsembleValidationExperiment:
         
         # Save summary report
         self._save_summary_report(results)
+
+        # Save additional diagnostics
+        if 'ensemble_variants' in results:
+            variants = results['ensemble_variants']
+            top_summary = pd.DataFrame(variants['top_rank_summary'])
+            if not top_summary.empty:
+                top_summary.to_csv(self.output_dir / 'top_rank_summary.csv', index=False)
+                logger.info("  Saved: top_rank_summary.csv")
+
+            diversity = pd.DataFrame(variants['diversity_summary'])
+            if not diversity.empty:
+                diversity.to_csv(self.output_dir / 'diversity_summary.csv', index=False)
+                logger.info("  Saved: diversity_summary.csv")
+
+            rescoring = pd.DataFrame(variants['rescoring_candidates'])
+            if not rescoring.empty:
+                rescoring.to_csv(self.output_dir / 'rescoring_candidates.csv', index=False)
+                logger.info("  Saved: rescoring_candidates.csv")
     
     def _save_summary_report(self, results):
         """Save text summary report."""
@@ -679,6 +905,26 @@ class EnsembleValidationExperiment:
                 f.write(f"{metric:<15} {s_val:>12.3f} {e_val:>12.3f} {diff:>+12.3f}\n")
             
             f.write("\n")
+
+            if 'ensemble_variants' in results:
+                f.write("EARLY ENRICHMENT (Broader Cutoffs)\n")
+                f.write("-"*70 + "\n")
+                fractions = results['ensemble_variants']['early_fractions']
+                single_analysis = EnrichmentAnalysis(self.single_results)
+                ensemble_analysis = EnrichmentAnalysis(self.ensemble_results)
+                for frac in fractions:
+                    s_ef = single_analysis.calculate_ef(fraction=frac)
+                    e_ef = ensemble_analysis.calculate_ef(fraction=frac)
+                    f.write(f"EF_{int(frac*100)}%: Single={s_ef:.3f} Ensemble={e_ef:.3f}\n")
+                f.write("\n")
+
+                f.write("ENSEMBLE VARIANT SUMMARY\n")
+                f.write("-"*70 + "\n")
+                for name, payload in results['ensemble_variants']['variant_metrics'].items():
+                    m = payload['metrics']
+                    f.write(f"{name}: AUC={m['AUC']:.3f} EF_1%={m['EF_1%']:.3f} "
+                            f"EF_5%={m['EF_5%']:.3f} EF_10%={m['EF_10%']:.3f}\n")
+                f.write("\n")
             
             # Statistical significance
             f.write("STATISTICAL VALIDATION (Bootstrap)\n")

@@ -1,5 +1,6 @@
 # Build / run artifacts
 output/
+results/
 *.pdb
 *.pdbqt
 *.sd

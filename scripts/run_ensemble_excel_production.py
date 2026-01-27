@@ -27,6 +27,7 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from docking_platform_gui.experiments.ensemble_validation import EnsembleValidationExperiment
+from docking_platform_gui.analysis.enrichment_analysis import EnrichmentAnalysis, BootstrapValidation
 from docking_platform_gui.experiments.docking_adapter_final import (
     DockingManagerAdapter,
     CachedDockingAdapter
@@ -116,31 +117,41 @@ def create_sdf_files(df, output_dir):
     writer = Chem.SDWriter(str(decoys_file))
     
     decoys_count = 0
+    def _split_list(value):
+        if pd.isna(value):
+            return []
+        if isinstance(value, str):
+            return [v.strip() for v in value.split(",") if v.strip()]
+        text = str(value).strip()
+        return [text] if text else []
+
     for idx, row in df.iterrows():
-        if pd.isna(row['decoy SMILES']):
+        decoy_smiles_list = _split_list(row['decoy SMILES'])
+        if not decoy_smiles_list:
             continue
-        
-        smiles = row['decoy SMILES']
-        mol = Chem.MolFromSmiles(smiles)
-        
-        if mol is None:
-            logger.warning(f"  Invalid decoy SMILES for row {idx}")
-            continue
-        
-        mol = Chem.AddHs(mol)
-        result = AllChem.EmbedMolecule(mol, randomSeed=42)
-        if result != 0:
-            continue
-        
-        AllChem.UFFOptimizeMolecule(mol)
-        
-        decoy_id = row.get('decoy compound', f'decoy_{idx}')
-        mol.SetProp('_Name', f"decoy_{idx}_{decoy_id}")
-        mol.SetProp('paired_with', row['Target_Ligand'])
-        mol.SetProp('original_smiles', smiles)
-        
-        writer.write(mol)
-        decoys_count += 1
+
+        decoy_name_list = _split_list(row.get('decoy compound', ''))
+
+        for j, smiles in enumerate(decoy_smiles_list, 1):
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                logger.warning(f"  Invalid decoy SMILES for row {idx}: {smiles}")
+                continue
+
+            mol = Chem.AddHs(mol)
+            result = AllChem.EmbedMolecule(mol, randomSeed=42)
+            if result != 0:
+                continue
+
+            AllChem.UFFOptimizeMolecule(mol)
+
+            decoy_id = decoy_name_list[j - 1] if j - 1 < len(decoy_name_list) else f"decoy_{idx}_{j}"
+            mol.SetProp('_Name', f"decoy_{idx}_{decoy_id}")
+            mol.SetProp('paired_with', row['Target_Ligand'])
+            mol.SetProp('original_smiles', smiles)
+
+            writer.write(mol)
+            decoys_count += 1
     
     writer.close()
     logger.info(f"  ✅ Created: {decoys_file} ({decoys_count} compounds)")
@@ -313,6 +324,10 @@ def main():
         '--smina-binary', default=None,
         help='Path to smina executable (uses system PATH if not specified)'
     )
+    parser.add_argument(
+        '--compare-all-singles', action='store_true',
+        help='Compare ensemble against each single structure (adds summary CSV)'
+    )
     
     args = parser.parse_args()
     
@@ -450,7 +465,61 @@ def main():
         logger.info(f"Reason: {rec['reason']}")
         logger.info(f"AUC improvement: {rec['auc_improvement_pct']:+.1f}%")
         logger.info(f"Statistically significant: {rec['auc_significant']}")
-        
+
+        if args.compare_all_singles:
+            logger.info("\n" + "="*70)
+            logger.info("COMPARING ENSEMBLE VS EACH SINGLE STRUCTURE")
+            logger.info("="*70)
+            summary_rows = []
+            ensemble_results = experiment.ensemble_results
+            ensemble_metrics = results['ensemble_metrics']
+
+            for idx, struct in enumerate(ensemble_structures):
+                pdb_id = Path(struct).stem.replace("_prepared", "")
+                if struct == single_structure:
+                    continue
+
+                logger.info(f"\nRunning single-structure docking for: {Path(struct).name}")
+                single_df = experiment._run_single_experiment(
+                    dataset,
+                    struct,
+                    grid_params
+                )
+
+                # Save per-single results
+                single_out = output_dir / f"single_{pdb_id}_results.csv"
+                single_df.to_csv(single_out, index=False)
+                logger.info(f"  Saved: {single_out}")
+
+                single_analysis = EnrichmentAnalysis(single_df)
+                single_metrics = single_analysis.calculate_all_metrics()
+
+                boot = BootstrapValidation.compare_methods(
+                    single_df,
+                    ensemble_results,
+                    n_iterations=args.bootstrap
+                )
+
+                summary_rows.append({
+                    'single_structure': Path(struct).name,
+                    'single_auc': single_metrics['AUC'],
+                    'ensemble_auc': ensemble_metrics['AUC'],
+                    'auc_diff': ensemble_metrics['AUC'] - single_metrics['AUC'],
+                    'single_ef1': single_metrics['EF_1%'],
+                    'ensemble_ef1': ensemble_metrics['EF_1%'],
+                    'ef1_diff': ensemble_metrics['EF_1%'] - single_metrics['EF_1%'],
+                    'auc_p_value': boot['auc']['p_value'],
+                    'auc_significant': boot['auc']['significant'],
+                    'ef1_p_value': boot['ef1']['p_value'],
+                    'ef1_significant': boot['ef1']['significant']
+                })
+
+            if summary_rows:
+                summary_df = pd.DataFrame(summary_rows)
+                summary_file = output_dir / "single_vs_ensemble_summary.csv"
+                summary_df.to_csv(summary_file, index=False)
+                logger.info(f"\nSaved comparison summary: {summary_file}")
+
         return 0
         
     except Exception as e:
