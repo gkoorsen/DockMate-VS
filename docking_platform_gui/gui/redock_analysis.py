@@ -2794,17 +2794,56 @@ class RedockAnalysisApp(tk.Tk):
         if receptor_pdb is None or not receptor_pdb.exists():
             return None
 
-        native_ligand = Path(str(case["crystal_ligand_pdb"]))
-        if not native_ligand.exists():
-            return None
-
         poses, scores = self._load_poses_and_scores(output_file)
         if not poses:
             return None
 
-        ref_mol = self._load_reference_mol(native_ligand)
+        crystal_ligand = case.get("crystal_ligand_pdb")
+        native_ligand = Path(str(crystal_ligand)) if crystal_ligand else None
+        if native_ligand is not None and not native_ligand.exists():
+            native_ligand = None
+
+        ref_mol = self._load_reference_mol(native_ligand) if native_ligand is not None else None
         if ref_mol is None:
-            return None
+            best_score_idx = None
+            if scores:
+                best_score_idx = min(
+                    (i for i, s in enumerate(scores) if s is not None),
+                    key=lambda i: scores[i],
+                    default=None
+                )
+            if best_score_idx is None:
+                best_score_idx = 0
+
+            pose_file = viewer_dir / "best_score.pdb"
+            self._write_ligand_pdb(poses[best_score_idx], str(case["display_name"]), pose_file)
+            pml_lines = [
+                "reinitialize",
+                f"load {self._pml_quote(receptor_pdb)}, receptor",
+                f"load {self._pml_quote(pose_file)}, docked",
+                "hide everything",
+                "show cartoon, receptor",
+                "color grey80, receptor",
+                "show sticks, docked",
+                "color blue, docked",
+                "set stick_radius, 0.22",
+                "select binding_site, byres (receptor within 6 of docked)",
+                "show sticks, binding_site",
+                "color white, binding_site",
+                "set bg_rgb, white",
+                "zoom docked, 12",
+                "set label_color, black",
+                "set label_outline_color, white",
+                "set label_size, 18",
+                "pseudoatom legend_docked, pos=[0,0,0], label='Docked pose (blue); receptor cartoon grey; nearby residues white'",
+                "hide everything, legend_docked",
+                "show labels, legend_docked",
+                "set label_screen_point, 1, legend_docked",
+                "set label_position, [2,2,0], legend_docked"
+            ]
+            pml_path = viewer_dir / "overlay.pml"
+            pml_path.write_text("\n".join(pml_lines) + "\n")
+            return pml_path
 
         rmsd_values: List[Optional[float]] = [
             self._pose_rmsd(ref_mol, pose) for pose in poses
@@ -2897,15 +2936,26 @@ class RedockAnalysisApp(tk.Tk):
 
     def _select_best_pose(
         self,
-        crystal_ligand_pdb: Path,
+        crystal_ligand_pdb: Optional[Path],
         docked_file: Path
-    ) -> Optional[Tuple[Chem.Mol, Chem.Mol, Optional[float], Optional[float], int, int]]:
-        ref_mol = self._load_reference_mol(crystal_ligand_pdb)
-        if ref_mol is None:
-            return None
+    ) -> Optional[Tuple[Optional[Chem.Mol], Chem.Mol, Optional[float], Optional[float], int, int]]:
         poses, scores = self._load_poses_and_scores(docked_file)
         if not poses:
             return None
+
+        ref_mol = self._load_reference_mol(crystal_ligand_pdb) if crystal_ligand_pdb else None
+        if ref_mol is None:
+            best_idx = None
+            if scores:
+                best_idx = min(
+                    (i for i, s in enumerate(scores) if s is not None),
+                    key=lambda i: scores[i],
+                    default=None
+                )
+            if best_idx is None:
+                best_idx = 0
+            best_score = scores[best_idx] if scores and best_idx < len(scores) else None
+            return None, poses[best_idx], None, best_score, best_idx, len(poses)
 
         best_idx = None
         best_rmsd = None
@@ -2958,7 +3008,7 @@ class RedockAnalysisApp(tk.Tk):
             case_dir = self._case_dir_from_output_file(output_file)
             crystal_ligand_pdb = case_dir / "crystal_ligand.pdb"
             if not crystal_ligand_pdb.exists():
-                continue
+                crystal_ligand_pdb = None
             cases.append(
                 {
                     "pdb_id": pdb_id,
@@ -2979,7 +3029,7 @@ class RedockAnalysisApp(tk.Tk):
         case_label_map = {label.upper(): idx for idx, label in enumerate(case_labels)}
 
         dialog = tk.Toplevel(self)
-        dialog.title("Redock Pose Viewer")
+        dialog.title("Docking Pose Viewer")
         dialog.geometry("980x640")
         dialog.transient(self)
 
@@ -3030,10 +3080,10 @@ class RedockAnalysisApp(tk.Tk):
         content.grid_columnconfigure(1, weight=1)
         content.grid_rowconfigure(1, weight=1)
 
-        tk.Label(content, text="Native pose", font=("Helvetica", 12, "bold")).grid(
+        tk.Label(content, text="Reference pose / status", font=("Helvetica", 12, "bold")).grid(
             row=0, column=0, sticky="w", padx=5, pady=(0, 6)
         )
-        tk.Label(content, text="Best docked pose", font=("Helvetica", 12, "bold")).grid(
+        tk.Label(content, text="Best docked ligand (2D)", font=("Helvetica", 12, "bold")).grid(
             row=0, column=1, sticky="w", padx=5, pady=(0, 6)
         )
 
@@ -3105,9 +3155,10 @@ class RedockAnalysisApp(tk.Tk):
                 native_lig = viewer_dir / "native_ligand.pdb"
                 docked_lig = viewer_dir / "docked_best_ligand.pdb"
                 ref_mol, best_pose, best_rmsd, best_score, best_idx, pose_count = selected
-                self._write_ligand_pdb(ref_mol, case["display_name"], native_lig)
+                if ref_mol is not None:
+                    self._write_ligand_pdb(ref_mol, case["display_name"], native_lig)
                 self._write_ligand_pdb(best_pose, case["display_name"], docked_lig)
-                native_contacts = self._compute_contact_summary(receptor_pdb, ref_mol)
+                native_contacts = self._compute_contact_summary(receptor_pdb, ref_mol) if ref_mol is not None else None
                 docked_contacts = self._compute_contact_summary(receptor_pdb, best_pose)
                 return selected, native_contacts, docked_contacts
 
@@ -3132,9 +3183,12 @@ class RedockAnalysisApp(tk.Tk):
 
                 selected, native_contacts, docked_contacts = payload
                 ref_mol, best_pose, best_rmsd, best_score, best_idx, pose_count = selected
-                native_img = self._mol_to_interaction_photoimage(ref_mol, native_contacts, (420, 420))
+                native_img = (
+                    self._mol_to_interaction_photoimage(ref_mol, native_contacts, (420, 420))
+                    if ref_mol is not None else None
+                )
                 docked_img = self._mol_to_interaction_photoimage(best_pose, docked_contacts, (420, 420))
-                if native_img is None:
+                if native_img is None and ref_mol is not None:
                     native_img = self._mol_to_photoimage(ref_mol, (420, 420))
                 if docked_img is None:
                     docked_img = self._mol_to_photoimage(best_pose, (420, 420))
@@ -3142,6 +3196,8 @@ class RedockAnalysisApp(tk.Tk):
                 if native_img:
                     native_label.config(image=native_img, text="")
                     native_label.image = native_img
+                elif ref_mol is None:
+                    native_label.config(text="No crystal ligand\nscreening pose only", image="")
                 else:
                     native_label.config(text="Native image unavailable", image="")
 
@@ -3163,7 +3219,9 @@ class RedockAnalysisApp(tk.Tk):
                 docked_contact_text.config(state="normal")
                 native_contact_text.delete("1.0", "end")
                 docked_contact_text.delete("1.0", "end")
-                if native_contacts:
+                if ref_mol is None:
+                    native_contact_text.insert("1.0", "No native/reference ligand for screening rows")
+                elif native_contacts:
                     native_contact_text.insert(
                         "1.0",
                         "\n".join(
@@ -3304,27 +3362,30 @@ class RedockAnalysisApp(tk.Tk):
 
                 native_lig = viewer_dir / "native_ligand.pdb"
                 docked_lig = viewer_dir / "docked_best_ligand.pdb"
-                self._write_ligand_pdb(ref_mol, ligand_resname, native_lig, chain=ligand_chain, resnum=ligand_resnum)
                 self._write_ligand_pdb(best_pose, ligand_resname, docked_lig, chain=ligand_chain, resnum=ligand_resnum)
 
                 native_dir = viewer_dir / "ligplot_native"
                 docked_dir = viewer_dir / "ligplot_docked"
-                native_dir.mkdir(parents=True, exist_ok=True)
                 docked_dir.mkdir(parents=True, exist_ok=True)
-                native_complex = native_dir / "native_complex.pdb"
                 docked_complex = docked_dir / "docked_complex.pdb"
 
-                self._combine_complex(receptor_pdb, native_lig, native_complex)
+                native_png = None
+                if ref_mol is not None:
+                    native_dir.mkdir(parents=True, exist_ok=True)
+                    native_complex = native_dir / "native_complex.pdb"
+                    self._write_ligand_pdb(ref_mol, ligand_resname, native_lig, chain=ligand_chain, resnum=ligand_resnum)
+                    self._combine_complex(receptor_pdb, native_lig, native_complex)
+                    native_png = self._run_ligplot(
+                        ligplot_bin,
+                        native_complex,
+                        ligand_resname,
+                        ligand_resnum,
+                        ligand_chain,
+                        native_dir
+                    )
+
                 self._combine_complex(receptor_pdb, docked_lig, docked_complex)
 
-                native_png = self._run_ligplot(
-                    ligplot_bin,
-                    native_complex,
-                    ligand_resname,
-                    ligand_resnum,
-                    ligand_chain,
-                    native_dir
-                )
                 docked_png = self._run_ligplot(
                     ligplot_bin,
                     docked_complex,
@@ -3340,7 +3401,7 @@ class RedockAnalysisApp(tk.Tk):
                     info_var.set("LigPlot generation failed")
                     return
                 native_png, docked_png = result
-                if not native_png or not docked_png:
+                if not docked_png:
                     info_var.set("LigPlot generation failed")
                     return
 
@@ -3371,7 +3432,7 @@ class RedockAnalysisApp(tk.Tk):
                     scale = max(scale_w, scale_h)
                     return img.subsample(scale) if scale > 1 else img
 
-                native_img_raw = tk.PhotoImage(file=str(native_png))
+                native_img_raw = tk.PhotoImage(file=str(native_png)) if native_png else None
                 docked_img_raw = tk.PhotoImage(file=str(docked_png))
 
                 scale_steps = [50, 75, 100, 125, 150, 200]
@@ -3394,9 +3455,12 @@ class RedockAnalysisApp(tk.Tk):
                     return img
 
                 def _apply_scale(percent: int) -> None:
-                    native_img = _scale_image(native_img_raw, percent)
+                    native_img = _scale_image(native_img_raw, percent) if native_img_raw else None
                     docked_img = _scale_image(docked_img_raw, percent)
-                    native_lbl.config(image=native_img)
+                    if native_img:
+                        native_lbl.config(image=native_img, text="")
+                    else:
+                        native_lbl.config(image="", text="No native/reference\nligand for screening")
                     docked_lbl.config(image=docked_img)
                     native_lbl.image = native_img
                     docked_lbl.image = docked_img
@@ -3431,9 +3495,12 @@ class RedockAnalysisApp(tk.Tk):
                 ).pack(side="left")
 
                 def _fit() -> None:
-                    native_img = _fit_image(native_img_raw, 420, 420)
+                    native_img = _fit_image(native_img_raw, 420, 420) if native_img_raw else None
                     docked_img = _fit_image(docked_img_raw, 420, 420)
-                    native_lbl.config(image=native_img)
+                    if native_img:
+                        native_lbl.config(image=native_img, text="")
+                    else:
+                        native_lbl.config(image="", text="No native/reference\nligand for screening")
                     docked_lbl.config(image=docked_img)
                     native_lbl.image = native_img
                     docked_lbl.image = docked_img
@@ -3445,8 +3512,6 @@ class RedockAnalysisApp(tk.Tk):
                     _apply_scale(scale_steps[idx])
 
                 _apply_scale(100)
-                native_lbl.image_raw = native_img_raw
-                docked_lbl.image_raw = docked_img_raw
                 native_lbl.image_raw = native_img_raw
                 docked_lbl.image_raw = docked_img_raw
 
