@@ -115,7 +115,7 @@ class RedockAnalysisApp(tk.Tk):
     ):
         super().__init__()
 
-        self.title("Redock Analysis")
+        self.title("Docking Analysis")
         self.geometry("1000x780")
         self.resizable(True, True)
 
@@ -927,7 +927,7 @@ class RedockAnalysisApp(tk.Tk):
                 self.progress_dialog.log(f"Results saved to {results_path}")
                 self.progress_dialog.destroy()
                 self.progress_dialog = None
-                messagebox.showinfo("Completed", f"Redock analysis completed.\n{results_path}")
+                messagebox.showinfo("Completed", f"Docking analysis completed.\n{results_path}")
                 self._set_status("Run completed")
                 self.last_results_path = Path(results_path)
                 self._safe_call(self._render_results_from_path)(results_path)
@@ -1234,7 +1234,13 @@ class RedockAnalysisApp(tk.Tk):
                             result.rescore_score = rescore.get("score")
                             result.rescore_error = rescore.get("error")
                 results.append(result)
-                self._queue.put(("log", f"{pdb_id} {ligand} RMSD={result.best_rmsd:.2f}"))
+                if result.best_rmsd >= 900 and result.best_score is not None:
+                    self._queue.put((
+                        "log",
+                        f"{pdb_id} {dock_name} score={result.best_score:.2f} site={result.site_method or site_mode}"
+                    ))
+                else:
+                    self._queue.put(("log", f"{pdb_id} {ligand} RMSD={result.best_rmsd:.2f}"))
 
             except Exception as exc:
                 results.append(RedockResult(
@@ -1653,7 +1659,7 @@ class RedockAnalysisApp(tk.Tk):
                 rmsd_values = [v for v in df["best_rmsd"].tolist() if isinstance(v, (int, float)) and v < 900]
 
         dialog = tk.Toplevel(self)
-        dialog.title("Redock Analysis Results")
+        dialog.title("Docking Analysis Results")
         dialog.geometry("900x700")
         dialog.transient(self)
 
@@ -2392,10 +2398,15 @@ class RedockAnalysisApp(tk.Tk):
         }
 
     def _load_reference_mol(self, pdb_file: Path) -> Optional[Chem.Mol]:
-        mol = Chem.MolFromPDBFile(str(pdb_file), removeHs=False)
-        if mol is None:
-            mol = Chem.MolFromPDBFile(str(pdb_file), removeHs=False, sanitize=False)
-        return mol
+        if not pdb_file.exists() or pdb_file.stat().st_size == 0:
+            return None
+        try:
+            mol = Chem.MolFromPDBFile(str(pdb_file), removeHs=False)
+            if mol is None:
+                mol = Chem.MolFromPDBFile(str(pdb_file), removeHs=False, sanitize=False)
+            return mol
+        except Exception:
+            return None
 
     def _load_poses_and_scores(self, docked_file: Path) -> Tuple[List[Chem.Mol], List[Optional[float]]]:
         suffix = docked_file.suffix.lower()
@@ -3822,7 +3833,7 @@ class RedockAnalysisApp(tk.Tk):
     
     def _summary_to_markdown(self, summary: dict) -> str:
         lines = [
-            "# Redock Analysis Summary",
+            "# Docking Analysis Summary",
             "",
             f"- Total cases: {summary.get('total_cases')}",
             f"- RMSD threshold: {summary.get('threshold')}",
