@@ -199,8 +199,26 @@ def get_ensemble_structures(df, pdb_dir):
     return structures
 
 
+def _pdb_fallback_candidates(pdbqt_path: Path):
+    """Return likely sibling PDB files for a receptor PDBQT path."""
+    name = pdbqt_path.name
+    base = None
+    for suffix in ("_prepared.pdbqt", "_prep.pdbqt", "_receptor.pdbqt"):
+        if name.endswith(suffix):
+            base = name[:-len(suffix)]
+            break
+    if base is None and name.endswith(".pdbqt"):
+        base = name[:-6]
+
+    candidates = []
+    if base:
+        candidates.append(pdbqt_path.with_name(f"{base}.pdb"))
+    candidates.append(pdbqt_path.with_suffix(".pdb"))
+    return candidates
+
+
 def calculate_consensus_center(structures):
-    """Calculate consensus grid center from ligand positions in PDBQT files."""
+    """Calculate consensus grid center from ligand positions in PDBQT/PDB files."""
     logger.info("\nCalculating consensus grid center...")
 
     centers = []
@@ -224,21 +242,7 @@ def calculate_consensus_center(structures):
 
         if not coords:
             pdbqt_file = Path(pdbqt_path)
-            name = pdbqt_file.name
-            base = None
-            for suffix in ("_prepared.pdbqt", "_prep.pdbqt", "_receptor.pdbqt"):
-                if name.endswith(suffix):
-                    base = name[:-len(suffix)]
-                    break
-            if base is None and name.endswith(".pdbqt"):
-                base = name[:-6]
-
-            pdb_candidates = []
-            if base:
-                pdb_candidates.append(pdbqt_file.with_name(f"{base}.pdb"))
-            pdb_candidates.append(pdbqt_file.with_suffix(".pdb"))
-
-            pdb_path = next((p for p in pdb_candidates if p.exists()), None)
+            pdb_path = next((p for p in _pdb_fallback_candidates(pdbqt_file) if p.exists()), None)
             if pdb_path:
                 res_counts = {}
                 with open(pdb_path, 'r') as f:
@@ -268,16 +272,71 @@ def calculate_consensus_center(structures):
             logger.warning(f"  Could not extract ligand coords from {Path(pdbqt_path).name}")
     
     if len(centers) == 0:
-        logger.error("Could not extract any ligand positions!")
-        logger.error("Using default center [0, 0, 0] - VERIFY THIS IS CORRECT!")
-        return [0.0, 0.0, 0.0]
+        logger.error("Could not extract any ligand positions.")
+        return None
     
     consensus = np.mean(centers, axis=0)
     std = np.std(centers, axis=0)
     
     logger.info(f"\n  Consensus: ({consensus[0]:.2f}, {consensus[1]:.2f}, {consensus[2]:.2f})")
     logger.info(f"  Std dev: ({std[0]:.2f}, {std[1]:.2f}, {std[2]:.2f})")
-    
+
+    return consensus.tolist()
+
+
+def calculate_protein_centroid(structures):
+    """Calculate consensus center from protein ATOM coordinates (apo-friendly fallback)."""
+    logger.info("\nCalculating consensus grid center from protein centroid...")
+
+    centers = []
+    for structure_path in structures:
+        structure_file = Path(structure_path)
+        coords = []
+
+        with open(structure_file, 'r') as f:
+            for line in f:
+                if not line.startswith('ATOM'):
+                    continue
+                try:
+                    x = float(line[30:38].strip())
+                    y = float(line[38:46].strip())
+                    z = float(line[46:54].strip())
+                    coords.append([x, y, z])
+                except ValueError:
+                    continue
+
+        if not coords:
+            pdb_path = next((p for p in _pdb_fallback_candidates(structure_file) if p.exists()), None)
+            if pdb_path:
+                with open(pdb_path, 'r') as f:
+                    for line in f:
+                        if not line.startswith('ATOM'):
+                            continue
+                        try:
+                            x = float(line[30:38].strip())
+                            y = float(line[38:46].strip())
+                            z = float(line[46:54].strip())
+                            coords.append([x, y, z])
+                        except ValueError:
+                            continue
+
+        if not coords:
+            logger.warning(f"  Could not extract protein ATOM coordinates from {structure_file.name}")
+            continue
+
+        center = np.mean(coords, axis=0)
+        centers.append(center)
+        logger.info(f"  {structure_file.name}: ({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f})")
+
+    if not centers:
+        logger.error("Could not extract protein centroids from any structure.")
+        return None
+
+    consensus = np.mean(centers, axis=0)
+    std = np.std(centers, axis=0)
+    logger.info(f"\n  Consensus protein centroid: ({consensus[0]:.2f}, {consensus[1]:.2f}, {consensus[2]:.2f})")
+    logger.info(f"  Std dev: ({std[0]:.2f}, {std[1]:.2f}, {std[2]:.2f})")
+    logger.warning("Protein centroid is a fallback. Prefer explicit known pocket center when possible.")
     return consensus.tolist()
 
 
@@ -303,6 +362,17 @@ def main():
         '--grid-size', nargs=3, type=float, default=[22, 22, 22],
         metavar=('X', 'Y', 'Z'),
         help='Grid box size (Angstroms)'
+    )
+    parser.add_argument(
+        '--grid-center', nargs=3, type=float, default=None,
+        metavar=('X', 'Y', 'Z'),
+        help='Explicit grid center. Recommended for apo targets without co-crystal ligand.'
+    )
+    parser.add_argument(
+        '--center-mode',
+        choices=['ligand', 'protein'],
+        default='ligand',
+        help='How to infer center when --grid-center is not provided.'
     )
     parser.add_argument(
         '--bootstrap', type=int, default=1000,
@@ -368,7 +438,18 @@ def main():
         return 1
     
     # 4. Calculate grid center
-    grid_center = calculate_consensus_center(ensemble_structures)
+    if args.grid_center is not None:
+        grid_center = [float(v) for v in args.grid_center]
+        logger.info("\nUsing explicit grid center from CLI.")
+    elif args.center_mode == "protein":
+        grid_center = calculate_protein_centroid(ensemble_structures)
+    else:
+        grid_center = calculate_consensus_center(ensemble_structures)
+
+    if grid_center is None:
+        logger.error("Failed to determine grid center.")
+        logger.error("Provide --grid-center X Y Z, or set --center-mode protein for apo fallback.")
+        return 1
     
     # 5. Setup experiment
     logger.info("\n" + "="*70)

@@ -14,6 +14,8 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Optional
 import subprocess
+import tempfile
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -90,11 +92,41 @@ def _rescore_with_smina(
     ligand_pdbqt: Path,
     scoring: str
 ) -> Optional[float]:
+    # smina --score_only expects a single model without MODEL/ENDMDL wrappers
+    ligand_to_score = ligand_pdbqt
+    try:
+        first_model_lines: List[str] = []
+        in_model = False
+        with open(ligand_pdbqt, "r") as handle:
+            for line in handle:
+                if line.startswith("MODEL"):
+                    in_model = True
+                    first_model_lines = []
+                    continue
+                if in_model:
+                    if line.startswith("ENDMDL"):
+                        break
+                    first_model_lines.append(line)
+                elif line.startswith("END"):
+                    break
+        if not first_model_lines:
+            with open(ligand_pdbqt, "r") as handle:
+                for line in handle:
+                    if line.startswith("END"):
+                        break
+                    first_model_lines.append(line)
+        if first_model_lines:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tmp:
+                tmp.write("".join(first_model_lines))
+                ligand_to_score = Path(tmp.name)
+    except Exception:
+        ligand_to_score = ligand_pdbqt
+
     cmd = [
         smina_binary,
         "--score_only",
         "--receptor", str(receptor_pdbqt),
-        "--ligand", str(ligand_pdbqt),
+        "--ligand", str(ligand_to_score),
         "--scoring", scoring
     ]
     try:
@@ -170,6 +202,7 @@ def main() -> int:
     template_path = Path(args.template)
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    out_csv = outdir / "water_rescore_sweep.csv"
 
     supported = _detect_supported_scoring(args.smina)
     if supported:
@@ -196,6 +229,13 @@ def main() -> int:
     )
 
     results = []
+    existing_rows: Dict[tuple, Dict[str, object]] = {}
+    if out_csv.exists():
+        existing_df = pd.read_csv(out_csv)
+        for _, row in existing_df.iterrows():
+            key = (row.get("water_handling"), row.get("compound"))
+            existing_rows[key] = row.to_dict()
+        logger.info("Loaded existing results: {} rows", len(existing_rows))
 
     for water_mode in WATER_MODES:
         logger.info("Water handling: {}", water_mode.value)
@@ -237,42 +277,52 @@ def main() -> int:
             label = f"{pdb_id}_{ligand_name}_{comp['name']}_{water_mode.value}"
             case_dir = outdir / label
             case_dir.mkdir(parents=True, exist_ok=True)
-
-            prepared = ligand_prep.prepare_from_smiles(comp["smiles"], comp["name"], enumerate_states=True)
-            if not prepared:
-                logger.warning("Ligand prep failed: {}", comp["name"])
-                continue
-            ligand_pdbqt = case_dir / f"{comp['name']}.pdbqt"
-            prepared[0].to_pdbqt_file(str(ligand_pdbqt))
-
-            engine = SminaDockingEngine(
-                smina_binary=args.smina,
-                scoring_function="vina",
-                exhaustiveness=args.exhaustiveness,
-                num_modes=args.num_modes,
-                energy_range=args.energy_range,
-                cpu=args.cpu
-            )
+            key = (water_mode.value, comp["name"])
+            existing = existing_rows.get(key, {})
 
             output_pdbqt = case_dir / "docked.pdbqt"
-            docking_result = engine.dock(
-                receptor_path=str(receptor_pdbqt),
-                ligand_path=str(ligand_pdbqt),
-                center=binding_site.center,
-                size=binding_site.size,
-                output_path=str(output_pdbqt)
-            )
+            if not output_pdbqt.exists():
+                prepared = ligand_prep.prepare_from_smiles(comp["smiles"], comp["name"], enumerate_states=True)
+                if not prepared:
+                    logger.warning("Ligand prep failed: {}", comp["name"])
+                    continue
+                ligand_pdbqt = case_dir / f"{comp['name']}.pdbqt"
+                prepared[0].to_pdbqt_file(str(ligand_pdbqt))
+
+                engine = SminaDockingEngine(
+                    smina_binary=args.smina,
+                    scoring_function="vina",
+                    exhaustiveness=args.exhaustiveness,
+                    num_modes=args.num_modes,
+                    energy_range=args.energy_range,
+                    cpu=args.cpu
+                )
+
+                docking_result = engine.dock(
+                    receptor_path=str(receptor_pdbqt),
+                    ligand_path=str(ligand_pdbqt),
+                    center=binding_site.center,
+                    size=binding_site.size,
+                    output_path=str(output_pdbqt)
+                )
+            else:
+                docking_result = None
 
             row = {
                 "water_handling": water_mode.value,
                 "compound": comp["name"],
                 "is_active": comp["is_active"],
-                "dock_score": docking_result.best_score if docking_result else None,
-                "output_file": str(output_pdbqt) if output_pdbqt.exists() else None
+                "dock_score": docking_result.best_score if docking_result else existing.get("dock_score"),
+                "output_file": str(output_pdbqt) if output_pdbqt.exists() else existing.get("output_file"),
+                "updated_at": datetime.utcnow().isoformat()
             }
 
             if output_pdbqt.exists():
                 for method in rescore_methods:
+                    existing_val = existing.get(f"rescore_{method}")
+                    if existing_val is not None and not pd.isna(existing_val):
+                        row[f"rescore_{method}"] = existing_val
+                        continue
                     score = _rescore_with_smina(
                         smina_binary=args.smina,
                         receptor_pdbqt=receptor_pdbqt,
@@ -283,7 +333,6 @@ def main() -> int:
 
             results.append(row)
 
-    out_csv = outdir / "water_rescore_sweep.csv"
     pd.DataFrame(results).to_csv(out_csv, index=False)
     logger.info("Saved results: {}", out_csv)
     return 0

@@ -32,7 +32,7 @@ from docking_platform_gui.utils.redock_analysis_fixed import RedockAnalyzer
 from Bio import PDB
 
 from docking_platform_gui.adaptive_docking import AdaptiveDockingPipeline
-from docking_platform_gui.binding_site.cocrystal import BindingSiteDefinition
+from docking_platform_gui.binding_site.cocrystal import BindingSite, BindingSiteDefinition
 from docking_platform_gui.docking.smina import SminaDockingEngine
 from docking_platform_gui.gui.utils import download_pdb_structure
 from docking_platform_gui.gui.widgets.progress_dialog import ProgressDialog
@@ -101,6 +101,7 @@ class RedockResult:
     rescore_cnn_score: Optional[float] = None
     rescore_cnn_affinity: Optional[float] = None
     rescore_error: Optional[str] = None
+    site_method: Optional[str] = None
 
 
 class RedockAnalysisApp(tk.Tk):
@@ -136,6 +137,9 @@ class RedockAnalysisApp(tk.Tk):
 
         self.engine_var = tk.StringVar(value="vina")
         self.box_margin_var = tk.StringVar(value="4.0")
+        self.apo_site_mode_var = tk.StringVar(value="auto")
+        self.site_definition_mode_var = tk.StringVar(value="auto")
+        self.site_residues_var = tk.StringVar()
         self.size_x_var = tk.StringVar()
         self.size_y_var = tk.StringVar()
         self.size_z_var = tk.StringVar()
@@ -320,6 +324,15 @@ class RedockAnalysisApp(tk.Tk):
         )
         mode_single.pack(side="left")
         self._register_busy_widget(mode_single)
+        mode_screening = tk.Radiobutton(
+            mode_frame,
+            text="Screening",
+            variable=self.mode_var,
+            value="screening",
+            command=self._update_mode
+        )
+        mode_screening.pack(side="left", padx=(10, 0))
+        self._register_busy_widget(mode_screening)
 
         row += 1
         tk.Label(container, text="RMSD threshold (A):").grid(row=row, column=0, sticky="w")
@@ -574,6 +587,27 @@ class RedockAnalysisApp(tk.Tk):
         rdock_radius_entry.grid(row=2, column=1, sticky="w")
         self._register_busy_widget(rdock_radius_entry)
 
+        tk.Label(self.single_frame, text="Site definition:").grid(row=11, column=0, sticky="w", pady=(8, 0))
+        site_definition_menu = ttk.Combobox(
+            self.single_frame,
+            textvariable=self.site_definition_mode_var,
+            values=["auto", "cocrystal_ligand", "detected_pocket", "specified_residues", "protein_centroid"],
+            state="readonly",
+            width=18
+        )
+        site_definition_menu.grid(row=11, column=1, sticky="w", pady=(8, 0))
+        self._register_busy_widget(site_definition_menu)
+        tk.Label(
+            self.single_frame,
+            text="Auto uses Ligand column, then residues, then pocket detection",
+            fg="#666666"
+        ).grid(row=11, column=2, columnspan=2, sticky="w", pady=(8, 0))
+
+        tk.Label(self.single_frame, text="Site residues:").grid(row=12, column=0, sticky="w", pady=(5, 0))
+        site_residues_entry = tk.Entry(self.single_frame, textvariable=self.site_residues_var)
+        site_residues_entry.grid(row=12, column=1, columnspan=3, sticky="ew", pady=(5, 0))
+        self._register_busy_widget(site_residues_entry)
+
         row += 1
         button_frame = tk.Frame(container)
         button_frame.grid(row=row, column=0, columnspan=3, sticky="e", pady=(15, 0))
@@ -691,7 +725,7 @@ class RedockAnalysisApp(tk.Tk):
         sample_enabled = self.sample_enable_var.get()
         sample_size_raw = self.sample_size_var.get()
         include_controls = self.sample_include_controls_var.get()
-        use_smiles = self.use_smiles_var.get()
+        use_smiles = self.use_smiles_var.get() or self.mode_var.get() == "screening"
 
         if not excel_path.exists():
             self.pairs_label_var.set("Loaded pairs: 0")
@@ -818,7 +852,7 @@ class RedockAnalysisApp(tk.Tk):
                     excel_path,
                     exclude_additives=self.exclude_additives_var.get(),
                     exclude_cofactors=self.exclude_cofactors_var.get(),
-                    use_smiles=self.use_smiles_var.get(),
+                    use_smiles=self.use_smiles_var.get() or config["mode"] == "screening",
                     include_controls=include_controls
                 )
             except Exception as exc:
@@ -837,6 +871,16 @@ class RedockAnalysisApp(tk.Tk):
                     sample_seed,
                     include_controls=include_controls
                 )
+
+            if config["mode"] == "adaptive":
+                non_cocrystal_rows = sum(1 for p in pairs if p.get("site_mode") != "cocrystal")
+                if non_cocrystal_rows:
+                    msg = (
+                        f"Found {non_cocrystal_rows} rows without a co-crystal site ligand. "
+                        "Adaptive mode requires a co-crystal ligand. Use Single or Screening mode."
+                    )
+                    self._run_on_ui(lambda m=msg: self._start_run_failed("Mode mismatch", m))
+                    return
 
             self._run_on_ui(lambda: self._begin_run(pairs, col_info, config))
 
@@ -924,7 +968,7 @@ class RedockAnalysisApp(tk.Tk):
             self._ui_queue.put(func)
 
     def _collect_single_config(self) -> Optional[dict]:
-        if self.mode_var.get() != "single":
+        if self.mode_var.get() not in ("single", "screening"):
             return {}
 
         variant_mode, variant_select_by = self._variant_config()
@@ -1003,6 +1047,9 @@ class RedockAnalysisApp(tk.Tk):
         return {
             "engine": engine,
             "box_margin": box_margin,
+            "apo_site_mode": self.apo_site_mode_var.get(),
+            "site_definition_mode": self.site_definition_mode_var.get(),
+            "site_residues": self.site_residues_var.get().strip(),
             "size_override": size_override,
             "water_handling": self.water_handling_var.get(),
             "exhaustiveness": exhaustiveness,
@@ -1088,8 +1135,24 @@ class RedockAnalysisApp(tk.Tk):
 
             pdb_id = item["pdb_id"]
             ligand = item["ligand"]
-            site_ligand = item.get("site_ligand") or ligand
+            site_ligand = item.get("site_ligand")
             dock_name = item.get("dock_name") or ligand
+            site_mode = item.get("site_mode") or ("cocrystal" if site_ligand else "prediction")
+            pocket_center = item.get("pocket_center")
+            site_residues = item.get("site_residues")
+            single_cfg = dict(config.get("single", {}))
+            single_site_mode = single_cfg.get("site_definition_mode", "auto")
+            if single_site_mode == "cocrystal_ligand":
+                site_mode = "cocrystal"
+            elif single_site_mode == "detected_pocket":
+                site_mode = "prediction"
+                single_cfg["apo_site_mode"] = "fpocket"
+            elif single_site_mode == "specified_residues":
+                site_mode = "residues"
+                site_residues = site_residues or single_cfg.get("site_residues")
+            elif single_site_mode == "protein_centroid":
+                site_mode = "prediction"
+                single_cfg["apo_site_mode"] = "protein_centroid"
             chain = item.get("chain")
             control_label = item.get("control_label")
             self._queue.put(("progress", idx, len(pairs), f"{pdb_id} {ligand}"))
@@ -1100,22 +1163,34 @@ class RedockAnalysisApp(tk.Tk):
 
             try:
                 pdb_file = self._download_pdb(pdb_id, output_dir / "pdbs")
-                ligand_chain = chain or self._detect_ligand_chain(pdb_file, site_ligand)
-                if not ligand_chain:
-                    raise ValueError("Ligand chain not found")
+                if site_mode == "cocrystal":
+                    if not site_ligand:
+                        raise ValueError("Co-crystal mode requires a ligand residue name")
+                    ligand_chain = chain or self._detect_ligand_chain(pdb_file, site_ligand)
+                    if not ligand_chain:
+                        raise ValueError("Ligand chain not found")
+                else:
+                    ligand_chain = chain or ""
 
                 smiles = item.get("smiles")
                 if smiles:
                     smiles = str(smiles).strip()
                     if not smiles or smiles.lower() == "nan":
                         smiles = None
-                if not smiles:
+                if not smiles and site_ligand:
                     smiles = self._get_ligand_smiles(pdb_file, site_ligand, ligand_chain, output_dir)
                 if not smiles:
-                    raise ValueError("Could not resolve ligand SMILES")
+                    raise ValueError(
+                        "Could not resolve ligand SMILES. Provide a SMILES column for apo/pocket-detection rows."
+                    )
                 ligand_charge = self._get_ligand_charge(smiles)
 
                 if config["mode"] == "adaptive":
+                    if site_mode != "cocrystal":
+                        raise ValueError(
+                            "Adaptive mode requires a co-crystal ligand. "
+                            "Use Single mode for apo pocket-detection workflows."
+                        )
                     result = self._run_adaptive_case(
                         pdb_file,
                         dock_name,
@@ -1134,8 +1209,12 @@ class RedockAnalysisApp(tk.Tk):
                         smiles,
                         case_dir,
                         config["threshold"],
-                        config["single"],
-                        ligand_resname=site_ligand
+                        single_cfg,
+                        ligand_resname=site_ligand,
+                        site_mode=site_mode,
+                        pocket_center=pocket_center,
+                        site_residues=site_residues,
+                        run_mode=config["mode"]
                     )
                 result.control_label = control_label
                 result.ligand_charge = ligand_charge
@@ -1160,7 +1239,7 @@ class RedockAnalysisApp(tk.Tk):
             except Exception as exc:
                 results.append(RedockResult(
                     pdb_id=pdb_id,
-                    ligand_resname=site_ligand,
+                    ligand_resname=site_ligand or ligand,
                     ligand_chain=chain or "",
                     mode=config["mode"],
                     engine=config["single"].get("engine", "adaptive"),
@@ -1170,7 +1249,8 @@ class RedockAnalysisApp(tk.Tk):
                     runtime_sec=0.0,
                     error_message=str(exc),
                     control_label=control_label,
-                    dock_name=dock_name
+                    dock_name=dock_name,
+                    site_method=site_mode
                 ))
                 self._queue.put(("log", f"{pdb_id} {ligand} failed: {exc}"))
 
@@ -1268,19 +1348,24 @@ class RedockAnalysisApp(tk.Tk):
             protocols_success=sum(1 for attempt in all_results if attempt.success),
             protocol_attempts=protocol_attempts,
             error_message=best_result.error_message,
-            dock_name=ligand_name
+            dock_name=ligand_name,
+            site_method="cocrystal"
         )
 
     def _run_single_case(
         self,
         pdb_file: Path,
         ligand_name: str,
-        ligand_chain: str,
+        ligand_chain: Optional[str],
         smiles: str,
         case_dir: Path,
         threshold: float,
         single_cfg: dict,
-        ligand_resname: Optional[str] = None
+        ligand_resname: Optional[str] = None,
+        site_mode: str = "cocrystal",
+        pocket_center: Optional[Tuple[float, float, float]] = None,
+        site_residues: Optional[str] = None,
+        run_mode: str = "single"
     ) -> RedockResult:
         engine_name = single_cfg["engine"]
         pipeline = AdaptiveDockingPipeline(
@@ -1300,11 +1385,6 @@ class RedockAnalysisApp(tk.Tk):
             pdb_file,
             water_handling=single_cfg["water_handling"]
         )
-        crystal_ligand_pdb = pipeline._extract_crystal_ligand(
-            pdb_file,
-            ligand_resname or ligand_name,
-            ligand_chain
-        )
 
         enumerate_states = not pipeline._contains_metal(smiles)
         variants = pipeline._prepare_ligand_variants(
@@ -1318,14 +1398,49 @@ class RedockAnalysisApp(tk.Tk):
         elif variant_mode == "first":
             variants = variants[:1]
 
-        binding_site = BindingSiteDefinition(margin=single_cfg["box_margin"]).from_cocrystal(
-            pdb_file,
-            ligand_resname=ligand_resname or ligand_name,
-            ligand_chain=ligand_chain
-        )
+        binding_site: BindingSite
         size_override = single_cfg["size_override"]
-        if size_override:
-            binding_site.size = size_override
+        if site_mode == "cocrystal":
+            crystal_ligand_pdb = pipeline._extract_crystal_ligand(
+                pdb_file,
+                ligand_resname or ligand_name,
+                ligand_chain
+            )
+            binding_site = BindingSiteDefinition(margin=single_cfg["box_margin"]).from_cocrystal(
+                pdb_file,
+                ligand_resname=ligand_resname or ligand_name,
+                ligand_chain=ligand_chain
+            )
+            if size_override is not None:
+                binding_site.size = size_override
+            site_method = "cocrystal"
+        elif site_mode == "residues":
+            crystal_ligand_pdb = case_dir / "crystal_ligand.pdb"
+            binding_site, site_method = self._binding_site_from_residues(
+                pdb_path=pdb_file,
+                residues_text=site_residues or "",
+                box_margin=single_cfg["box_margin"],
+                size_override=size_override,
+                default_chain=ligand_chain
+            )
+            self._queue.put(
+                ("log", f"{pdb_file.stem.upper()} {ligand_name} site={site_method} "
+                        f"center=({binding_site.center[0]:.2f},{binding_site.center[1]:.2f},{binding_site.center[2]:.2f})")
+            )
+        else:
+            crystal_ligand_pdb = case_dir / "crystal_ligand.pdb"
+            binding_site, site_method = self._predict_binding_site(
+                pdb_path=pdb_file,
+                case_dir=case_dir,
+                box_margin=single_cfg["box_margin"],
+                size_override=size_override,
+                apo_site_mode=single_cfg.get("apo_site_mode", "auto"),
+                manual_center=pocket_center
+            )
+            self._queue.put(
+                ("log", f"{pdb_file.stem.upper()} {ligand_name} site={site_method} "
+                        f"center=({binding_site.center[0]:.2f},{binding_site.center[1]:.2f},{binding_site.center[2]:.2f})")
+            )
 
         start = time.time()
         variant_results = []
@@ -1425,8 +1540,8 @@ class RedockAnalysisApp(tk.Tk):
         return RedockResult(
             pdb_id=pdb_file.stem.upper(),
             ligand_resname=ligand_resname or ligand_name,
-            ligand_chain=ligand_chain,
-            mode="single",
+            ligand_chain=ligand_chain or "",
+            mode=run_mode,
             engine=engine_name,
             protocol="single",
             best_rmsd=rmsd,
@@ -1447,7 +1562,8 @@ class RedockAnalysisApp(tk.Tk):
             near_native_fraction=metrics.get("near_native_fraction"),
             score_rmsd_pearson=metrics.get("score_rmsd_pearson"),
             score_rmsd_spearman=metrics.get("score_rmsd_spearman"),
-            error_message=None
+            error_message=None,
+            site_method=site_method
         )
 
     def _write_progress(self, progress_path: Path, results: List[RedockResult]) -> None:
@@ -1886,6 +2002,216 @@ class RedockAnalysisApp(tk.Tk):
             return int(Chem.GetFormalCharge(mol))
         except Exception:
             return None
+
+    def _parse_pdb_coords(
+        self,
+        pdb_path: Path,
+        record_types: Tuple[str, ...] = ("ATOM", "HETATM")
+    ) -> np.ndarray:
+        coords: List[List[float]] = []
+        with open(pdb_path) as handle:
+            for line in handle:
+                if not line.startswith(record_types):
+                    continue
+                try:
+                    x = float(line[30:38].strip())
+                    y = float(line[38:46].strip())
+                    z = float(line[46:54].strip())
+                except ValueError:
+                    continue
+                coords.append([x, y, z])
+        return np.asarray(coords, dtype=float) if coords else np.empty((0, 3), dtype=float)
+
+    def _protein_centroid(self, pdb_path: Path) -> np.ndarray:
+        coords = self._parse_pdb_coords(pdb_path, record_types=("ATOM",))
+        if coords.size == 0:
+            raise ValueError(f"No ATOM coordinates found in {pdb_path.name}")
+        return coords.mean(axis=0)
+
+    def _parse_site_residue_specs(
+        self,
+        residues_text: str,
+        default_chain: Optional[str] = None
+    ) -> List[Tuple[Optional[str], int]]:
+        specs: List[Tuple[Optional[str], int]] = []
+        for raw in re.split(r"[,;\s]+", residues_text.strip()):
+            token = raw.strip()
+            if not token:
+                continue
+            if token.isdigit():
+                specs.append((default_chain or None, int(token)))
+                continue
+            match = re.match(r"^([A-Za-z0-9])[:_-](\d+)$", token)
+            if match:
+                specs.append((match.group(1), int(match.group(2))))
+                continue
+            match = re.match(r"^([A-Za-z])(\d+)$", token)
+            if match:
+                specs.append((match.group(1), int(match.group(2))))
+                continue
+            match = re.match(r"^(\d+)([A-Za-z0-9])$", token)
+            if match:
+                specs.append((match.group(2), int(match.group(1))))
+                continue
+            raise ValueError(f"Invalid residue spec '{token}'. Use A:118, A118, 118A, or 118.")
+        if not specs:
+            raise ValueError("No site residues provided")
+        return specs
+
+    def _binding_site_from_residues(
+        self,
+        pdb_path: Path,
+        residues_text: str,
+        box_margin: float,
+        size_override: Optional[np.ndarray],
+        default_chain: Optional[str] = None
+    ) -> Tuple[BindingSite, str]:
+        specs = self._parse_site_residue_specs(residues_text, default_chain=default_chain)
+        spec_set = set(specs)
+        coords: List[List[float]] = []
+
+        parser = PDB.PDBParser(QUIET=True)
+        structure = parser.get_structure("protein", str(pdb_path))
+        for model in structure:
+            for chain in model:
+                chain_id = chain.id.strip() or None
+                for residue in chain:
+                    resseq = residue.id[1]
+                    if (chain_id, resseq) not in spec_set and (None, resseq) not in spec_set:
+                        continue
+                    for atom in residue.get_atoms():
+                        if atom.element == "H":
+                            continue
+                        coord = atom.get_coord()
+                        coords.append([float(coord[0]), float(coord[1]), float(coord[2])])
+            break
+
+        if not coords:
+            formatted = ",".join(f"{chain or '*'}:{resnum}" for chain, resnum in specs)
+            raise ValueError(f"No atoms found for site residues: {formatted}")
+
+        arr = np.asarray(coords, dtype=float)
+        center = arr.mean(axis=0)
+        extent = arr.max(axis=0) - arr.min(axis=0)
+        size = size_override if size_override is not None else np.clip(extent + (2.0 * float(box_margin)), 18.0, 40.0)
+        method = "residues:" + ",".join(f"{chain or '*'}:{resnum}" for chain, resnum in specs)
+
+        return (
+            BindingSite(
+                center=np.asarray(center, dtype=float),
+                size=np.asarray(size, dtype=float),
+                ligand_resname="RES",
+                ligand_chain=default_chain or "",
+                ligand_atoms=len(coords),
+                source_pdb=str(pdb_path)
+            ),
+            method
+        )
+
+    def _detect_fpocket_center(
+        self,
+        pdb_path: Path,
+        case_dir: Path,
+        box_margin: float
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, str]]:
+        fpocket_bin = shutil.which("fpocket")
+        if not fpocket_bin:
+            return None
+
+        fpocket_input = case_dir / "fpocket_input.pdb"
+        shutil.copy2(pdb_path, fpocket_input)
+
+        fpocket_out = case_dir / f"{fpocket_input.stem}_out"
+        if fpocket_out.exists():
+            shutil.rmtree(fpocket_out, ignore_errors=True)
+
+        try:
+            result = subprocess.run(
+                [fpocket_bin, "-f", str(fpocket_input)],
+                cwd=case_dir,
+                capture_output=True,
+                text=True,
+                timeout=600
+            )
+        except Exception as exc:
+            logger.warning("fpocket failed to launch: {}", exc)
+            return None
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip().splitlines()
+            msg = stderr[-1] if stderr else "unknown error"
+            logger.warning("fpocket failed: {}", msg)
+            return None
+
+        pockets_dir = fpocket_out / "pockets"
+        if not pockets_dir.exists():
+            logger.warning("fpocket output missing pockets directory: {}", pockets_dir)
+            return None
+
+        pocket_files = sorted(pockets_dir.glob("pocket*_atm.pdb"), key=lambda p: p.name)
+        if not pocket_files:
+            logger.warning("fpocket produced no pocket*_atm.pdb files")
+            return None
+
+        def _pocket_rank(path: Path) -> int:
+            m = re.search(r"pocket(\d+)_atm\.pdb", path.name)
+            return int(m.group(1)) if m else 10_000
+
+        pocket_file = sorted(pocket_files, key=_pocket_rank)[0]
+        pocket_coords = self._parse_pdb_coords(pocket_file, record_types=("ATOM", "HETATM"))
+        if pocket_coords.size == 0:
+            logger.warning("fpocket top pocket had no coordinates: {}", pocket_file.name)
+            return None
+
+        center = pocket_coords.mean(axis=0)
+        extent = pocket_coords.max(axis=0) - pocket_coords.min(axis=0)
+        size = np.clip(extent + (2.0 * float(box_margin)), 18.0, 40.0)
+        return center, size, f"fpocket:{pocket_file.name}"
+
+    def _predict_binding_site(
+        self,
+        pdb_path: Path,
+        case_dir: Path,
+        box_margin: float,
+        size_override: Optional[np.ndarray],
+        apo_site_mode: str,
+        manual_center: Optional[Tuple[float, float, float]]
+    ) -> Tuple[BindingSite, str]:
+        if manual_center is not None:
+            center = np.asarray(manual_center, dtype=float)
+            size = size_override if size_override is not None else np.array([22.0, 22.0, 22.0], dtype=float)
+            method = "manual_center"
+        else:
+            fpocket_result = None
+            if apo_site_mode in {"auto", "fpocket"}:
+                fpocket_result = self._detect_fpocket_center(
+                    pdb_path=pdb_path,
+                    case_dir=case_dir,
+                    box_margin=box_margin
+                )
+
+            if fpocket_result is not None:
+                center, fpocket_size, method = fpocket_result
+                size = size_override if size_override is not None else fpocket_size
+            else:
+                if apo_site_mode == "fpocket":
+                    raise ValueError(
+                        "Apo site mode is 'fpocket' but fpocket failed or is unavailable. "
+                        "Install fpocket or switch to 'auto'/'protein_centroid'."
+                    )
+                center = self._protein_centroid(pdb_path)
+                size = size_override if size_override is not None else np.array([24.0, 24.0, 24.0], dtype=float)
+                method = "protein_centroid"
+
+        site = BindingSite(
+            center=np.asarray(center, dtype=float),
+            size=np.asarray(size, dtype=float),
+            ligand_resname="POC",
+            ligand_chain="A",
+            ligand_atoms=0,
+            source_pdb=str(pdb_path)
+        )
+        return site, method
 
     def _resolve_smina_binary(self, candidate: Optional[str]) -> Optional[str]:
         if candidate:
@@ -3326,6 +3652,7 @@ class RedockAnalysisApp(tk.Tk):
                 'score_rmsd_spearman': r.score_rmsd_spearman,
                 'control_label': r.control_label,
                 'ligand_charge': r.ligand_charge,
+                'site_method': r.site_method,
             })
         
         df = pd.DataFrame(results_data)
@@ -3422,6 +3749,34 @@ class RedockAnalysisApp(tk.Tk):
                 "by_protocol": {},
                 "by_engine": {},
             }
+
+        # Override/augment enrichment from explicit control labels.
+        # This supports apo validation where RMSD is intentionally unavailable.
+        score_labels: List[Tuple[float, int]] = []
+        for result in results:
+            if result.control_label not in (0, 1):
+                continue
+            rank_score = self._rank_score_value(result)
+            if rank_score is None:
+                continue
+            score_labels.append((rank_score, int(result.control_label)))
+
+        enrichment = self._compute_enrichment_metrics(score_labels)
+        if enrichment:
+            summary["control_actives"] = enrichment["actives"]
+            summary["control_decoys"] = enrichment["decoys"]
+            summary["roc_auc"] = enrichment["roc_auc"]
+            summary["log_auc"] = enrichment["log_auc"]
+
+            ranked = sorted(score_labels, key=lambda item: item[0], reverse=True)
+            n_total = len(ranked)
+            n_actives = max(1, enrichment["actives"])
+            for pct, key in ((1.0, "ef_1_percent"), (5.0, "ef_5_percent"), (10.0, "ef_10_percent")):
+                n_select = max(1, int(math.ceil(n_total * pct / 100.0)))
+                top = ranked[:n_select]
+                actives_found = sum(label for _, label in top)
+                ef = (actives_found / n_select) / (n_actives / n_total)
+                summary[key] = float(ef)
         
         # Calculate protocol/engine breakdown (only for actives with valid RMSD)
         actives = [
@@ -3758,13 +4113,24 @@ class RedockAnalysisApp(tk.Tk):
         smiles_col = self._find_col(col_map, ["smiles", "smile", "smiles_string", "smilesstring"])
         decoy_smiles_col = self._find_col(col_map, ["decoy_smiles", "decoysmiles", "decoy_smile", "decoysmile"])
         decoy_compound_col = self._find_col(col_map, ["decoy_compound", "decoycompound", "decoy"])
+        center_x_col = self._find_col(col_map, ["pocket_center_x", "site_center_x", "grid_center_x", "center_x"])
+        center_y_col = self._find_col(col_map, ["pocket_center_y", "site_center_y", "grid_center_y", "center_y"])
+        center_z_col = self._find_col(col_map, ["pocket_center_z", "site_center_z", "grid_center_z", "center_z"])
+        site_residues_col = self._find_col(
+            col_map,
+            ["site_residues", "siteresidues", "pocket_residues", "binding_site_residues", "residues"]
+        )
 
-        if pdb_col is None or ligand_col is None:
-            if len(df.columns) >= 2:
+        if pdb_col is None:
+            if len(df.columns) >= 1:
                 pdb_col = df.columns[0]
+            else:
+                raise ValueError("Could not detect PDB column in Excel file")
+        if ligand_col is None and not use_smiles:
+            if len(df.columns) >= 2:
                 ligand_col = df.columns[1]
             else:
-                raise ValueError("Could not detect PDB and ligand columns in Excel file")
+                raise ValueError("Could not detect ligand column in Excel file")
 
         invalid_tokens = {"NAN", "NONE", "NA", "N/A", ""}
         pairs = []
@@ -3787,14 +4153,16 @@ class RedockAnalysisApp(tk.Tk):
             control_label: Optional[int],
             dock_name: Optional[str],
             site_ligand: Optional[str],
-            case_id: Optional[str]
+            case_id: Optional[str],
+            pocket_center: Optional[Tuple[float, float, float]],
+            site_residues: Optional[str]
         ) -> None:
             is_control = control_label is not None
-            if exclude_additives and ligand in ADDITIVES_ONLY and not (include_controls and is_control):
+            if site_ligand and exclude_additives and site_ligand in ADDITIVES_ONLY and not (include_controls and is_control):
                 return
-            if exclude_cofactors and ligand in COFACTORS and not (include_controls and is_control):
+            if site_ligand and exclude_cofactors and site_ligand in COFACTORS and not (include_controls and is_control):
                 return
-            key = (pdb_id, ligand, smiles, control_label, dock_name or "")
+            key = (pdb_id, ligand, smiles, control_label, dock_name or "", site_ligand, pocket_center, site_residues)
             if key in seen:
                 return
             seen.add(key)
@@ -3806,16 +4174,37 @@ class RedockAnalysisApp(tk.Tk):
                 "smiles": smiles,
                 "dock_name": dock_name,
                 "site_ligand": site_ligand,
-                "case_id": case_id
+                "case_id": case_id,
+                "site_mode": "residues" if site_residues else ("cocrystal" if site_ligand else "prediction"),
+                "pocket_center": pocket_center,
+                "site_residues": site_residues
             })
+
+        def _parse_center_value(value: object) -> Optional[float]:
+            if value is None:
+                return None
+            if isinstance(value, float) and np.isnan(value):
+                return None
+            text = str(value).strip()
+            if not text or text.lower() == "nan":
+                return None
+            try:
+                return float(text)
+            except ValueError:
+                return None
 
         for _, row in df.iterrows():
             pdb_id = str(row[pdb_col]).strip().upper()
-            ligand = str(row[ligand_col]).strip().upper()
+            ligand_text = ""
+            if ligand_col:
+                ligand_value = row.get(ligand_col)
+                if not pd.isna(ligand_value):
+                    ligand_text = str(ligand_value).strip().upper()
             if not pdb_id or pdb_id in invalid_tokens or len(pdb_id) != 4:
                 continue
-            if not ligand or ligand in invalid_tokens:
-                continue
+
+            site_ligand = None if (not ligand_text or ligand_text in invalid_tokens) else ligand_text
+            ligand = site_ligand or "APO"
 
             chain = None
             if chain_col:
@@ -3823,11 +4212,26 @@ class RedockAnalysisApp(tk.Tk):
                 if chain_val and chain_val != "NAN":
                     chain = chain_val
 
+            pocket_center = None
+            if center_x_col and center_y_col and center_z_col:
+                cx = _parse_center_value(row.get(center_x_col))
+                cy = _parse_center_value(row.get(center_y_col))
+                cz = _parse_center_value(row.get(center_z_col))
+                if cx is not None and cy is not None and cz is not None:
+                    pocket_center = (cx, cy, cz)
+            site_residues = None
+            if site_residues_col:
+                residue_value = row.get(site_residues_col)
+                if not pd.isna(residue_value):
+                    residue_text = str(residue_value).strip()
+                    if residue_text and residue_text.lower() != "nan":
+                        site_residues = residue_text
+
             if decoy_smiles_col and label_col is None:
                 active_name = ligand
                 if target_ligand_col:
                     active_text = str(row[target_ligand_col]).strip()
-                    if active_text and active_text != "NAN":
+                    if active_text and active_text.upper() not in invalid_tokens:
                         active_name = active_text
                 active_smiles = None
                 if use_smiles and smiles_col:
@@ -3849,8 +4253,10 @@ class RedockAnalysisApp(tk.Tk):
                         smiles=active_smiles,
                         control_label=1,
                         dock_name=active_name,
-                        site_ligand=ligand,
-                        case_id=f"{pdb_id}_{ligand}_{active_name}"
+                        site_ligand=site_ligand,
+                        case_id=f"{pdb_id}_{ligand}_{active_name}",
+                        pocket_center=pocket_center,
+                        site_residues=site_residues
                     )
                     for j, decoy_smiles in enumerate(decoy_smiles_list, 1):
                         decoy_name = decoy_name_list[j - 1] if j - 1 < len(decoy_name_list) else f"decoy_{j}"
@@ -3861,8 +4267,10 @@ class RedockAnalysisApp(tk.Tk):
                             smiles=decoy_smiles,
                             control_label=0,
                             dock_name=decoy_name,
-                            site_ligand=ligand,
-                            case_id=f"{pdb_id}_{ligand}_{decoy_name}"
+                            site_ligand=site_ligand,
+                            case_id=f"{pdb_id}_{ligand}_{decoy_name}",
+                            pocket_center=pocket_center,
+                            site_residues=site_residues
                         )
                 else:
                     # No decoy provided: treat as regular (non-control) docking case
@@ -3873,8 +4281,10 @@ class RedockAnalysisApp(tk.Tk):
                         smiles=active_smiles,
                         control_label=None,
                         dock_name=active_name,
-                        site_ligand=ligand,
-                        case_id=f"{pdb_id}_{ligand}_{active_name}"
+                        site_ligand=site_ligand,
+                        case_id=f"{pdb_id}_{ligand}_{active_name}",
+                        pocket_center=pocket_center,
+                        site_residues=site_residues
                     )
                 continue
 
@@ -3890,15 +4300,25 @@ class RedockAnalysisApp(tk.Tk):
             if label_col:
                 control_label = self._parse_control_label(row[label_col])
 
+            dock_name = ligand
+            if target_ligand_col:
+                target_value = row.get(target_ligand_col)
+                if not pd.isna(target_value):
+                    target_text = str(target_value).strip()
+                    if target_text and target_text.upper() not in invalid_tokens:
+                        dock_name = target_text
+
             _add_pair(
                 pdb_id=pdb_id,
                 ligand=ligand,
                 chain=chain,
                 smiles=smiles,
                 control_label=control_label,
-                dock_name=ligand,
-                site_ligand=ligand,
-                case_id=f"{pdb_id}_{ligand}"
+                dock_name=dock_name,
+                site_ligand=site_ligand,
+                case_id=f"{pdb_id}_{ligand}_{dock_name}" if dock_name != ligand else f"{pdb_id}_{ligand}",
+                pocket_center=pocket_center,
+                site_residues=site_residues
             )
 
         return pairs, {
@@ -3909,7 +4329,11 @@ class RedockAnalysisApp(tk.Tk):
             "smiles_col": smiles_col,
             "decoy_smiles_col": decoy_smiles_col,
             "decoy_compound_col": decoy_compound_col,
-            "target_ligand_col": target_ligand_col
+            "target_ligand_col": target_ligand_col,
+            "center_x_col": center_x_col,
+            "center_y_col": center_y_col,
+            "center_z_col": center_z_col,
+            "site_residues_col": site_residues_col
         }
 
     def _norm_col(self, name: str) -> str:
