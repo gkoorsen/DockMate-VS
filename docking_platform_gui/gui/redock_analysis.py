@@ -180,6 +180,8 @@ class RedockAnalysisApp(tk.Tk):
         self._busy_widget_states: Dict[tk.Widget, Optional[str]] = {}
         self._pair_count_job = None
         self._pair_count_request_id = 0
+        self._variant_all_rmsd_btn: Optional[tk.Radiobutton] = None
+        self._rmsd_variant_available = True
 
         self._load_filter_config()
         self._build_ui()
@@ -393,6 +395,7 @@ class RedockAnalysisApp(tk.Tk):
             value="all_rmsd"
         )
         variant_all_rmsd.grid(row=4, column=0, sticky="w", pady=2)
+        self._variant_all_rmsd_btn = variant_all_rmsd
         self._register_busy_widget(variant_all_rmsd)
 
         # Keep best score (for backward compatibility)
@@ -729,6 +732,7 @@ class RedockAnalysisApp(tk.Tk):
 
         if not excel_path.exists():
             self.pairs_label_var.set("Loaded pairs: 0")
+            self._set_rmsd_variant_available(True)
             return
 
         self.pairs_label_var.set("Loaded pairs: ...")
@@ -743,6 +747,7 @@ class RedockAnalysisApp(tk.Tk):
                     include_controls=include_controls
                 )
                 total = len(pairs)
+                rmsd_variant_available = any(p.get("site_ligand") for p in pairs)
                 controls_count = sum(1 for p in pairs if p.get("control_label") is not None)
                 non_controls_count = total - controls_count
                 if sample_enabled:
@@ -775,12 +780,14 @@ class RedockAnalysisApp(tk.Tk):
                     label = f"Loaded pairs: {total}"
             except Exception as exc:
                 label = "Loaded pairs: 0"
+                rmsd_variant_available = True
                 logger.debug("Failed to parse Excel: {}", exc)
 
             def _apply():
                 if request_id != self._pair_count_request_id:
                     return
                 self.pairs_label_var.set(label)
+                self._set_rmsd_variant_available(rmsd_variant_available)
 
             self._run_on_ui(_apply)
 
@@ -872,6 +879,15 @@ class RedockAnalysisApp(tk.Tk):
                     include_controls=include_controls
                 )
 
+            rmsd_variant_available = any(p.get("site_ligand") for p in pairs)
+            if not rmsd_variant_available and self.variant_mode_var.get() == "all_rmsd":
+                msg = (
+                    "Dock all variants, keep best RMSD requires at least one row with a co-crystal Ligand. "
+                    "Use a score-based variant option for blank-ligand screening sheets."
+                )
+                self._run_on_ui(lambda m=msg: self._start_run_failed("Mode mismatch", m))
+                return
+
             if config["mode"] == "adaptive":
                 non_cocrystal_rows = sum(1 for p in pairs if p.get("site_mode") != "cocrystal")
                 if non_cocrystal_rows:
@@ -932,7 +948,6 @@ class RedockAnalysisApp(tk.Tk):
                 self.last_results_path = Path(results_path)
                 self._safe_call(self._render_results_from_path)(results_path)
                 self._safe_call(self._show_results)(results_path)
-                self._safe_call(self._show_pose_viewer)(results_path)
                 self._set_busy(False)
                 return
 
@@ -3978,6 +3993,19 @@ class RedockAnalysisApp(tk.Tk):
                     pass
         except Exception:
             pass
+
+    def _set_rmsd_variant_available(self, available: bool) -> None:
+        self._rmsd_variant_available = available
+        if self._variant_all_rmsd_btn is not None:
+            try:
+                self._variant_all_rmsd_btn.configure(state="normal" if available else "disabled")
+            except Exception:
+                pass
+        if not available and self.variant_mode_var.get() == "all_rmsd":
+            self.variant_mode_var.set("all_score")
+            self._set_status(
+                "RMSD variant selection disabled: no co-crystal Ligand entries in the input sheet."
+            )
 
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
