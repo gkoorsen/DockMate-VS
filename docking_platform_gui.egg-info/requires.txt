@@ -1,8 +1,0 @@
-numpy
-pandas
-openpyxl
-rdkit
-loguru
-biopython
-pydantic
-MDAnalysis

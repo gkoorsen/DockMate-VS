@@ -1,0 +1,50 @@
+# Conda environment for the Redock Analysis GUI (Linux/Ubuntu tested layout).
+#
+#   conda env create -f environment.yml
+#   conda activate docking_platform_gui
+#
+# Conda-forge/bioconda are the smoothest route for the compiled tools (docking
+# engines, Open Babel, fpocket, OpenMM, ...) that pip cannot install.
+#
+# If the solver cannot find one of the binary tools on your platform, comment it
+# out here and install it another way; the two channels below cover the rest.
+# rDock and LigPlus are NOT packaged here and must be installed separately if
+# you want the rDock protocols or LigPlot interaction diagrams.
+name: docking_platform_gui
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  # --- core Python / scientific stack (mirrors pyproject dependencies) ---
+  - numpy
+  - pandas
+  - openpyxl
+  - rdkit
+  - scikit-learn
+  - scipy
+  - matplotlib
+  - seaborn
+  - biopython
+  - mdanalysis
+  - pydantic
+  - loguru
+  # --- GUI toolkit (Tk) ---
+  - tk
+  # --- protein-preparation pipeline (pyproject 'prep' extra) ---
+  - openmm
+  - pdbfixer
+  - propka
+  - reduce            # bioconda; comment out if unavailable for your platform
+  # --- docking engines & helpers (external binaries) ---
+  - smina             # bioconda
+  - autodock-vina     # bioconda; optional alternative engine
+  - openbabel         # obabel CLI, used for conversions/rescoring
+  - fpocket           # bioconda; blind-docking pocket detection
+  - meeko             # PDBQT preparation (pyproject 'pdbqt' extra)
+  # --- optional pose visualisation ---
+  - pymol-open-source
+  # --- install the package itself (editable) ---
+  - pip
+  - pip:
+      - -e .

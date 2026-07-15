@@ -1,2 +1,0 @@
-[console_scripts]
-redock-gui = docking_platform_gui.cli:main

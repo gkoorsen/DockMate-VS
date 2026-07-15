@@ -32,9 +32,31 @@ except ImportError:
 try:
     from pdbfixer import PDBFixer
     from openmm.app import PDBFile
+    HAS_OPENMM = True
 except ImportError:
-    logger.error("PDBFixer or OpenMM not installed")
-    raise
+    # OpenMM/PDBFixer drive the protein-preparation pipeline but are heavy,
+    # non-pure-Python dependencies. Importing this module (and therefore
+    # launching the GUI, which pulls it in transitively) must not hard-fail when
+    # they are absent; preparation raises a clear error at the point of use.
+    PDBFixer = None  # type: ignore[assignment,misc]
+    PDBFile = None  # type: ignore[assignment,misc]
+    HAS_OPENMM = False
+    logger.warning(
+        "PDBFixer/OpenMM not installed; protein preparation is unavailable. "
+        "Install with `conda install -c conda-forge openmm pdbfixer` or "
+        "`pip install 'docking_platform_gui[prep]'`."
+    )
+
+
+def _require_openmm() -> None:
+    """Raise a clear, actionable error if the OpenMM/PDBFixer stack is missing."""
+    if not HAS_OPENMM:
+        raise RuntimeError(
+            "Protein preparation requires PDBFixer and OpenMM, which are not "
+            "installed. Install them with "
+            "`conda install -c conda-forge openmm pdbfixer` or "
+            "`pip install 'docking_platform_gui[prep]'`."
+        )
 
 from docking_platform_gui.config.schema import (
     ProteinPreparationConfig,
@@ -221,6 +243,7 @@ class ProteinPreparation:
         Returns:
             Fixed structure
         """
+        _require_openmm()
         logger.info("Fixing structure with PDBFixer")
 
         try:
@@ -625,6 +648,7 @@ class ProteinPreparation:
         Returns:
             Structure with hydrogens added
         """
+        _require_openmm()
         logger.info(f"Adding hydrogens at pH {self.config.ph}")
 
         # Save structure to temp file

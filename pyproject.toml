@@ -20,9 +20,30 @@ dependencies = [
   "rdkit",
   "loguru",
   "biopython",
-  "pydantic",
-  "MDAnalysis"
+  # The config schema targets the Pydantic v1 API (bare @root_validator,
+  # (cls, values) semantics); unpinned installs pull v2 and fail to import.
+  "pydantic>=1.10,<2",
+  "MDAnalysis",
+  "scikit-learn",
+  "scipy",
+  "matplotlib",
+  "seaborn",
 ]
+
+# Note: the GUI also needs Tk, which ships with CPython on most platforms but
+# is a separate system package on Debian/Ubuntu: `sudo apt install python3-tk`.
+[project.optional-dependencies]
+# Protein-preparation pipeline. Heavy, non-pure-Python packages; conda-forge is
+# the smoother route (see environment.yml). Without these, docking against
+# already-prepared receptors still works; the prep pipeline raises a clear error.
+prep = ["openmm", "pdbfixer", "propka"]
+# Receptor/ligand PDBQT preparation helpers.
+pdbqt = ["meeko"]
 
 [project.scripts]
 redock-gui = "docking_platform_gui.cli:main"
+
+# Without this, setuptools flat-layout auto-discovery aborts because the repo
+# root contains several non-package directories (data/, results/, analysis/, ...).
+[tool.setuptools.packages.find]
+include = ["docking_platform_gui*"]

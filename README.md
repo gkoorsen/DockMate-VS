@@ -2,37 +2,65 @@
 
 Standalone GUI for redocking analysis with single or adaptive docking, ligand filtering, controls/decoys, and pose inspection.
 
-## Quick start
+## Install
+
+### Recommended: conda (Linux/Ubuntu, macOS)
+
+`environment.yml` pins the Python stack **and** the compiled tools (docking
+engines, Open Babel, fpocket, OpenMM, ...) that pip cannot install:
+
+```
+conda env create -f environment.yml
+conda activate docking_platform_gui
+redock-gui
+```
+
+### Alternative: pip
+
+```
+pip install -e .                 # core dependencies
+pip install -e '.[prep,pdbqt]'   # + protein-prep pipeline & PDBQT helpers
+```
+
+On Debian/Ubuntu the GUI also needs the Tk toolkit, which is a separate system
+package:
+
+```
+sudo apt install python3-tk
+```
+
+The external binaries below still have to be installed separately when using pip
+(see "External tools").
+
+You can also launch without installing:
 
 ```
 python scripts/launch_redock_analysis_gui.py
 ```
 
-Or install and run:
-
-```
-pip install -e .
-redock-gui
-```
-
 ## External tools
 
-The GUI shells out to compiled tools that pip does not install automatically. Install with your package manager before running:
+The GUI shells out to compiled tools that pip does not install automatically.
+`environment.yml` provides most of them; otherwise install with your package
+manager before running:
 
 - **Smina or Vina** (required for docking): point the GUI to the binary location.
-- **rDock** (optional): set the rDock root folder in the GUI if you want the rDock protocols.
+- **rDock** (optional): set the rDock root folder in the GUI if you want the rDock protocols. Not packaged in `environment.yml`.
 - **Open Babel** (`obabel` CLI) is needed for ligand conversions and rescoring.
-- **OpenMM**, **PDBFixer**, **Reduce**, and **PROPKA** are required/used by the protein preparation pipeline. They are not installed via `pip install -e .`; install them separately, for example with conda:
+- **OpenMM**, **PDBFixer**, **Reduce**, and **PROPKA** are used by the protein preparation pipeline. Install via the `prep` extra (`pip install -e '.[prep]'`) or conda:
 
   ```
   conda install -c conda-forge openmm pdbfixer reduce propka
   ```
 
-  Some installations also require PyMOL/Reduce; refer to each project for macOS/ARM64 binaries.
+  Without them the GUI still launches and docks against already-prepared receptors; the preparation pipeline raises a clear error when invoked.
+- **LigPlot / LigPlus** (optional): interaction diagrams. Put the `ligplot` binary on `PATH` or set the `LIGPLOT_BIN` environment variable (the `HET_GROUP_DICTIONARY` variable points to its `components.cif`).
 
 ## Python dependencies
 
-Core dependencies are in `pyproject.toml`. You may prefer conda for RDKit and OpenMM.
+Core dependencies are declared in `pyproject.toml`; optional extras (`prep`,
+`pdbqt`) cover the heavier preparation stack. You may prefer conda for RDKit,
+OpenMM, and the compiled tools.
 
 ## Project layout
 

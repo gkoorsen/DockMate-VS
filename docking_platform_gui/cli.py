@@ -38,7 +38,10 @@ def check_dependencies() -> None:
         for dep in missing:
             print(f"  - {dep}")
         print("\nInstall missing dependencies:")
-        print("  pip install pandas openpyxl rdkit loguru")
+        print("  pip install -e .            # core Python dependencies")
+        if "tkinter" in missing:
+            print("  sudo apt install python3-tk # Tk toolkit (Debian/Ubuntu)")
+        print("  # or create the full environment: conda env create -f environment.yml")
         sys.exit(1)
 
 

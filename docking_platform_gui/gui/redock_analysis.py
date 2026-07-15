@@ -2668,6 +2668,14 @@ class RedockAnalysisApp(tk.Tk):
         return None
 
     def _resolve_ligplot_bin(self) -> Optional[str]:
+        # Prefer an explicit override, then anything on PATH, so this works on
+        # Linux/Windows and not only the original developer's macOS install.
+        env_bin = os.environ.get("LIGPLOT_BIN")
+        if env_bin and Path(env_bin).exists():
+            return env_bin
+        which_bin = shutil.which("ligplot") or shutil.which("ligplus")
+        if which_bin:
+            return which_bin
         fallback = Path("/Users/gerritkoorsen/Desktop/docking_platform/tools/LigPlus/lib/exe_mac64/ligplot")
         if fallback.exists():
             return str(fallback)
