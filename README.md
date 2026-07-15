@@ -4,9 +4,9 @@ Standalone GUI for redocking analysis with single or adaptive docking, ligand fi
 
 ## Install
 
-> **On Windows?** Follow the step-by-step student guide:
-> [docs/SETUP_WSL.md](docs/SETUP_WSL.md) — installs WSL/Ubuntu and the GUI from
-> scratch.
+> **On Windows (WSL)?** Follow the step-by-step student guide (Word document):
+> [docs/SETUP_WSL.docx](docs/SETUP_WSL.docx) — from the Ubuntu shell to a
+> running GUI. Regenerate it with `python scripts/make_wsl_setup_doc.py`.
 
 ### Recommended: conda (Linux/Ubuntu, macOS)
 
