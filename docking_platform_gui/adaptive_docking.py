@@ -54,6 +54,31 @@ from docking_platform_gui.utils.rmsd import calculate_rmsd
 logger = logging.getLogger(__name__)
 
 
+def _fmt_metric(value, decimals: int = 2) -> str:
+    """Format a docking metric that may legitimately be None.
+
+    Decoy cases have no reference pose, so RMSD is None rather than a number.
+    Formatting None with a numeric spec raises TypeError, which previously
+    aborted the whole case before any result was recorded.
+    """
+    if value is None:
+        return "N/A"
+    try:
+        return f"{value:.{decimals}f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _better_by_score(candidate, incumbent) -> bool:
+    """True if `candidate` has a better (more negative) docking score.
+
+    Used to rank results when RMSD is undefined, e.g. decoys.
+    """
+    c = candidate.score if candidate.score is not None else float("inf")
+    i = incumbent.score if incumbent.score is not None else float("inf")
+    return c < i
+
+
 @dataclass
 class DockingProtocol:
     """Configuration for a specific docking protocol."""
@@ -363,23 +388,30 @@ class AdaptiveDockingPipeline:
                     variant_results.append(result)
                     all_results.append(result)
 
-                    if variant_best is None or result.rmsd < variant_best.rmsd:
+                    # Decoys have no reference pose, so rmsd is None; rank those by
+                    # score instead of crashing on a None comparison.
+                    if variant_best is None:
+                        variant_best = result
+                    elif result.rmsd is None or variant_best.rmsd is None:
+                        if _better_by_score(result, variant_best):
+                            variant_best = result
+                    elif result.rmsd < variant_best.rmsd:
                         variant_best = result
 
                     if result.success:
                         logger.info("")
                         logger.info("=" * 60)
                         logger.info(f"✅ SUCCESS! Protocol {i} achieved RMSD < {self.rmsd_threshold}Å")
-                        logger.info(f"   RMSD: {result.rmsd:.2f}Å")
-                        logger.info(f"   Score: {result.score:.2f}")
-                        logger.info(f"   Runtime: {result.runtime_sec:.1f}s")
+                        logger.info(f"   RMSD: {_fmt_metric(result.rmsd)}Å")
+                        logger.info(f"   Score: {_fmt_metric(result.score)}")
+                        logger.info(f"   Runtime: {_fmt_metric(result.runtime_sec, 1)}s")
                         logger.info("=" * 60)
                         break
                     else:
                         if result.error_message:
                             logger.info(f"⚠️  Protocol {i} failed: {result.error_message}")
                         else:
-                            logger.info(f"⚠️  Protocol {i} failed (RMSD: {result.rmsd:.2f}Å)")
+                            logger.info(f"⚠️  Protocol {i} failed (RMSD: {_fmt_metric(result.rmsd)}Å)")
                         logger.info(f"   Continuing to next protocol...")
                         logger.info("")
 
@@ -402,10 +434,16 @@ class AdaptiveDockingPipeline:
                     )
 
         # Final summary
-        if best_result and best_result.success:
-            logger.info(f"🎉 Pipeline succeeded! Best RMSD: {best_result.rmsd:.2f}Å")
+        if best_result and best_result.rmsd is None:
+            # Decoy / no-reference case: RMSD is not defined, so report the score.
+            logger.info(
+                f"Pipeline complete (no reference pose — decoy case). "
+                f"Best score: {_fmt_metric(best_result.score)} kcal/mol"
+            )
+        elif best_result and best_result.success:
+            logger.info(f"🎉 Pipeline succeeded! Best RMSD: {_fmt_metric(best_result.rmsd)}Å")
         elif best_result:
-            logger.warning(f"⚠️  Pipeline exhausted. Best RMSD: {best_result.rmsd:.2f}Å (threshold: {self.rmsd_threshold}Å)")
+            logger.warning(f"⚠️  Pipeline exhausted. Best RMSD: {_fmt_metric(best_result.rmsd)}Å (threshold: {self.rmsd_threshold}Å)")
             logger.warning(f"   Tried {len(all_results)} protocols.")
             logger.warning(f"   Consider:")
             logger.warning(f"   - Verify binding site definition")
@@ -629,12 +667,15 @@ class AdaptiveDockingPipeline:
         self,
         ligand_smiles: str,
         ligand_name: str,
-        enumerate_states: bool = True
+        enumerate_states: bool = True,
+        max_tautomers: Optional[int] = None,
+        max_conformers: Optional[int] = None
     ) -> List[dict]:
-        # Define config
+        # Per-call overrides let the first (screening) pass run with reduced
+        # settings; fall back to the instance defaults when not supplied.
         config = LigandPreparationConfig(
-            max_tautomers=self.max_tautomers,
-            max_conformers=self.max_conformers,
+            max_tautomers=self.max_tautomers if max_tautomers is None else max_tautomers,
+            max_conformers=self.max_conformers if max_conformers is None else max_conformers,
             use_etkdg_v3=True,
             mmff_minimize=True
         )
@@ -1297,20 +1338,28 @@ END_SECTION
         report.append("\n---\n")
 
         for i, result in enumerate(all_results, 1):
-            status = "✅ SUCCESS" if result.success else "❌ FAILED"
+            if result.success is None:
+                status = "➖ NO REFERENCE (decoy)"
+            elif result.success:
+                status = "✅ SUCCESS"
+            else:
+                status = "❌ FAILED"
             report.append(f"\n## Protocol {i}: {result.protocol_name}\n")
             report.append(f"**Status:** {status}\n")
-            report.append(f"**RMSD:** {result.rmsd:.2f}Å\n")
-            report.append(f"**Score:** {result.score:.2f}\n")
+            report.append(f"**RMSD:** {_fmt_metric(result.rmsd)}Å\n")
+            report.append(f"**Score:** {_fmt_metric(result.score)}\n")
             report.append(f"**Poses:** {result.num_poses}\n")
-            report.append(f"**Runtime:** {result.runtime_sec:.1f}s\n")
+            report.append(f"**Runtime:** {_fmt_metric(result.runtime_sec, 1)}s\n")
             report.append(f"**Output:** {result.output_file}\n")
 
-        # Best result
-        best = min(all_results, key=lambda r: r.rmsd)
+        # Best result — rank by RMSD when defined, otherwise by score (decoy case).
+        best = self._select_best_result(
+            all_results,
+            by="rmsd" if any(r.rmsd is not None for r in all_results) else "score",
+        )
         report.append("\n---\n")
         report.append(f"\n## Best Result: {best.protocol_name}\n")
-        report.append(f"**RMSD:** {best.rmsd:.2f}Å\n")
+        report.append(f"**RMSD:** {_fmt_metric(best.rmsd)}Å\n")
         report.append(f"**Success:** {'Yes' if best.success else 'No'}\n")
 
         return "".join(report)
@@ -1370,7 +1419,7 @@ def run_adaptive_docking(
             n_cpus=8
         )
 
-        print(f"Best RMSD: {best_result.rmsd:.2f}Å")
+        print(f"Best RMSD: {_fmt_metric(best_result.rmsd)}Å")
         print(f"Success: {best_result.success}")
     """
     pipeline = AdaptiveDockingPipeline(

@@ -310,7 +310,7 @@ class RedockAnalysisApp(tk.Tk):
         mode_frame.grid(row=row, column=1, sticky="w", pady=(10, 5))
         mode_adaptive = tk.Radiobutton(
             mode_frame,
-            text="Adaptive docking",
+            text="Redock (adaptive search)",
             variable=self.mode_var,
             value="adaptive",
             command=self._update_mode
@@ -319,7 +319,7 @@ class RedockAnalysisApp(tk.Tk):
         self._register_busy_widget(mode_adaptive)
         mode_single = tk.Radiobutton(
             mode_frame,
-            text="Single docking",
+            text="Redock (single protocol)",
             variable=self.mode_var,
             value="single",
             command=self._update_mode
@@ -328,7 +328,7 @@ class RedockAnalysisApp(tk.Tk):
         self._register_busy_widget(mode_single)
         mode_screening = tk.Radiobutton(
             mode_frame,
-            text="Screening",
+            text="Screen compounds",
             variable=self.mode_var,
             value="screening",
             command=self._update_mode
@@ -420,7 +420,7 @@ class RedockAnalysisApp(tk.Tk):
         self._register_busy_widget(max_conf_entry)
 
         row += 1
-        self.adaptive_frame = tk.LabelFrame(container, text="Adaptive docking settings", padx=10, pady=10)
+        self.adaptive_frame = tk.LabelFrame(container, text="Adaptive search settings", padx=10, pady=10)
         self.adaptive_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 5))
         self.adaptive_frame.grid_columnconfigure(1, weight=1)
 
@@ -447,7 +447,9 @@ class RedockAnalysisApp(tk.Tk):
         self._register_busy_widget(adaptive_btn)
 
         row += 1
-        self.single_frame = tk.LabelFrame(container, text="Single docking settings", padx=10, pady=10)
+        self.single_frame = tk.LabelFrame(
+            container, text="Docking protocol (single protocol / screening)", padx=10, pady=10
+        )
         self.single_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 5))
         self.single_frame.grid_columnconfigure(3, weight=1)
 
@@ -893,7 +895,24 @@ class RedockAnalysisApp(tk.Tk):
                 if non_cocrystal_rows:
                     msg = (
                         f"Found {non_cocrystal_rows} rows without a co-crystal site ligand. "
-                        "Adaptive mode requires a co-crystal ligand. Use Single or Screening mode."
+                        "Redock (adaptive search) requires a co-crystal ligand. "
+                        "Use Redock (single protocol) or Screen compounds."
+                    )
+                    self._run_on_ui(lambda m=msg: self._start_run_failed("Mode mismatch", m))
+                    return
+
+                # Decoy/control rows have no reference pose, so the adaptive
+                # cascade cannot terminate early and would run the full ladder
+                # per compound for a score-only result. Caught here, before any
+                # structure is downloaded.
+                control_rows = sum(1 for p in pairs if p.get("control_label") is not None)
+                if control_rows:
+                    msg = (
+                        f"This sheet contains {control_rows} decoy/control rows, which have "
+                        "no reference pose to reproduce. The adaptive cascade would run every "
+                        "protocol for each one and still report no RMSD.\n\n"
+                        "Use 'Screen compounds' for compound sheets, or 'Redock' modes on a "
+                        "sheet containing only each structure's own crystal ligand."
                     )
                     self._run_on_ui(lambda m=msg: self._start_run_failed("Mode mismatch", m))
                     return
@@ -1170,7 +1189,10 @@ class RedockAnalysisApp(tk.Tk):
                 single_cfg["apo_site_mode"] = "protein_centroid"
             chain = item.get("chain")
             control_label = item.get("control_label")
-            self._queue.put(("progress", idx, len(pairs), f"{pdb_id} {ligand}"))
+            # Report the case as STARTING (idx-1 complete), not as finished.
+            # Emitting idx here drove the bar to 100% while the final case was
+            # still docking.
+            self._queue.put(("progress", idx - 1, len(pairs), f"{pdb_id} {ligand}"))
 
             case_id = item.get("case_id") or f"{pdb_id}_{dock_name}"
             case_dir = output_dir / self._safe_case_id(case_id)
@@ -1203,8 +1225,31 @@ class RedockAnalysisApp(tk.Tk):
                 if config["mode"] == "adaptive":
                     if site_mode != "cocrystal":
                         raise ValueError(
-                            "Adaptive mode requires a co-crystal ligand. "
-                            "Use Single mode for apo pocket-detection workflows."
+                            "Redock (adaptive search) requires a co-crystal ligand. "
+                            "Use Redock (single protocol) for apo pocket-detection workflows."
+                        )
+                    # The adaptive ladder escalates until RMSD clears the threshold.
+                    # If the docked ligand is not the crystal ligand there is no
+                    # reference pose, RMSD is undefined, the early-exit can never
+                    # fire, and every compound burns the full cascade to produce a
+                    # score the search was not optimising for. Refuse up front.
+                    is_ref = self._is_reference_ligand(
+                        pdb_file, site_ligand, ligand_chain, smiles, output_dir
+                    )
+                    if control_label is not None or is_ref is False:
+                        raise ValueError(
+                            f"'{dock_name}' is not the co-crystal ligand of {pdb_id} "
+                            f"({site_ligand}), so RMSD is undefined and the adaptive "
+                            "cascade cannot terminate early — every compound would run "
+                            "the full protocol ladder for a score-only result. "
+                            "Use Screen compounds for novel ligands and decoys; use "
+                            "Redock modes only on the structure's own crystal ligand."
+                        )
+                    if is_ref is None:
+                        logger.warning(
+                            "Could not confirm %s is the co-crystal ligand of %s; "
+                            "proceeding, but check the RMSD is meaningful.",
+                            dock_name, pdb_id
                         )
                     result = self._run_adaptive_case(
                         pdb_file,
@@ -1276,6 +1321,8 @@ class RedockAnalysisApp(tk.Tk):
                 self._queue.put(("log", f"{pdb_id} {ligand} failed: {exc}"))
 
             self._write_progress(progress_path, results)
+            # Case finished — advance the bar only now.
+            self._queue.put(("progress", idx, len(pairs), f"{pdb_id} {ligand} done"))
 
         self._write_results(results_path, results_csv, results, config["threshold"])
         self._queue.put(("done", results_path))
@@ -1949,6 +1996,46 @@ class RedockAnalysisApp(tk.Tk):
                         return chain.id.strip()
         return None
 
+    def _is_reference_ligand(
+        self,
+        pdb_path: Path,
+        ligand_resname: Optional[str],
+        ligand_chain: str,
+        smiles: str,
+        output_dir: Path
+    ) -> Optional[bool]:
+        """Is `smiles` the structure's own co-crystal ligand?
+
+        Returns True (same molecule), False (different), or None when it
+        cannot be determined — callers should warn rather than block on None.
+
+        Used to keep the adaptive cascade off ligands that have no reference
+        pose, where RMSD is undefined and the escalation cannot terminate.
+        """
+        if not ligand_resname or not smiles:
+            return None
+        try:
+            crystal_smiles = self._get_ligand_smiles(
+                pdb_path, ligand_resname, ligand_chain, output_dir
+            )
+            if not crystal_smiles:
+                return None
+            from rdkit import Chem
+            docked_mol = Chem.MolFromSmiles(smiles)
+            crystal_mol = Chem.MolFromSmiles(crystal_smiles)
+            if docked_mol is None or crystal_mol is None:
+                return None
+            if Chem.MolToSmiles(docked_mol) == Chem.MolToSmiles(crystal_mol):
+                return True
+            # Fall back to the project's own similarity test so that tautomers
+            # and protonation variants of the crystal ligand still count as the
+            # reference rather than being rejected as novel compounds.
+            from docking_platform_gui.utils.rmsd_safe import are_same_molecule
+            return bool(are_same_molecule(crystal_mol, docked_mol))
+        except Exception as exc:
+            logger.warning("Reference-ligand check failed for %s: %s", ligand_resname, exc)
+            return None
+
     def _get_ligand_smiles(
         self,
         pdb_path: Path,
@@ -2325,6 +2412,57 @@ class RedockAnalysisApp(tk.Tk):
         parsed["method"] = f"smina_score_only:{scoring}"
         return parsed
 
+    @staticmethod
+    def _aggregate_pose_metrics(results: list, threshold: float) -> dict:
+        """Aggregate per-case pose metrics into summary-level statistics.
+
+        Only cases carrying a real RMSD contribute: decoys and failed cases
+        have no reference pose, and the 999.9 sentinel would otherwise poison
+        every mean. Returns None for a field when no case supplies it, so the
+        summary still renders N/A rather than a misleading zero.
+        """
+        def _vals(attr):
+            out = []
+            for r in results:
+                v = getattr(r, attr, None)
+                if v is None:
+                    continue
+                if attr.endswith("rmsd") and v >= 900:
+                    continue  # sentinel for "no RMSD", not a 999 Å pose
+                out.append(float(v))
+            return out
+
+        def _mean(vals):
+            return float(sum(vals) / len(vals)) if vals else None
+
+        def _median(vals):
+            if not vals:
+                return None
+            s = sorted(vals)
+            mid = len(s) // 2
+            return float(s[mid]) if len(s) % 2 else float((s[mid - 1] + s[mid]) / 2)
+
+        def _rate(attr):
+            vals = _vals(attr)
+            if not vals:
+                return None
+            return 100.0 * sum(1 for v in vals if v < threshold) / len(vals)
+
+        top1 = _vals("top1_rmsd")
+        return {
+            "success_rate_top1": _rate("top1_rmsd"),
+            "success_rate_top5": _rate("top5_rmsd"),
+            "success_rate_top10": _rate("top10_rmsd"),
+            "mean_top1_rmsd": _mean(top1),
+            "median_top1_rmsd": _median(top1),
+            "mean_rmsd_best_score": _mean(_vals("rmsd_best_score")),
+            "mean_near_native_fraction": _mean(_vals("near_native_fraction")),
+            "mean_pose_count": _mean(_vals("pose_count")),
+            "mean_score_rmsd_pearson": _mean(_vals("score_rmsd_pearson")),
+            "mean_score_rmsd_spearman": _mean(_vals("score_rmsd_spearman")),
+            "median_runtime_sec": _median(_vals("runtime_sec")),
+        }
+
     def _compute_pose_metrics(
         self,
         crystal_ligand_pdb: Path,
@@ -2455,11 +2593,22 @@ class RedockAnalysisApp(tk.Tk):
         scores: List[Optional[float]] = []
         with open(docked_file, "r") as handle:
             for line in handle:
+                # AutoDock Vina writes "REMARK VINA RESULT: <affinity> ..."
                 if line.startswith("REMARK VINA RESULT"):
                     parts = line.split()
                     if len(parts) >= 4:
                         try:
                             scores.append(float(parts[3]))
+                        except ValueError:
+                            scores.append(None)
+                # smina writes "REMARK minimizedAffinity <affinity>". Without
+                # this branch every smina run yields no scores, which silently
+                # blanks rmsd_best_score and both score-RMSD correlations.
+                elif line.startswith("REMARK minimizedAffinity"):
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        try:
+                            scores.append(float(parts[2]))
                         except ValueError:
                             scores.append(None)
         return scores
@@ -3779,18 +3928,11 @@ class RedockAnalysisApp(tk.Tk):
                 "max_rmsd": active_stats['max_rmsd'],
                 "mean_runtime_sec": active_stats['mean_runtime'],
                 
-                # Keep for compatibility (not calculated by new analyzer)
-                "success_rate_top1": None,
-                "success_rate_top5": None,
-                "success_rate_top10": None,
-                "mean_top1_rmsd": None,
-                "median_top1_rmsd": None,
-                "mean_rmsd_best_score": None,
-                "mean_near_native_fraction": None,
-                "mean_pose_count": None,
-                "mean_score_rmsd_pearson": None,
-                "mean_score_rmsd_spearman": None,
-                "median_runtime_sec": None,
+                # Pose-level metrics. The enhanced analyzer does not produce
+                # these, but _compute_pose_metrics already stores them on each
+                # RedockResult, so aggregate them from the per-case results
+                # rather than reporting N/A.
+                **self._aggregate_pose_metrics(results, threshold),
                 
                 # NEW: Enrichment metrics
                 "control_actives": enrichment_stats['n_actives'],

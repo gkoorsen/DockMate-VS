@@ -336,7 +336,31 @@ def download_pdb_structure(pdb_code: str, output_dir: Optional[str] = None) -> T
 
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            return False, f"PDB code {pdb_code} not found in RCSB database", None
+            # Recent depositions and large structures are released as mmCIF only,
+            # with no legacy PDB file. Convert CIF -> PDB so those entries still work.
+            try:
+                import gemmi
+            except ImportError:
+                return False, (
+                    f"PDB code {pdb_code} has no legacy PDB file (mmCIF-only entry); "
+                    "install gemmi to enable automatic CIF conversion"
+                ), None
+            try:
+                cif_path = output_path.with_suffix(".cif")
+                logger.info(f"No legacy PDB for {pdb_code}; retrying as mmCIF...")
+                urllib.request.urlretrieve(
+                    f"https://files.rcsb.org/download/{pdb_code}.cif", str(cif_path)
+                )
+                st = gemmi.read_structure(str(cif_path))
+                st.setup_entities()
+                st.write_pdb(str(output_path))
+                logger.info(f"Converted {pdb_code} from mmCIF to {output_path}")
+                return True, f"Successfully downloaded {pdb_code} (via mmCIF)", str(output_path)
+            except Exception as conv_exc:
+                return False, (
+                    f"PDB code {pdb_code} not found as PDB and mmCIF conversion "
+                    f"failed: {conv_exc}"
+                ), None
         else:
             return False, f"HTTP error {e.code}: {e.reason}", None
 

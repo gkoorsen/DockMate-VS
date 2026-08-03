@@ -20,6 +20,36 @@ from docking_platform_gui.utils.rmsd import (
 )
 
 
+def _flatten_for_comparison(mol: Chem.Mol) -> Optional[Chem.Mol]:
+    """Reduce a molecule to its heavy-atom connectivity graph.
+
+    Ligands extracted from a PDB file carry no CONECT bond orders, so RDKit
+    reads every bond as single and every aromatic ring as saturated. Comparing
+    such a molecule against a SMILES-derived reference by Morgan fingerprint
+    gives a near-zero Tanimoto even when they are the same compound.
+
+    Flattening both sides — single bonds, no aromaticity, no charges, no
+    explicit hydrogens — makes the comparison depend on the atom/bond graph
+    alone, which survives the round trip through PDB.
+    """
+    try:
+        flat = Chem.RWMol(Chem.RemoveHs(Chem.Mol(mol), sanitize=False))
+        for atom in flat.GetAtoms():
+            atom.SetIsAromatic(False)
+            atom.SetFormalCharge(0)
+            atom.SetNoImplicit(True)
+            atom.SetNumExplicitHs(0)
+        for bond in flat.GetBonds():
+            bond.SetIsAromatic(False)
+            bond.SetBondType(Chem.BondType.SINGLE)
+        out = flat.GetMol()
+        Chem.SanitizeMol(out, sanitizeOps=Chem.SanitizeFlags.SANITIZE_SYMMRINGS)
+        return out
+    except Exception as exc:
+        logger.debug(f"Could not flatten molecule for comparison: {exc}")
+        return None
+
+
 def are_same_molecule(
     mol1: Chem.Mol,
     mol2: Chem.Mol,
@@ -48,7 +78,24 @@ def are_same_molecule(
         
         logger.debug(f"Molecular similarity: {similarity:.3f}")
         
-        return similarity >= similarity_threshold
+        if similarity >= similarity_threshold:
+            return True
+
+        # A PDB-derived ligand has no bond orders, so the direct comparison
+        # above under-reports badly for the very case we most need to detect:
+        # a crystal ligand being redocked into its own structure. Retry on the
+        # bond-order-agnostic connectivity graph before declaring a decoy.
+        flat1, flat2 = _flatten_for_comparison(mol1), _flatten_for_comparison(mol2)
+        if flat1 is None or flat2 is None:
+            return False
+        ffp1 = AllChem.GetMorganFingerprintAsBitVect(flat1, 2, nBits=2048)
+        ffp2 = AllChem.GetMorganFingerprintAsBitVect(flat2, 2, nBits=2048)
+        flat_similarity = DataStructs.TanimotoSimilarity(ffp1, ffp2)
+        logger.debug(
+            f"Connectivity-only similarity: {flat_similarity:.3f} "
+            f"(bond-order-aware was {similarity:.3f})"
+        )
+        return flat_similarity >= similarity_threshold
         
     except Exception as e:
         logger.warning(f"Similarity check failed: {e}")
