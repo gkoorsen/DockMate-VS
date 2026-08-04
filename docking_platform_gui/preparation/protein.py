@@ -33,8 +33,11 @@ try:
     from pdbfixer import PDBFixer
     from openmm.app import PDBFile
 except ImportError:
-    logger.error("PDBFixer or OpenMM not installed")
-    raise
+    # Keep analysis and GUI modules importable when optional preparation tools
+    # are unavailable; preparation methods degrade gracefully below.
+    PDBFixer = None
+    PDBFile = None
+    logger.warning("PDBFixer or OpenMM not installed; protein fixing is unavailable")
 
 from docking_platform_gui.config.schema import (
     ProteinPreparationConfig,
