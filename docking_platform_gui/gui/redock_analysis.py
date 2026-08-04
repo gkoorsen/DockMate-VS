@@ -11,11 +11,14 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from pathlib import Path
+import platform
 from typing import Callable, Dict, List, Optional, Tuple
 
 import tkinter as tk
@@ -102,6 +105,7 @@ class RedockResult:
     rescore_cnn_affinity: Optional[float] = None
     rescore_error: Optional[str] = None
     site_method: Optional[str] = None
+    docking_completed: Optional[bool] = None
 
 
 class RedockAnalysisApp(tk.Tk):
@@ -834,6 +838,19 @@ class RedockAnalysisApp(tk.Tk):
             "mode": self.mode_var.get(),
             "threshold": threshold,
             "output_dir": output_dir,
+            "input_file": str(excel_path.resolve()),
+            "filters": {
+                "exclude_additives": self.exclude_additives_var.get(),
+                "exclude_cofactors": self.exclude_cofactors_var.get(),
+                "use_smiles": self.use_smiles_var.get() or self.mode_var.get() == "screening",
+            },
+            "sampling": {
+                "enabled": self.sample_enable_var.get(),
+                "size": sample_size,
+                "seed": sample_seed,
+                "include_all_controls": include_controls,
+                "strategy": "stratified_by_structure" if include_controls else "global",
+            },
             "single": self._collect_single_config(),
             "adaptive": self._collect_adaptive_config(),
             "rescore": {
@@ -880,6 +897,13 @@ class RedockAnalysisApp(tk.Tk):
                     sample_seed,
                     include_controls=include_controls
                 )
+
+            config["planned_cases"] = {
+                "total": len(pairs),
+                "actives": sum(p.get("control_label") == 1 for p in pairs),
+                "decoys": sum(p.get("control_label") == 0 for p in pairs),
+                "samples": sum(p.get("control_label") is None for p in pairs),
+            }
 
             rmsd_variant_available = any(p.get("site_ligand") for p in pairs)
             if not rmsd_variant_available and self.variant_mode_var.get() == "all_rmsd":
@@ -1006,6 +1030,16 @@ class RedockAnalysisApp(tk.Tk):
             return {}
 
         variant_mode, variant_select_by = self._variant_config()
+        requested_selection = variant_select_by
+        variant_select_by = self._variant_selection_for_mode(
+            self.mode_var.get(), variant_select_by
+        )
+        if variant_select_by != requested_selection:
+            logger.warning(
+                "Screening mode requires score-based ligand-variant selection; "
+                "overriding '{}' with 'score'",
+                requested_selection
+            )
         max_tautomers = self._parse_int(self.max_tautomers_var.get(), "Max tautomers")
         max_conformers = self._parse_int(self.max_conformers_var.get(), "Max conformers")
         if None in (max_tautomers, max_conformers):
@@ -1151,6 +1185,28 @@ class RedockAnalysisApp(tk.Tk):
         progress_path = output_dir / "redock_progress.json"
         results_path = output_dir / "redock_results.json"
         results_csv = output_dir / "redock_results.csv"
+        manifest_path = output_dir / "run_manifest.json"
+        manifest = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "software": {
+                "package": "docking_platform_gui",
+                "version": "0.1.0",
+                "python": sys.version,
+                "platform": platform.platform(),
+            },
+            "config": config,
+            "cases": [
+                {
+                    "pdb_id": p.get("pdb_id"),
+                    "site_ligand": p.get("site_ligand"),
+                    "dock_name": p.get("dock_name"),
+                    "control_label": p.get("control_label"),
+                    "case_id": p.get("case_id"),
+                }
+                for p in pairs
+            ],
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2, default=self._json_default))
 
         rescore_cfg = config.get("rescore", {})
         rescore_enabled = bool(rescore_cfg.get("enable"))
@@ -1281,6 +1337,7 @@ class RedockAnalysisApp(tk.Tk):
                 result.control_label = control_label
                 result.ligand_charge = ligand_charge
                 result.dock_name = dock_name
+                result.docking_completed = bool(result.output_file)
 
                 if rescore_enabled and rescore_binary and result.output_file:
                     out_path = Path(result.output_file)
@@ -1318,7 +1375,8 @@ class RedockAnalysisApp(tk.Tk):
                     error_message=str(exc),
                     control_label=control_label,
                     dock_name=dock_name,
-                    site_method=site_mode
+                    site_method=site_mode,
+                    docking_completed=False
                 ))
                 self._queue.put(("log", f"{pdb_id} {ligand} failed: {exc}"))
 
@@ -1645,12 +1703,23 @@ class RedockAnalysisApp(tk.Tk):
             score_rmsd_pearson=metrics.get("score_rmsd_pearson"),
             score_rmsd_spearman=metrics.get("score_rmsd_spearman"),
             error_message=None,
-            site_method=site_method
+            site_method=site_method,
+            docking_completed=True
         )
 
     def _write_progress(self, progress_path: Path, results: List[RedockResult]) -> None:
         payload = {"results": [asdict(r) for r in results]}
         progress_path.write_text(json.dumps(payload, indent=2))
+
+    @staticmethod
+    def _json_default(value: object):
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
     def _write_results(
         self,
@@ -4192,6 +4261,11 @@ class RedockAnalysisApp(tk.Tk):
                 summary[key] = float(ef)
         
         # Calculate protocol/engine breakdown (only for actives with valid RMSD)
+        completed = sum(r.docking_completed is True for r in results)
+        failed = sum(r.docking_completed is False for r in results)
+        summary["docking_completed"] = completed
+        summary["docking_failed"] = failed
+
         actives = [
             r for r in results 
             if r.best_rmsd is not None and r.best_rmsd < 900
@@ -4238,6 +4312,8 @@ class RedockAnalysisApp(tk.Tk):
             "# Docking Analysis Summary",
             "",
             f"- Total cases: {summary.get('total_cases')}",
+            f"- Docking completed: {summary.get('docking_completed', 0)}",
+            f"- Docking failed: {summary.get('docking_failed', 0)}",
             f"- RMSD threshold: {summary.get('threshold')}",
             f"- Success rate (best pose): {self._fmt(summary.get('success_rate_best'))}%",
             f"- Success rate (Top-1): {self._fmt(summary.get('success_rate_top1'))}%",
@@ -4859,6 +4935,11 @@ class RedockAnalysisApp(tk.Tk):
             logger.warning(f"Unknown variant mode '{mode}', defaulting to adaptive")
             return "adaptive", "rmsd"
 
+    @staticmethod
+    def _variant_selection_for_mode(run_mode: str, requested: str) -> str:
+        """Prevent native-pose information from influencing screening ranks."""
+        return "score" if run_mode == "screening" else requested
+
     def _safe_case_id(self, text: str) -> str:
         cleaned = re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")
         return cleaned or "case"
@@ -4972,24 +5053,54 @@ class RedockAnalysisApp(tk.Tk):
         seed: Optional[int],
         include_controls: bool = False
     ) -> List[Dict[str, str]]:
-        if size >= len(pairs):
-            return pairs
-
         rng = random.Random(seed)
         if include_controls:
             controls = [p for p in pairs if p.get("control_label") is not None]
             non_controls = [p for p in pairs if p.get("control_label") is None]
             remaining = min(size, len(non_controls))
-            sample = controls + rng.sample(non_controls, remaining)
+            if remaining == len(non_controls):
+                return pairs
+
+            # Sample receptor-compound cases in rounds across structures. This
+            # avoids concentrating a small global sample in one receptor.
+            grouped: Dict[tuple, List[Dict[str, str]]] = {}
+            for pair in non_controls:
+                key = (pair.get("pdb_id"), pair.get("ligand"))
+                grouped.setdefault(key, []).append(pair)
+            group_keys = list(grouped)
+            rng.shuffle(group_keys)
+            for group in grouped.values():
+                rng.shuffle(group)
+
+            selected = []
+            while len(selected) < remaining:
+                added = False
+                for key in group_keys:
+                    group = grouped[key]
+                    if group and len(selected) < remaining:
+                        selected.append(group.pop())
+                        added = True
+                if not added:
+                    break
+
+            selected_ids = {id(pair) for pair in selected}
+            sample = [
+                pair for pair in pairs
+                if pair.get("control_label") is not None or id(pair) in selected_ids
+            ]
             logger.info(
-                "Random sample selected: {} total ({} controls, {} non-controls, seed={})",
+                "Stratified random sample selected: {} total "
+                "({} controls, {} non-controls across {} structures, seed={})",
                 len(sample),
                 len(controls),
                 remaining,
+                len({(p.get('pdb_id'), p.get('ligand')) for p in selected}),
                 seed
             )
             return sample
 
+        if size >= len(pairs):
+            return pairs
         sample = rng.sample(pairs, size)
         logger.info("Random sample selected: {} of {} (seed={})", len(sample), len(pairs), seed)
         return sample
