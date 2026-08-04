@@ -2708,15 +2708,23 @@ class RedockAnalysisApp(tk.Tk):
         chain_id = (chain or "L")[0]
         resnum_str = f"{resnum:>4}"
         out_lines = []
+        element_counts: Dict[str, int] = {}
+        atom_idx = 0
         for line in block.splitlines():
             if line.startswith("CONECT"):
                 out_lines.append(line)
                 continue
             if not line.startswith(("ATOM", "HETATM")):
                 continue
+            atom = mol.GetAtomWithIdx(atom_idx)
+            atom_idx += 1
+            element = atom.GetSymbol().upper()
+            element_counts[element] = element_counts.get(element, 0) + 1
+            atom_name = f"{element}{element_counts[element]}"[-4:]
             line = list(line)
             while len(line) < 54:
                 line.append(" ")
+            line[12:16] = list(f"{atom_name:>4}")
             line[17:20] = list(resname)
             line[21] = chain_id
             line[22:26] = list(resnum_str)
@@ -2889,17 +2897,48 @@ class RedockAnalysisApp(tk.Tk):
         return fallback if fallback.exists() else None
 
     def _combine_complex(self, receptor_pdb: Path, ligand_pdb: Path, output_pdb: Path) -> None:
-        rec_lines = []
+        # LigPlot/HBPLUS identify atoms by PDB serial number. RDKit ligand PDBs
+        # restart numbering at 1, so concatenating files directly makes ligand
+        # CONECT records point at receptor atoms and fragments the ligand.
+        combined = []
+        next_serial = 1
         with open(receptor_pdb) as f_in:
             for line in f_in:
-                if line.startswith(("ATOM", "HETATM", "TER")):
-                    rec_lines.append(line.rstrip("\n"))
-        lig_lines = []
+                if line.startswith(("ATOM", "HETATM")):
+                    combined.append(f"{line[:6]}{next_serial:5d}{line[11:]}".rstrip("\n"))
+                    next_serial += 1
+                elif line.startswith("TER"):
+                    combined.append("TER")
+
+        ligand_atoms = []
+        ligand_conect = []
         with open(ligand_pdb) as f_in:
             for line in f_in:
-                if line.startswith(("ATOM", "HETATM", "CONECT")):
-                    lig_lines.append(line.rstrip("\n"))
-        combined = rec_lines + lig_lines + ["END"]
+                if line.startswith(("ATOM", "HETATM")):
+                    ligand_atoms.append(line.rstrip("\n"))
+                elif line.startswith("CONECT"):
+                    ligand_conect.append(line.rstrip("\n"))
+
+        serial_map = {}
+        for line in ligand_atoms:
+            try:
+                old_serial = int(line[6:11])
+            except ValueError:
+                continue
+            serial_map[old_serial] = next_serial
+            combined.append(f"{line[:6]}{next_serial:5d}{line[11:]}")
+            next_serial += 1
+
+        for line in ligand_conect:
+            try:
+                old_serials = [int(value) for value in line[6:].split()]
+            except ValueError:
+                continue
+            new_serials = [serial_map[value] for value in old_serials if value in serial_map]
+            if len(new_serials) >= 2:
+                combined.append("CONECT" + "".join(f"{value:5d}" for value in new_serials))
+
+        combined.append("END")
         output_pdb.write_text("\n".join(combined) + "\n")
 
     def _ligplot_ps_to_png(self, ps_file: Path, png_file: Path) -> bool:
@@ -2929,6 +2968,12 @@ class RedockAnalysisApp(tk.Tk):
         out_dir: Path
     ) -> Optional[Path]:
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Do not mistake files from an earlier successful render for the
+        # current run when LigPlot or Ghostscript fails.
+        for stale_name in ("ligplot.ps", "ligplot.png", "ligplot.sum"):
+            stale_path = out_dir / stale_name
+            if stale_path.exists():
+                stale_path.unlink()
         ligplot_path = Path(ligplot_bin)
         ligplus_root = ligplot_path.parents[2] if len(ligplot_path.parents) >= 3 else None
         hbadd_bin = self._resolve_ligplus_tool(ligplot_bin, "hbadd")
@@ -2967,7 +3012,18 @@ class RedockAnalysisApp(tk.Tk):
             str(resnum),
             chain
         ]
-        subprocess.run(cmd, check=False, cwd=str(out_dir), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(
+            cmd,
+            check=False,
+            cwd=str(out_dir),
+            env=env,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            error = result.stderr.strip() or result.stdout.strip() or "unknown error"
+            logger.warning("LigPlot failed for {}: {}", complex_pdb.name, error)
+            return None
         ps_file = out_dir / "ligplot.ps"
         if not ps_file.exists():
             return None
@@ -3555,7 +3611,9 @@ class RedockAnalysisApp(tk.Tk):
                 viewer_dir = Path(case["viewer_dir"])
                 viewer_dir.mkdir(parents=True, exist_ok=True)
 
-                ligand_resname = (case["display_name"] or case["ligand"] or "LIG")[:3].upper()
+                # A stable generic name avoids collisions with unrelated CCD
+                # entries when display names happen to share a three-letter code.
+                ligand_resname = "LIG"
                 ligand_chain = "L"
                 ligand_resnum = 1
 
