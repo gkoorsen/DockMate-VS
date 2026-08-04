@@ -185,3 +185,53 @@ def test_manifest_json_converter_handles_paths_and_numpy_values():
     )
 
     assert json.loads(payload) == {"path": "run", "array": [1, 2], "number": 3}
+
+
+def test_summary_counts_samples_separately_and_uses_explicit_controls():
+    app = _app_without_tk()
+    results = [
+        _result(
+            dock_name="active", control_label=1, best_score=-8.0,
+            best_rmsd=1.0, success=True, docking_completed=True,
+        ),
+        _result(
+            dock_name="decoy", control_label=0, best_score=-6.0,
+            docking_completed=True,
+        ),
+        _result(
+            dock_name="sample", control_label=None, best_score=-10.0,
+            docking_completed=True,
+        ),
+    ]
+
+    summary = app._build_summary(results, threshold=2.0)
+
+    assert summary["n_actives"] == 1
+    assert summary["n_decoys"] == 1
+    assert summary["n_samples"] == 1
+    assert summary["roc_auc"] == 1.0
+    assert "1 actives, 1 decoys" in summary["interpretation"]["enrichment_message"]
+
+
+def test_property_matching_rejects_charge_and_size_mismatches():
+    app = _app_without_tk()
+    active = _result(
+        molecular_weight=400.0, logp=2.0, tpsa=80.0,
+        rotatable_bonds=5, ligand_charge=1,
+    )
+    matched = _result(
+        molecular_weight=380.0, logp=2.5, tpsa=70.0,
+        rotatable_bonds=4, ligand_charge=1,
+    )
+    too_small = _result(
+        molecular_weight=190.0, logp=2.0, tpsa=80.0,
+        rotatable_bonds=5, ligand_charge=1,
+    )
+    wrong_charge = _result(
+        molecular_weight=380.0, logp=2.5, tpsa=70.0,
+        rotatable_bonds=4, ligand_charge=0,
+    )
+
+    assert app._property_matched(active, matched) is True
+    assert app._property_matched(active, too_small) is False
+    assert app._property_matched(active, wrong_charge) is False

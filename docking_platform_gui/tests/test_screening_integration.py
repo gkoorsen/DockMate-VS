@@ -16,6 +16,7 @@ from docking_platform_gui.gui.redock_analysis import RedockResult
 
 class FakePipeline:
     variants = []
+    adaptive_limit = 2
 
     def __init__(self, *args, **kwargs):
         pass
@@ -33,6 +34,12 @@ class FakePipeline:
 
     def _prepare_ligand_variants(self, **kwargs):
         return self.variants
+
+    def _adaptive_variant_selection(self, variants, **kwargs):
+        return variants[:self.adaptive_limit]
+
+    def _select_diverse_variants(self, variants, count):
+        return variants[:count]
 
 
 class FakeSminaEngine:
@@ -139,6 +146,24 @@ def test_screening_case_selects_best_score_not_best_rmsd(monkeypatch, tmp_path):
     assert result.best_score == -9.0
     assert Path(result.output_file).parent.name == "v2"
     assert result.docking_completed is True
+    assert result.variants_prepared == 3
+    assert result.variants_docked == 3
+
+
+def test_adaptive_variant_mode_docks_only_selected_subset(monkeypatch, tmp_path):
+    scores = {f"v{i}": -float(i) for i in range(1, 7)}
+    app, pdb_file = _mock_case(monkeypatch, tmp_path, scores)
+    config = _single_config("score")
+    config["ligand_variant_mode"] = "adaptive"
+
+    result = app._run_single_case(
+        pdb_file, "sample", "A", "CC", tmp_path / "case", 2.0,
+        config, ligand_resname="LIG", site_mode="prediction", run_mode="screening",
+    )
+
+    assert result.variants_prepared == 6
+    assert result.variants_docked == 2
+    assert result.best_score == -2.0
 
 
 def test_failed_variant_is_skipped_when_another_variant_succeeds(monkeypatch, tmp_path):
