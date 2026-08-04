@@ -4,5 +4,6 @@ openpyxl
 rdkit
 loguru
 biopython
-pydantic
+pydantic<2
 MDAnalysis
+gemmi
