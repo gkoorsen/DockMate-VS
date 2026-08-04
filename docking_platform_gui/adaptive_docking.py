@@ -306,7 +306,8 @@ class AdaptiveDockingPipeline:
 
         logger.info("Preparing receptor once for all protocols...")
         prepared_receptor_pdbqt, prepared_receptor_pdb = self._prepare_receptor(
-            pdb_file=pdb_file
+            pdb_file=pdb_file,
+            site_ligand_resname=ligand_resname
         )
 
         # Extract crystal ligand if not provided
@@ -486,7 +487,10 @@ class AdaptiveDockingPipeline:
         else:
             prep_protein = ProteinPreparation(ProteinPreparationConfig(
                 ph=7.4,
-                water_handling=WaterHandling.REMOVE_ALL  # Critical: no waters!
+                water_handling=WaterHandling.REMOVE_ALL,  # Critical: no waters!
+                # Equally critical: strip the site ligand, or it blocks its own
+                # pocket and every pose is pushed to the periphery.
+                remove_hetero_residues=[ligand_resname] if ligand_resname else None
             ))
             prepared_protein = prep_protein.prepare_receptor(str(pdb_file))
             receptor_pdbqt = protocol_dir / "receptor.pdbqt"
@@ -716,12 +720,31 @@ class AdaptiveDockingPipeline:
         return sorted(variants, key=_key)[0]
 
     def _select_best_result(self, results: List[DockingResult], by: str) -> Optional[DockingResult]:
+        """Pick the best of several docking results.
+
+        Ranking by RMSD only works when the docked molecule has a known
+        reference pose. Decoys and screening compounds have none, so every
+        candidate's rmsd is None, every sort key collapses to +inf, and min()
+        silently returned whichever variant happened to come first. That is how
+        a crystal ligand was reported at -0.0 kcal/mol when one of its own
+        variants had reached -2.1: selection never looked at the score.
+
+        When no candidate carries a usable RMSD, fall back to ranking by score.
+        """
         if not results:
             return None
+
+        if by != "score" and not any(
+            getattr(r, "rmsd", None) is not None for r in results
+        ):
+            by = "score"
+
         metric = (lambda r: r.score) if by == "score" else (lambda r: r.rmsd)
+
         def _key(r: DockingResult) -> float:
             value = metric(r)
             return value if value is not None else float("inf")
+
         successes = [r for r in results if r.success]
         if successes:
             return min(successes, key=_key)
@@ -902,17 +925,26 @@ class AdaptiveDockingPipeline:
     def _prepare_receptor(
         self,
         pdb_file: Path,
-        water_handling: Optional[WaterHandling] = None
+        water_handling: Optional[WaterHandling] = None,
+        site_ligand_resname: Optional[str] = None
     ) -> Tuple[Path, Path]:
-        """Prepare receptor once per pipeline run and return PDBQT and PDB paths."""
+        """Prepare receptor once per pipeline run and return PDBQT and PDB paths.
+
+        site_ligand_resname names the co-crystal ligand defining the docking
+        site; it is stripped from the receptor. Without this the ligand stays in
+        the structure and blocks its own pocket, so docked poses land on the
+        periphery and redocking cannot reproduce the reference geometry.
+        """
         if water_handling is None:
             water_handling = WaterHandling.REMOVE_ALL
         elif isinstance(water_handling, str):
             water_handling = WaterHandling(water_handling)
 
+        strip = [site_ligand_resname] if site_ligand_resname else None
         prep_protein = ProteinPreparation(ProteinPreparationConfig(
             ph=7.4,
-            water_handling=water_handling
+            water_handling=water_handling,
+            remove_hetero_residues=strip
         ))
         prepared_protein = prep_protein.prepare_receptor(str(pdb_file))
         receptor_pdbqt = self.output_dir / "receptor_prepared.pdbqt"
@@ -969,7 +1001,10 @@ class AdaptiveDockingPipeline:
             scoring_function=scoring,
             exhaustiveness=exhaustiveness,
             num_modes=20,
-            cpu=4,
+            # Honour the GUI's CPU field. It was hardcoded to 4, so the setting
+            # only affected ligand preparation and every smina call ran on 4
+            # cores regardless of what the user asked for.
+            cpu=getattr(self, "n_cpus", None) or 4,
             seed=42,
             timeout_sec=self.smina_timeout_sec
         )

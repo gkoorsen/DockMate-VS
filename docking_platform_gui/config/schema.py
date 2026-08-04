@@ -171,6 +171,15 @@ class ProteinPreparationConfig(BaseModel):
         default=None,
         description="Parameters for selective water retention (only used if water_handling='selective')"
     )
+    remove_hetero_residues: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Residue names to strip from the receptor before docking, e.g. the "
+            "co-crystal ligand defining the site. Leaving the site ligand in "
+            "place blocks its own pocket, so poses are pushed to the periphery "
+            "and redocking cannot reproduce the reference geometry."
+        )
+    )
     optimize_hbonds: bool = Field(
         default=True,
         description="Optimize hydrogen bonds using Reduce"

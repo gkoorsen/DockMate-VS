@@ -1259,7 +1259,8 @@ class RedockAnalysisApp(tk.Tk):
                         case_dir,
                         config["threshold"],
                         config["adaptive"],
-                        ligand_resname=site_ligand
+                        ligand_resname=site_ligand,
+                        control_label=control_label
                     )
                 else:
                     result = self._run_single_case(
@@ -1274,7 +1275,8 @@ class RedockAnalysisApp(tk.Tk):
                         site_mode=site_mode,
                         pocket_center=pocket_center,
                         site_residues=site_residues,
-                        run_mode=config["mode"]
+                        run_mode=config["mode"],
+                        control_label=control_label
                     )
                 result.control_label = control_label
                 result.ligand_charge = ligand_charge
@@ -1336,7 +1338,8 @@ class RedockAnalysisApp(tk.Tk):
         case_dir: Path,
         threshold: float,
         adaptive_cfg: dict,
-        ligand_resname: Optional[str] = None
+        ligand_resname: Optional[str] = None,
+        control_label: Optional[int] = None
     ) -> RedockResult:
         pipeline = AdaptiveDockingPipeline(
             output_dir=case_dir,
@@ -1369,7 +1372,11 @@ class RedockAnalysisApp(tk.Tk):
         metrics = self._compute_pose_metrics(
             crystal_ligand_pdb=case_dir / "crystal_ligand.pdb",
             docked_file=best_result.output_file,
-            threshold=threshold
+            threshold=threshold,
+            control_label=control_label,
+            # The adaptive path rejects any labelled row upstream, so reaching
+            # here means this IS the structure's own crystal ligand.
+            is_self_dock=True
         )
         engine = "rdock" if best_result.output_file.suffix in (".sd", ".sdf") else "smina"
         protocol_attempts = [
@@ -1433,7 +1440,8 @@ class RedockAnalysisApp(tk.Tk):
         site_mode: str = "cocrystal",
         pocket_center: Optional[Tuple[float, float, float]] = None,
         site_residues: Optional[str] = None,
-        run_mode: str = "single"
+        run_mode: str = "single",
+        control_label: Optional[int] = None
     ) -> RedockResult:
         engine_name = single_cfg["engine"]
         pipeline = AdaptiveDockingPipeline(
@@ -1567,7 +1575,13 @@ class RedockAnalysisApp(tk.Tk):
                 metrics = self._compute_pose_metrics(
                     crystal_ligand_pdb=crystal_ligand_pdb,
                     docked_file=output_file,
-                    threshold=threshold
+                    threshold=threshold,
+                    control_label=control_label,
+                    has_reference_pose=crystal_ligand_pdb is not None,
+                    # run_mode "single" is a redock: the row is the crystal
+                    # ligand. "screening" rows are novel compounds, so only a
+                    # control_label of 1 qualifies there.
+                    is_self_dock=(run_mode != "screening")
                 )
                 rmsd = metrics.get("best_rmsd", 999.9) if metrics else 999.9
                 best_score = metrics.get("best_score")
@@ -2467,8 +2481,28 @@ class RedockAnalysisApp(tk.Tk):
         self,
         crystal_ligand_pdb: Path,
         docked_file: Path,
-        threshold: float
+        threshold: float,
+        control_label: Optional[int] = None,
+        has_reference_pose: bool = True,
+        is_self_dock: bool = False
     ) -> dict:
+        """Pose-level metrics for one docked case.
+
+        RMSD is only defined when the docked molecule IS the reference molecule
+        — i.e. redocking a crystal ligand (control_label == 1). Decoys and
+        screening compounds are different molecules with no known pose, so any
+        "RMSD" for them is meaningless. It is not merely unknown: computing it
+        anyway previously let the MCS fallback match a fragment of a small
+        compound onto a large crystal ligand and report sub-angstrom agreement
+        (an 11-atom compound scored 0.06 A against 68-atom imatinib), which then
+        propagated into the summary's success rate and mean RMSD.
+
+        Passing control_label lets this return score-only metrics for
+        non-actives. has_reference_pose=False forces the same behaviour when the
+        caller knows no reference exists regardless of label. is_self_dock=True
+        marks a redock run, where the docked molecule is the crystal ligand by
+        construction and no control label is present.
+        """
         if not docked_file.exists():
             return {}
 
@@ -2482,6 +2516,22 @@ class RedockAnalysisApp(tk.Tk):
             valid_scores = [s for s in scores if s is not None]
             if valid_scores:
                 best_score = min(valid_scores)
+
+        # RMSD is only meaningful for a true self-docking case.
+        #
+        # Two ways a case qualifies:
+        #   * is_self_dock=True  — a redock run, where every row IS the crystal
+        #     ligand by construction (the adaptive path refuses labelled rows
+        #     outright, so control_label is always None there).
+        #   * control_label == 1 — a screening run's positive control.
+        # Keying on the label alone would have suppressed RMSD for every plain
+        # redock case, which is the one place RMSD is the whole point.
+        rmsd_is_defined = has_reference_pose and (is_self_dock or control_label == 1)
+        if not rmsd_is_defined:
+            return {
+                "pose_count": pose_count,
+                "best_score": best_score
+            }
 
         ref_mol = self._load_reference_mol(crystal_ligand_pdb)
         if ref_mol is None:
@@ -3791,14 +3841,18 @@ class RedockAnalysisApp(tk.Tk):
             tpr.append(tp / pos)
             fpr.append(fp / neg)
 
-        roc_auc = float(np.trapz(tpr, fpr))
+        # np.trapz was removed in NumPy 2.0 (renamed to np.trapezoid).
+        # This environment runs NumPy 2.5, where the old name raises
+        # AttributeError and takes the whole summary down.
+        _trap = getattr(np, "trapezoid", None) or np.trapz
+        roc_auc = float(_trap(tpr, fpr))
 
         min_fpr = max(min_fpr, 1e-6)
         fpr_grid = np.logspace(np.log10(min_fpr), 0.0, num=200)
         tpr_interp = np.interp(fpr_grid, fpr, tpr)
         log_fpr = np.log10(fpr_grid)
-        auc_log = float(np.trapz(tpr_interp, log_fpr))
-        auc_log_random = float(np.trapz(fpr_grid, log_fpr))
+        auc_log = float(_trap(tpr_interp, log_fpr))
+        auc_log_random = float(_trap(fpr_grid, log_fpr))
         log_range = 0.0 - np.log10(min_fpr)
         log_auc = (auc_log - auc_log_random) / log_range * 100.0
 
@@ -3994,8 +4048,71 @@ class RedockAnalysisApp(tk.Tk):
                 continue
             score_labels.append((rank_score, int(result.control_label)))
 
+        # Per-structure enrichment.
+        #
+        # Docking scores are not comparable across different proteins: each
+        # receptor has its own score scale, so pooling controls from many
+        # targets into ONE ROC curve measures between-protein score offsets,
+        # not the ability to tell binders from decoys. With a multi-target
+        # screening template (one crystal ligand + its decoys per structure)
+        # the pooled AUC can read ~0.70 while EVERY structure separates its
+        # own active from its own decoys perfectly.
+        #
+        # The meaningful unit is one structure. Compute enrichment per
+        # (pdb_id, ligand_resname) and report the distribution; keep the
+        # pooled number too, but label it as diagnostic only.
+        per_structure: Dict[tuple, List[Tuple[float, int]]] = {}
+        for result in results:
+            if result.control_label not in (0, 1):
+                continue
+            rank_score = self._rank_score_value(result)
+            if rank_score is None:
+                continue
+            key = (result.pdb_id, result.ligand_resname)
+            per_structure.setdefault(key, []).append(
+                (rank_score, int(result.control_label))
+            )
+
+        struct_rows = []
+        for (pdb_id, resname), sl in sorted(per_structure.items()):
+            m = self._compute_enrichment_metrics(sl)
+            if not m:
+                continue
+            # Did the crystal ligand outscore every decoy at this structure?
+            actives = [s for s, lab in sl if lab == 1]
+            decoys = [s for s, lab in sl if lab == 0]
+            top_active = max(actives) if actives else None
+            struct_rows.append({
+                "pdb_id": pdb_id,
+                "ligand": resname,
+                "roc_auc": m["roc_auc"],
+                "actives": m["actives"],
+                "decoys": m["decoys"],
+                "active_beats_all_decoys": (
+                    bool(top_active is not None and decoys
+                         and top_active > max(decoys))
+                ),
+            })
+
+        if struct_rows:
+            aucs = [r["roc_auc"] for r in struct_rows]
+            n_clean = sum(1 for r in struct_rows if r["active_beats_all_decoys"])
+            summary["per_structure_enrichment"] = struct_rows
+            summary["n_structures_with_controls"] = len(struct_rows)
+            summary["mean_structure_roc_auc"] = float(np.mean(aucs))
+            summary["median_structure_roc_auc"] = float(np.median(aucs))
+            summary["n_structures_active_top"] = n_clean
+            summary["frac_structures_active_top"] = float(n_clean / len(struct_rows))
+            summary["failed_control_structures"] = [
+                f"{r['pdb_id']}/{r['ligand']}"
+                for r in struct_rows if not r["active_beats_all_decoys"]
+            ]
+
         enrichment = self._compute_enrichment_metrics(score_labels)
         if enrichment:
+            # Pooled across all targets: only interpretable for a single
+            # receptor. See per_structure_enrichment above.
+            summary["pooled_enrichment_is_cross_target"] = len(per_structure) > 1
             summary["control_actives"] = enrichment["actives"]
             summary["control_decoys"] = enrichment["decoys"]
             summary["roc_auc"] = enrichment["roc_auc"]
@@ -4088,16 +4205,68 @@ class RedockAnalysisApp(tk.Tk):
                 f"- Methods: {method_text}"
             ])
 
-        if summary.get("roc_auc") is not None:
+        if summary.get("n_structures_with_controls"):
+            n_s = summary["n_structures_with_controls"]
+            n_top = summary.get("n_structures_active_top")
+            failed = summary.get("failed_control_structures") or []
             lines.extend([
                 "",
-                "## Control Enrichment",
+                "## Control Enrichment (per structure)",
+                "",
+                f"- Structures with controls: {n_s}",
+                f"- Crystal ligand outscores all decoys: {n_top}/{n_s} "
+                f"({self._fmt(summary.get('frac_structures_active_top'))})",
+                f"- Mean per-structure ROC AUC: "
+                f"{self._fmt(summary.get('mean_structure_roc_auc'))}",
+                f"- Median per-structure ROC AUC: "
+                f"{self._fmt(summary.get('median_structure_roc_auc'))}",
+            ])
+            if failed:
+                lines.extend([
+                    "",
+                    "Structures where the crystal ligand did NOT beat its decoys - "
+                    "screening scores at these structures are not interpretable:",
+                    "",
+                ])
+                lines.extend(f"- {s}" for s in failed[:25])
+                if len(failed) > 25:
+                    lines.append(f"- ... and {len(failed) - 25} more")
+
+            rows = summary.get("per_structure_enrichment") or []
+            if rows:
+                lines.extend([
+                    "",
+                    "| PDB | Ligand | ROC AUC | Actives | Decoys | Active top |",
+                    "| --- | --- | ---: | ---: | ---: | :---: |",
+                ])
+                for r in sorted(rows, key=lambda x: x["roc_auc"]):
+                    lines.append(
+                        f"| {r['pdb_id']} | {r['ligand']} | "
+                        f"{self._fmt(r['roc_auc'])} | {r['actives']} | "
+                        f"{r['decoys']} | "
+                        f"{'yes' if r['active_beats_all_decoys'] else 'NO'} |"
+                    )
+
+        if summary.get("roc_auc") is not None:
+            cross = summary.get("pooled_enrichment_is_cross_target")
+            lines.extend([
+                "",
+                "## Control Enrichment (pooled)",
                 "",
                 f"- Actives: {summary.get('control_actives')}",
                 f"- Decoys: {summary.get('control_decoys')}",
                 f"- ROC AUC: {self._fmt(summary.get('roc_auc'))}",
                 f"- LogAUC (FPR 0.001-1): {self._fmt(summary.get('log_auc'))}"
             ])
+            if cross:
+                lines.extend([
+                    "",
+                    "DIAGNOSTIC ONLY: these controls span multiple proteins. "
+                    "Docking scores are not comparable across receptors, so the "
+                    "pooled AUC partly measures between-protein score offsets. "
+                    "Use the per-structure table above to judge whether "
+                    "screening scores are trustworthy.",
+                ])
 
         if summary.get("charge_count"):
             lines.extend([

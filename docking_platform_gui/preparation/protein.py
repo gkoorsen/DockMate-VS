@@ -159,6 +159,16 @@ class ProteinPreparation:
                 ligand_site_center
             )
 
+            # 3b. Strip requested heteroatoms (normally the co-crystal ligand
+            # that defines the docking site). Must happen before hydrogens are
+            # added and before PDBQT conversion, or the ligand ends up in the
+            # receptor and blocks its own pocket.
+            if getattr(self.config, "remove_hetero_residues", None):
+                structure = self._remove_hetero_residues(
+                    structure,
+                    self.config.remove_hetero_residues
+                )
+
             # Save clean structure without hydrogens (for PDBQT conversion)
             # Deep copy before hydrogen addition
             structure_no_h = copy.deepcopy(structure)
@@ -346,6 +356,48 @@ class ProteinPreparation:
 
                 for res_id in residues_to_remove:
                     chain.detach_child(res_id)
+
+        return structure
+
+    def _remove_hetero_residues(
+        self,
+        structure: PDB.Structure.Structure,
+        resnames: List[str]
+    ) -> PDB.Structure.Structure:
+        """Remove named heteroatom residues (e.g. the co-crystal site ligand).
+
+        Docking into a receptor that still contains its own co-crystal ligand
+        silently produces nonsense: the pocket is occupied, so poses are pushed
+        to the periphery and the crystal ligand cannot even reproduce its own
+        geometry. Comparison is case-insensitive because PDB resnames vary in
+        case and preparation may rewrite HETATM records as ATOM.
+        """
+        wanted = {str(r).strip().upper() for r in resnames if str(r).strip()}
+        if not wanted:
+            return structure
+
+        removed = 0
+        for model in structure:
+            for chain in model:
+                residues_to_remove = [
+                    residue.get_id()
+                    for residue in chain
+                    if residue.get_resname().strip().upper() in wanted
+                ]
+                for res_id in residues_to_remove:
+                    chain.detach_child(res_id)
+                    removed += 1
+
+        if removed:
+            logger.info(
+                f"Removed {removed} heteroatom residue(s) from receptor: "
+                f"{sorted(wanted)}"
+            )
+        else:
+            logger.warning(
+                f"Requested removal of {sorted(wanted)} but no matching "
+                f"residue was found in the receptor"
+            )
 
         return structure
 

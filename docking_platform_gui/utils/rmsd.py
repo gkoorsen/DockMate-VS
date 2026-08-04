@@ -159,9 +159,27 @@ def _rmsd_via_mcs(ref_mol: Chem.Mol, probe_mol: Chem.Mol) -> float:
         atomCompare=rdFMCS.AtomCompare.CompareElements
     )
 
-    min_required = max(3, int(min_atoms * 0.7))
+    # Coverage must be judged against BOTH molecules, not just the smaller one.
+    # Scaling by min_atoms made the bar trivial whenever the probe was much
+    # smaller than the reference: an 11-atom compound matched 8 atoms into
+    # 68-atom imatinib (need >= 7) and was handed a 0.06 A "RMSD". Requiring
+    # the MCS to cover most of the reference as well means only genuinely
+    # equivalent molecules pass.
+    ref_atoms = ref_noh.GetNumAtoms()
+    probe_atoms = probe_noh.GetNumAtoms()
+    min_required = max(3, int(min_atoms * 0.7), int(ref_atoms * 0.7))
     if mcs.numAtoms < min_required:
-        raise ValueError("MCS coverage too small for RMSD")
+        raise ValueError(
+            f"MCS coverage too small for RMSD: matched {mcs.numAtoms} atoms, "
+            f"need >= {min_required} (ref {ref_atoms}, probe {probe_atoms})"
+        )
+    # Guard against comparing molecules of clearly different size even when MCS
+    # coverage passes.
+    if max(ref_atoms, probe_atoms) > 1.3 * min_atoms:
+        raise ValueError(
+            f"Heavy-atom counts too dissimilar for RMSD: ref {ref_atoms}, "
+            f"probe {probe_atoms}"
+        )
 
     pattern = Chem.MolFromSmarts(mcs.smartsString)
     ref_match = ref_noh.GetSubstructMatch(pattern)
