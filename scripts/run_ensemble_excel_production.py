@@ -58,6 +58,23 @@ def read_excel_and_validate(excel_file):
         logger.error("\nPlease add SMILES for all compounds!")
         return None
     
+    # Every PDB_ID row is pooled into ONE ensemble sharing ONE grid box, so a template
+    # spanning several proteins is not a valid input - it would dock each compound
+    # against unrelated receptors. Use one workbook per target.
+    ens_rows = df[df['PDB_ID'].notna()]
+    if 'Protein' in df.columns and len(ens_rows) > 0:
+        proteins = sorted(set(ens_rows['Protein'].dropna().astype(str).str.strip()) - {''})
+        if len(proteins) > 1:
+            logger.error(f"⚠️  Structure rows span {len(proteins)} proteins: {', '.join(proteins)}")
+            for prot in proteins:
+                ids = ens_rows[ens_rows['Protein'].astype(str).str.strip() == prot]['PDB_ID']
+                logger.error(f"    {prot}: {', '.join(str(p) for p in ids)}")
+            logger.error("")
+            logger.error("All structures with a PDB_ID are pooled into ONE ensemble sharing ONE")
+            logger.error("grid box. Mixing proteins would dock every compound against unrelated")
+            logger.error("receptors. Split this into one workbook per target and run each separately.")
+            return None
+
     logger.info(f"✅ Excel validation passed")
     logger.info(f"  - {len(df)} total compounds")
     logger.info(f"  - {df['PDB_ID'].notna().sum()} with PDB structures (ensemble)")
@@ -217,9 +234,157 @@ def _pdb_fallback_candidates(pdbqt_path: Path):
     return candidates
 
 
-def calculate_consensus_center(structures):
-    """Calculate consensus grid center from ligand positions in PDBQT/PDB files."""
+def _structure_source_for_grid(pdbqt_path):
+    """
+    Locate the PDB/mmCIF that carries the ligand for a receptor PDBQT.
+
+    Receptor PDBQT files produced by prepare_receptor4.py have the ligand stripped, so
+    site geometry has to come from the sibling PDB. Returns None if none is present.
+    """
+    pdbqt_file = Path(pdbqt_path)
+    candidates = list(_pdb_fallback_candidates(pdbqt_file))
+    candidates += [pdbqt_file.with_suffix(".cif"), pdbqt_file.with_suffix(".mmcif")]
+    base = pdbqt_file.name
+    for suffix in ("_prepared.pdbqt", "_prep.pdbqt", "_receptor.pdbqt", ".pdbqt"):
+        if base.endswith(suffix):
+            stem = base[:-len(suffix)]
+            for ext in (".pdb", ".cif", ".mmcif"):
+                candidates.append(pdbqt_file.with_name(f"{stem}_aligned{ext}"))
+                candidates.append(pdbqt_file.with_name(f"{stem}{ext}"))
+            break
+    return next((p for p in candidates if p.exists()), None)
+
+
+def check_ensemble_coframed(structures, grid_center, grid_size, comp_ids=None):
+    """
+    Verify every ensemble member's binding site falls inside the grid box.
+
+    This is the gate that catches an unaligned ensemble. One grid box is shared by all
+    receptors, which is only valid if they occupy a common coordinate frame. PDB entries
+    generally do NOT: on a real CK2-alpha ensemble the pairwise ligand-centroid
+    distances were 396.5, 387.1 and 88.2 A, and the mean of those centres sat in bulk
+    solvent. Docking still completes and returns plausible-looking scores.
+
+    Returns True when the ensemble is usable, False when it is not.
+    """
+    sources = {}
+    for struct in structures:
+        src = _structure_source_for_grid(struct)
+        if src is not None:
+            sources[struct] = src
+
+    if not sources:
+        logger.warning(
+            "\nCannot verify ensemble coordinate frames: no sibling PDB/CIF found "
+            "next to the receptor PDBQT files."
+        )
+        logger.warning(
+            "  Place the corresponding .pdb files alongside them so the grid can be checked."
+        )
+        return True
+
+    try:
+        from docking_platform_gui.utils.structure_alignment import validate_grid
+    except ImportError:
+        logger.warning("\ngemmi not installed - skipping ensemble frame check.")
+        logger.warning("  Install with: pip install gemmi")
+        return True
+
+    logger.info("\nVerifying ensemble structures share a coordinate frame...")
+    ok, rows = validate_grid(
+        list(sources.values()), grid_center, grid_size, comp_ids=comp_ids
+    )
+
+    for row in rows:
+        label = Path(row["structure"]).name
+        if row["status"] == "no_ligand":
+            logger.info(f"  {label}: no ligand found (skipped)")
+        elif row["status"] == "OUTSIDE":
+            logger.error(
+                f"  ✗ {label}: site ({row['comp_id']}) is {row['distance']} A from the "
+                f"grid centre - OUTSIDE the box"
+            )
+        elif row["status"] == "near_edge":
+            logger.warning(
+                f"  ! {label}: site ({row['comp_id']}) is {row['distance']} A from the "
+                f"grid centre - close to the box face"
+            )
+        else:
+            logger.info(f"  ✓ {label}: site ({row['comp_id']}) {row['distance']} A from centre")
+
+    if not ok:
+        logger.error("")
+        logger.error("=" * 70)
+        logger.error("ABORTING: ensemble structures are not in a common coordinate frame.")
+        logger.error("=" * 70)
+        logger.error("One grid box is shared by every receptor, so at least one structure")
+        logger.error("would be docked into empty solvent. The run would complete and report")
+        logger.error("scores that mean nothing.")
+        logger.error("")
+        logger.error("Fix: superpose the structures first, then prepare receptors from the")
+        logger.error("aligned copies:")
+        logger.error("")
+        logger.error("  python -m docking_platform_gui.utils.align_structures \\")
+        logger.error("      --structures 1ABC.pdb 2DEF.pdb 3GHI.pdb \\")
+        logger.error("      --out-dir structures_aligned")
+        logger.error("")
+        logger.error("Then re-run with --pdb-dir pointing at the aligned receptors.")
+        logger.error("To proceed anyway (not recommended), pass --skip-frame-check.")
+
+    return ok
+
+
+def calculate_consensus_center(structures, comp_ids=None):
+    """
+    Consensus grid center from the binding-site ligand of each ensemble member.
+
+    Each structure contributes ONE ligand copy, chosen as the largest non-additive
+    component (or an explicit comp_id), and for multimers the copy nearest the reference
+    site. Averaging every HETATM instead - as this function previously did - lets
+    crystallisation additives and glycans dominate: in 6TGU ethylene glycol contributes
+    70 atoms against the inhibitor's 66 and pulls the centre ~17 A off-site; in 1MX1 the
+    NAG/SIA/NDG glycans pull it off the steroid pocket entirely.
+    """
     logger.info("\nCalculating consensus grid center...")
+
+    sources = {}
+    for struct in structures:
+        src = _structure_source_for_grid(struct)
+        if src is not None:
+            sources[struct] = src
+
+    if sources:
+        try:
+            from docking_platform_gui.utils.structure_alignment import derive_grid
+
+            spec = derive_grid(list(sources.values()), comp_ids=comp_ids)
+            for site in spec.sites:
+                logger.info(
+                    f"  {site.path.name}: {site.comp_id} "
+                    f"({site.center[0]:.2f}, {site.center[1]:.2f}, {site.center[2]:.2f})"
+                    + (f"  [copy 1 of {site.n_copies}]" if site.n_copies > 1 else "")
+                )
+            logger.info(
+                f"\n  Consensus: ({spec.center[0]:.2f}, {spec.center[1]:.2f}, {spec.center[2]:.2f})"
+            )
+            logger.info(f"  Std dev: {tuple(spec.spread_std)}")
+            logger.info(f"  Max deviation from consensus: {spec.max_deviation} A")
+            logger.info(
+                f"  Suggested box size: {spec.size[0]:.0f} A "
+                f"(pass --grid-size to override)"
+            )
+            if spec.max_deviation > 5.0:
+                logger.warning(
+                    f"  Sites disagree by up to {spec.max_deviation} A - the structures may "
+                    "not be superposed, or one ligand may occupy a different pocket."
+                )
+            return list(spec.center)
+        except ImportError:
+            logger.warning("  gemmi not installed - falling back to raw HETATM averaging.")
+            logger.warning("  Install gemmi for correct site selection: pip install gemmi")
+        except ValueError as exc:
+            logger.error(f"  {exc}")
+            return None
 
     centers = []
     exclude_resnames = {"HOH", "WAT", "SOL", "TIP3", "CL", "NA", "K", "CA", "MG", "ZN", "FE", "MN", "BR", "I", "SO4", "PO4", "GOL"}
@@ -398,6 +563,12 @@ def main():
         '--compare-all-singles', action='store_true',
         help='Compare ensemble against each single structure (adds summary CSV)'
     )
+    parser.add_argument(
+        '--skip-frame-check', action='store_true',
+        help='Skip verifying that ensemble structures share a coordinate frame. '
+             'Only use this if you have already superposed them by other means - '
+             'an unaligned ensemble docks into solvent and returns meaningless scores.'
+    )
     
     args = parser.parse_args()
     
@@ -450,6 +621,27 @@ def main():
         logger.error("Failed to determine grid center.")
         logger.error("Provide --grid-center X Y Z, or set --center-mode protein for apo fallback.")
         return 1
+
+    # 4b. Verify the shared grid box is actually valid for every receptor.
+    # One grid is passed to all structures, so they must share a coordinate frame.
+    if len(ensemble_structures) > 1 and not args.skip_frame_check:
+        comp_ids = None
+        if 'Ligand' in df.columns:
+            ens_rows = df[df['PDB_ID'].notna()]
+            comp_ids = {}
+            for _, row in ens_rows.iterrows():
+                lig = row.get('Ligand')
+                if pd.notna(lig) and str(lig).strip():
+                    pdb_id = str(row['PDB_ID']).strip()
+                    comp_ids[pdb_id] = str(lig).strip()
+                    comp_ids[f"{pdb_id}_aligned"] = str(lig).strip()
+                    comp_ids[f"{pdb_id}_prepared"] = str(lig).strip()
+        if not check_ensemble_coframed(
+            ensemble_structures, grid_center, args.grid_size, comp_ids=comp_ids
+        ):
+            return 1
+    elif args.skip_frame_check:
+        logger.warning("\n! Ensemble coordinate-frame check SKIPPED (--skip-frame-check).")
     
     # 5. Setup experiment
     logger.info("\n" + "="*70)
