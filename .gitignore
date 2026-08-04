@@ -1,19 +1,46 @@
-# Build / run artifacts
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Packaging artifacts
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Docking run artifacts and caches
 output/
 results/
+ligand_cache/
+**/ligand_cache/
 *.pdb
 *.pdbqt
 *.sd
 *.sdf
 *.log
-redock_gui.log
-# macOS
+*_control_enrichment_roc.png
+
+# Editor, operating-system, and temporary files
 .DS_Store
-**/.DS_Store
-# Virtual envs
-venv/
-ENV/
-# temporary
+.idea/
+.vscode/
 *.tmp
 *.bak
+*.backup
+*.orig
+*.rej
 *.swp
+*~
