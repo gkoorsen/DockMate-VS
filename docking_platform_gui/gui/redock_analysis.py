@@ -3192,14 +3192,15 @@ class RedockAnalysisApp(tk.Tk):
     def _select_best_pose(
         self,
         crystal_ligand_pdb: Optional[Path],
-        docked_file: Path
+        docked_file: Path,
+        selection_mode: str = "best_rmsd"
     ) -> Optional[Tuple[Optional[Chem.Mol], Chem.Mol, Optional[float], Optional[float], int, int]]:
         poses, scores = self._load_poses_and_scores(docked_file)
         if not poses:
             return None
 
         ref_mol = self._load_reference_mol(crystal_ligand_pdb) if crystal_ligand_pdb else None
-        if ref_mol is None:
+        if selection_mode == "best_score" or ref_mol is None:
             best_idx = None
             if scores:
                 best_idx = min(
@@ -3210,7 +3211,10 @@ class RedockAnalysisApp(tk.Tk):
             if best_idx is None:
                 best_idx = 0
             best_score = scores[best_idx] if scores and best_idx < len(scores) else None
-            return None, poses[best_idx], None, best_score, best_idx, len(poses)
+            return ref_mol, poses[best_idx], None, best_score, best_idx, len(poses)
+
+        if selection_mode != "best_rmsd":
+            raise ValueError(f"Unknown pose selection mode: {selection_mode}")
 
         best_idx = None
         best_rmsd = None
@@ -3598,7 +3602,8 @@ class RedockAnalysisApp(tk.Tk):
             def _worker():
                 selected = self._select_best_pose(
                     case["crystal_ligand_pdb"],
-                    case["output_file"]
+                    case["output_file"],
+                    selection_mode="best_score"
                 )
                 if not selected:
                     return None
