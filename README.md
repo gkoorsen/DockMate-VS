@@ -46,3 +46,7 @@ Core dependencies are in `pyproject.toml`. You may prefer conda for RDKit and Op
 
 - Rescoring uses `smina --score_only`.
 - Adaptive docking uses the 5-protocol flow implemented in `adaptive_docking.py`.
+
+## License
+
+This project is licensed under the MIT License. See [`LICENSE`](LICENSE).

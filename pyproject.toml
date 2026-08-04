@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Redock analysis GUI with adaptive docking pipeline"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 authors = [
   { name = "Gerrit Koorsen" }
 ]
