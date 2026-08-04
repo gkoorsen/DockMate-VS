@@ -1,8 +1,11 @@
+import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pytest
 
-from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp
+from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp, RedockResult
 
 
 def _app_without_tk() -> RedockAnalysisApp:
@@ -71,3 +74,114 @@ def test_control_preserving_sample_is_balanced_and_keeps_sheet_order():
     assert {p["pdb_id"] for p in non_controls} == {"1AAA", "2BBB", "3CCC", "4DDD"}
     assert [pairs.index(p) for p in sampled] == sorted(pairs.index(p) for p in sampled)
 
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (1, 1),
+        (0, 0),
+        ("active", 1),
+        ("positive", 1),
+        ("decoy", 0),
+        ("negative", 0),
+        ("", None),
+        (None, None),
+        ("unknown", None),
+        (2, None),
+    ],
+)
+def test_control_label_parser(value, expected):
+    assert _app_without_tk()._parse_control_label(value) == expected
+
+
+def test_sampling_without_control_preservation_can_sample_any_case():
+    pairs = [
+        {"pdb_id": "1AAA", "ligand": "LIG", "control_label": 1},
+        {"pdb_id": "1AAA", "ligand": "LIG", "control_label": 0},
+        {"pdb_id": "1AAA", "ligand": "LIG", "control_label": None},
+    ]
+
+    sampled = _app_without_tk()._apply_random_sample(
+        pairs, size=1, seed=1, include_controls=False
+    )
+
+    assert len(sampled) == 1
+    assert sampled[0] in pairs
+
+
+@pytest.mark.parametrize(
+    ("scores", "expected_auc"),
+    [
+        ([(3.0, 1), (2.0, 0), (1.0, 0)], 1.0),
+        ([(1.0, 1), (2.0, 0), (3.0, 0)], 0.0),
+        ([(1.0, 1), (1.0, 0)], 0.5),
+    ],
+)
+def test_enrichment_auc_handles_perfect_reversed_and_tied_scores(scores, expected_auc):
+    metrics = _app_without_tk()._compute_enrichment_metrics(scores)
+
+    assert metrics is not None
+    assert metrics["roc_auc"] == pytest.approx(expected_auc)
+
+
+def test_enrichment_requires_both_classes():
+    app = _app_without_tk()
+
+    assert app._compute_enrichment_metrics([]) is None
+    assert app._compute_enrichment_metrics([(1.0, 1)]) is None
+    assert app._compute_enrichment_metrics([(1.0, 0)]) is None
+
+
+def _result(**overrides) -> RedockResult:
+    values = {
+        "pdb_id": "1ABC",
+        "ligand_resname": "LIG",
+        "ligand_chain": "A",
+        "mode": "screening",
+        "engine": "smina",
+        "protocol": "single",
+        "best_rmsd": 999.9,
+        "success": False,
+        "runtime_sec": 1.0,
+    }
+    values.update(overrides)
+    return RedockResult(**values)
+
+
+def test_rank_score_uses_rescore_precedence_and_correct_direction():
+    app = _app_without_tk()
+
+    assert app._rank_score_value(_result(best_score=-7.0)) == 7.0
+    assert app._rank_score_value(_result(best_score=-7.0, rescore_score=-8.0)) == 8.0
+    assert app._rank_score_value(
+        _result(rescore_score=-8.0, rescore_cnn_score=0.7)
+    ) == 0.7
+    assert app._rank_score_value(
+        _result(rescore_cnn_score=0.7, rescore_cnn_affinity=9.0)
+    ) == 9.0
+    assert app._rank_score_value(_result()) is None
+
+
+def test_progress_file_distinguishes_docking_completion_from_rmsd_success(tmp_path: Path):
+    path = tmp_path / "progress.json"
+    results = [
+        _result(best_score=-7.0, docking_completed=True),
+        _result(error_message="failed", docking_completed=False),
+    ]
+
+    _app_without_tk()._write_progress(path, results)
+    payload = json.loads(path.read_text())
+
+    assert payload["results"][0]["docking_completed"] is True
+    assert payload["results"][0]["success"] is False
+    assert payload["results"][1]["docking_completed"] is False
+
+
+def test_manifest_json_converter_handles_paths_and_numpy_values():
+    app = _app_without_tk()
+    payload = json.dumps(
+        {"path": Path("run"), "array": np.array([1, 2]), "number": np.int64(3)},
+        default=app._json_default,
+    )
+
+    assert json.loads(payload) == {"path": "run", "array": [1, 2], "number": 3}

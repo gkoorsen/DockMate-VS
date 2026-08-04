@@ -106,6 +106,7 @@ class RedockResult:
     rescore_error: Optional[str] = None
     site_method: Optional[str] = None
     docking_completed: Optional[bool] = None
+    case_id: Optional[str] = None
 
 
 class RedockAnalysisApp(tk.Tk):
@@ -993,6 +994,20 @@ class RedockAnalysisApp(tk.Tk):
                 self._safe_call(self._show_results)(results_path)
                 self._set_busy(False)
                 return
+            elif msg_type == "cancelled":
+                _, results_path = msg
+                self.progress_dialog.log(f"Partial results saved to {results_path}")
+                self.progress_dialog.destroy()
+                self.progress_dialog = None
+                messagebox.showinfo(
+                    "Cancelled",
+                    "Docking campaign cancelled. Completed cases were saved and "
+                    "will be skipped when the same run is restarted."
+                )
+                self._set_status("Run cancelled; progress saved")
+                self.last_results_path = Path(results_path)
+                self._set_busy(False)
+                return
 
         if self._worker and self._worker.is_alive():
             self.after(200, self._poll_queue)
@@ -1206,7 +1221,14 @@ class RedockAnalysisApp(tk.Tk):
                 for p in pairs
             ],
         }
-        manifest_path.write_text(json.dumps(manifest, indent=2, default=self._json_default))
+        resumed = self._load_resumable_results(manifest_path, progress_path, manifest)
+        results_by_case = {result.case_id: result for result in resumed if result.case_id}
+        if resumed:
+            self._queue.put((
+                "log",
+                f"Resuming compatible run: {len(resumed)} completed cases will be skipped"
+            ))
+        self._write_json_atomic(manifest_path, manifest)
 
         rescore_cfg = config.get("rescore", {})
         rescore_enabled = bool(rescore_cfg.get("enable"))
@@ -1217,10 +1239,11 @@ class RedockAnalysisApp(tk.Tk):
                 self._queue.put(("log", "Smina binary not found; rescoring disabled"))
                 rescore_enabled = False
 
-        results: List[RedockResult] = []
+        cancelled = False
         for idx, item in enumerate(pairs, 1):
             if self.progress_dialog and self.progress_dialog.cancelled:
                 self._queue.put(("log", "Run cancelled by user"))
+                cancelled = True
                 break
 
             pdb_id = item["pdb_id"]
@@ -1251,6 +1274,10 @@ class RedockAnalysisApp(tk.Tk):
             self._queue.put(("progress", idx - 1, len(pairs), f"{pdb_id} {ligand}"))
 
             case_id = item.get("case_id") or f"{pdb_id}_{dock_name}"
+            if case_id in results_by_case:
+                self._queue.put(("log", f"Skipping completed case {case_id}"))
+                self._queue.put(("progress", idx, len(pairs), f"{pdb_id} {ligand} resumed"))
+                continue
             case_dir = output_dir / self._safe_case_id(case_id)
             case_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1338,6 +1365,7 @@ class RedockAnalysisApp(tk.Tk):
                 result.ligand_charge = ligand_charge
                 result.dock_name = dock_name
                 result.docking_completed = bool(result.output_file)
+                result.case_id = case_id
 
                 if rescore_enabled and rescore_binary and result.output_file:
                     out_path = Path(result.output_file)
@@ -1352,7 +1380,7 @@ class RedockAnalysisApp(tk.Tk):
                             result.rescore_method = rescore.get("method")
                             result.rescore_score = rescore.get("score")
                             result.rescore_error = rescore.get("error")
-                results.append(result)
+                results_by_case[case_id] = result
                 if result.best_rmsd >= 900 and result.best_score is not None:
                     self._queue.put((
                         "log",
@@ -1362,7 +1390,7 @@ class RedockAnalysisApp(tk.Tk):
                     self._queue.put(("log", f"{pdb_id} {ligand} RMSD={result.best_rmsd:.2f}"))
 
             except Exception as exc:
-                results.append(RedockResult(
+                results_by_case[case_id] = RedockResult(
                     pdb_id=pdb_id,
                     ligand_resname=site_ligand or ligand,
                     ligand_chain=chain or "",
@@ -1376,16 +1404,19 @@ class RedockAnalysisApp(tk.Tk):
                     control_label=control_label,
                     dock_name=dock_name,
                     site_method=site_mode,
-                    docking_completed=False
-                ))
+                    docking_completed=False,
+                    case_id=case_id
+                )
                 self._queue.put(("log", f"{pdb_id} {ligand} failed: {exc}"))
 
-            self._write_progress(progress_path, results)
+            ordered_results = self._ordered_results(pairs, results_by_case)
+            self._write_progress(progress_path, ordered_results)
             # Case finished — advance the bar only now.
             self._queue.put(("progress", idx, len(pairs), f"{pdb_id} {ligand} done"))
 
+        results = self._ordered_results(pairs, results_by_case)
         self._write_results(results_path, results_csv, results, config["threshold"])
-        self._queue.put(("done", results_path))
+        self._queue.put(("cancelled" if cancelled else "done", results_path))
 
     def _run_adaptive_case(
         self,
@@ -1707,9 +1738,78 @@ class RedockAnalysisApp(tk.Tk):
             docking_completed=True
         )
 
+    @staticmethod
+    def _ordered_results(
+        pairs: List[Dict[str, str]], results_by_case: Dict[str, RedockResult]
+    ) -> List[RedockResult]:
+        ordered = []
+        for pair in pairs:
+            case_id = pair.get("case_id") or f"{pair['pdb_id']}_{pair.get('dock_name') or pair['ligand']}"
+            if case_id in results_by_case:
+                ordered.append(results_by_case[case_id])
+        return ordered
+
+    def _load_resumable_results(
+        self, manifest_path: Path, progress_path: Path, current_manifest: dict
+    ) -> List[RedockResult]:
+        if not manifest_path.exists() or not progress_path.exists():
+            return []
+        try:
+            previous_manifest = json.loads(manifest_path.read_text())
+            expected = self._json_normalize({
+                "config": current_manifest.get("config"),
+                "cases": current_manifest.get("cases"),
+            })
+            previous = {
+                "config": previous_manifest.get("config"),
+                "cases": previous_manifest.get("cases"),
+            }
+            if previous != expected:
+                logger.info("Existing progress is incompatible with this run; starting fresh")
+                return []
+
+            payload = json.loads(progress_path.read_text())
+            cases = current_manifest.get("cases", [])
+            resumed = []
+            for item in payload.get("results", []):
+                result = RedockResult(**item)
+                if not result.case_id:
+                    matches = [
+                        case for case in cases
+                        if case.get("pdb_id") == result.pdb_id
+                        and case.get("site_ligand") == result.ligand_resname
+                        and case.get("dock_name") == result.dock_name
+                        and case.get("control_label") == result.control_label
+                    ]
+                    if len(matches) == 1:
+                        result.case_id = matches[0].get("case_id")
+                output_exists = bool(result.output_file and Path(result.output_file).exists())
+                completed = result.docking_completed is True or (
+                    result.docking_completed is None
+                    and output_exists
+                    and not result.error_message
+                )
+                if result.case_id and completed and output_exists:
+                    result.docking_completed = True
+                    resumed.append(result)
+            return resumed
+        except Exception as exc:
+            logger.warning("Could not resume existing progress: {}", exc)
+            return []
+
+    @classmethod
+    def _json_normalize(cls, value: object):
+        return json.loads(json.dumps(value, default=cls._json_default))
+
+    @classmethod
+    def _write_json_atomic(cls, path: Path, payload: object) -> None:
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(json.dumps(payload, indent=2, default=cls._json_default))
+        temporary.replace(path)
+
     def _write_progress(self, progress_path: Path, results: List[RedockResult]) -> None:
         payload = {"results": [asdict(r) for r in results]}
-        progress_path.write_text(json.dumps(payload, indent=2))
+        self._write_json_atomic(progress_path, payload)
 
     @staticmethod
     def _json_default(value: object):
@@ -1729,7 +1829,7 @@ class RedockAnalysisApp(tk.Tk):
         threshold: float
     ) -> None:
         payload = {"results": [asdict(r) for r in results]}
-        json_path.write_text(json.dumps(payload, indent=2))
+        self._write_json_atomic(json_path, payload)
 
         if results:
             df = pd.DataFrame([asdict(r) for r in results])
@@ -2440,7 +2540,7 @@ class RedockAnalysisApp(tk.Tk):
         for line in stdout.splitlines():
             if "Affinity:" not in line:
                 continue
-            match = re.search(r"Affinity:\\s*([-0-9.]+)", line)
+            match = re.search(r"Affinity:\s*([-0-9.]+)", line)
             if not match:
                 continue
             try:
@@ -2450,6 +2550,31 @@ class RedockAnalysisApp(tk.Tk):
         if not scores:
             return None
         return {"score": min(scores), "scores": scores}
+
+    def _single_model_pdbqt(self, source: Path, destination: Path) -> Path:
+        """Return a score-only compatible PDBQT containing the first pose."""
+        lines = source.read_text().splitlines(keepends=True)
+        if not any(line.lstrip().startswith("MODEL") for line in lines):
+            return source
+
+        pose_lines = []
+        in_first_model = False
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith("MODEL"):
+                if in_first_model:
+                    break
+                in_first_model = True
+                continue
+            if in_first_model and stripped.startswith("ENDMDL"):
+                break
+            if in_first_model:
+                pose_lines.append(line)
+
+        if not pose_lines:
+            return source
+        destination.write_text("".join(pose_lines))
+        return destination
 
     def _rescore_with_smina(
         self,
@@ -2469,6 +2594,10 @@ class RedockAnalysisApp(tk.Tk):
                 ligand_pdbqt = candidate
             else:
                 return {"error": f"Cannot rescore non-PDBQT output: {output_file.name}"}
+        else:
+            ligand_pdbqt = self._single_model_pdbqt(
+                output_file, case_dir / "rescore_pose_1.pdbqt"
+            )
 
         try:
             result = subprocess.run(
@@ -3965,11 +4094,17 @@ class RedockAnalysisApp(tk.Tk):
         fpr = [0.0]
         tp = 0
         fp = 0
-        for _, label in ranked:
-            if label == 1:
-                tp += 1
-            else:
-                fp += 1
+        index = 0
+        while index < len(ranked):
+            score = ranked[index][0]
+            tied_labels = []
+            while index < len(ranked) and ranked[index][0] == score:
+                tied_labels.append(ranked[index][1])
+                index += 1
+            # Advance tied observations together. Ordering equal scores one by
+            # one makes AUC depend on spreadsheet order rather than ranking.
+            tp += sum(label == 1 for label in tied_labels)
+            fp += sum(label == 0 for label in tied_labels)
             tpr.append(tp / pos)
             fpr.append(fp / neg)
 
@@ -4014,7 +4149,8 @@ class RedockAnalysisApp(tk.Tk):
 
     def _rank_score_value(self, result: "RedockResult") -> Optional[float]:
         if result.rescore_cnn_affinity is not None:
-            return -float(result.rescore_cnn_affinity)
+            # GNINA CNNaffinity is a predicted pK; larger values rank better.
+            return float(result.rescore_cnn_affinity)
         if result.rescore_cnn_score is not None:
             return float(result.rescore_cnn_score)
         if result.rescore_score is not None:
