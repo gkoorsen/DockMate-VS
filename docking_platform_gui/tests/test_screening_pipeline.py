@@ -107,6 +107,17 @@ def test_campaign_inputs_are_prefetched_before_offline_phase(monkeypatch, tmp_pa
     assert app._network_phase_complete is True
 
 
+def test_covalent_site_ligand_link_is_detected(tmp_path):
+    pdb = tmp_path / "linked.pdb"
+    pdb.write_text(
+        "LINK         SG  CYS A  61                 C10 JMR A 301     1555   1555  1.68\n"
+    )
+
+    assert RedockAnalysisApp._has_covalent_ligand_link(pdb, "JMR", "A") is True
+    assert RedockAnalysisApp._has_covalent_ligand_link(pdb, "JMR", "B") is False
+    assert RedockAnalysisApp._has_covalent_ligand_link(pdb, "STI", "A") is False
+
+
 def test_control_preserving_sample_is_balanced_and_keeps_sheet_order():
     pairs = []
     for pdb_id in ("1AAA", "2BBB", "3CCC", "4DDD"):

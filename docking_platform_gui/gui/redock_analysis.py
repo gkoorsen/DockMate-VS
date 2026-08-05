@@ -1156,7 +1156,10 @@ class RedockAnalysisApp(tk.Tk):
                 int(row.get("seed", -1)),
             )
 
-        completed = {condition_key(row) for row in rows if row.get("status") == "complete"}
+        completed = {
+            condition_key(row) for row in rows
+            if row.get("status") in ("complete", "unsupported")
+        }
         sweep = config["protocol_sweep"]
         conditions = [
             (pair, water, exhaustiveness, seed)
@@ -1214,6 +1217,13 @@ class RedockAnalysisApp(tk.Tk):
                 ligand_chain = pair.get("chain") or self._detect_ligand_chain(pdb_file, site_ligand)
                 if not ligand_chain:
                     raise ValueError(f"Ligand chain not found for {pdb_id}/{site_ligand}")
+                if self._has_covalent_ligand_link(pdb_file, site_ligand, ligand_chain):
+                    row["status"] = "unsupported"
+                    row["error_message"] = (
+                        "Covalent receptor-ligand LINK: standard Vina/Smina docking is invalid"
+                    )
+                    self._queue.put(("log", f"{label}: skipped covalent complex"))
+                    raise StopIteration
                 smiles = pair.get("smiles") or self._get_ligand_smiles(
                     pdb_file, site_ligand, ligand_chain, output_dir
                 )
@@ -1248,6 +1258,8 @@ class RedockAnalysisApp(tk.Tk):
                     "seed": seed, "status": "complete",
                 })
                 self._queue.put(("log", f"{label}: best RMSD {result.best_rmsd:.2f} A"))
+            except StopIteration:
+                pass
             except Exception as exc:
                 row["error_message"] = str(exc)
                 self._queue.put(("log", f"{label} failed: {exc}"))
@@ -1268,6 +1280,14 @@ class RedockAnalysisApp(tk.Tk):
         frame = pd.DataFrame(rows)
         complete = frame[frame.get("status") == "complete"].copy() if not frame.empty else frame
         lines = ["# Protocol Development Summary", ""]
+        if not frame.empty and "status" in frame:
+            unsupported = int((frame["status"] == "unsupported").sum())
+            if unsupported:
+                lines.extend([
+                    f"- Unsupported covalent conditions skipped: {unsupported}",
+                    "- Covalent complexes require a dedicated covalent-docking method.",
+                    "",
+                ])
         if complete.empty:
             lines.append("No protocol conditions completed successfully.")
         else:
@@ -1792,6 +1812,12 @@ class RedockAnalysisApp(tk.Tk):
         ligand_resname: Optional[str] = None,
         control_label: Optional[int] = None
     ) -> RedockResult:
+        if self._has_covalent_ligand_link(pdb_file, ligand_resname or ligand_name, ligand_chain):
+            raise ValueError(
+                f"{pdb_file.stem.upper()}/{ligand_resname or ligand_name} is covalently "
+                "linked to the receptor. Standard Vina/Smina redocking is not valid for "
+                "this complex; use a covalent-docking protocol or another validation structure."
+            )
         pipeline = AdaptiveDockingPipeline(
             output_dir=case_dir,
             rmsd_threshold=threshold,
@@ -1894,6 +1920,14 @@ class RedockAnalysisApp(tk.Tk):
         run_mode: str = "single",
         control_label: Optional[int] = None
     ) -> RedockResult:
+        if site_mode == "cocrystal" and self._has_covalent_ligand_link(
+            pdb_file, ligand_resname or ligand_name, ligand_chain
+        ):
+            raise ValueError(
+                f"{pdb_file.stem.upper()}/{ligand_resname or ligand_name} is covalently "
+                "linked to the receptor. Standard Vina/Smina redocking is not valid for "
+                "this complex; use a covalent-docking protocol or another validation structure."
+            )
         engine_name = single_cfg["engine"]
         pipeline = AdaptiveDockingPipeline(
             output_dir=case_dir,
@@ -1910,7 +1944,10 @@ class RedockAnalysisApp(tk.Tk):
 
         receptor_pdbqt, receptor_pdb = pipeline._prepare_receptor(
             pdb_file,
-            water_handling=single_cfg["water_handling"]
+            water_handling=single_cfg["water_handling"],
+            site_ligand_resname=(
+                ligand_resname or ligand_name if site_mode == "cocrystal" else None
+            )
         )
 
         enumerate_states = not pipeline._contains_metal(smiles)
@@ -2542,6 +2579,28 @@ class RedockAnalysisApp(tk.Tk):
         if not success or not file_path:
             raise ValueError(message)
         return Path(file_path)
+
+    @staticmethod
+    def _has_covalent_ligand_link(
+        pdb_path: Path, ligand_resname: str, ligand_chain: Optional[str]
+    ) -> bool:
+        """Detect PDB LINK records joining the site ligand to an amino acid."""
+        amino_acids = {
+            "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+            "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+        }
+        ligand_resname = ligand_resname.upper()
+        with open(pdb_path) as handle:
+            for line in handle:
+                if not line.startswith("LINK"):
+                    continue
+                first = (line[17:20].strip().upper(), line[21:22].strip())
+                second = (line[47:50].strip().upper(), line[51:52].strip())
+                for ligand, partner in ((first, second), (second, first)):
+                    chain_matches = not ligand_chain or ligand[1] == ligand_chain
+                    if ligand[0] == ligand_resname and chain_matches and partner[0] in amino_acids:
+                        return True
+        return False
 
     def _prefetch_remote_inputs(self, pairs: List[Dict[str, str]], output_dir: Path) -> None:
         """Download every campaign input before any docking calculation starts."""

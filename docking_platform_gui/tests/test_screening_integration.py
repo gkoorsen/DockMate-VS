@@ -17,11 +17,13 @@ from docking_platform_gui.gui.redock_analysis import RedockResult
 class FakePipeline:
     variants = []
     adaptive_limit = 2
+    receptor_site_ligand = None
 
     def __init__(self, *args, **kwargs):
         pass
 
-    def _prepare_receptor(self, pdb_file, water_handling):
+    def _prepare_receptor(self, pdb_file, water_handling, site_ligand_resname=None):
+        type(self).receptor_site_ligand = site_ligand_resname
         root = Path(pdb_file).parent
         receptor_pdbqt = root / "receptor.pdbqt"
         receptor_pdb = root / "receptor.pdb"

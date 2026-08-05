@@ -17,6 +17,7 @@ from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp
 
 WATER_MODES = ("remove_all", "retain_all", "selective")
 EXHAUSTIVENESS = (8, 16, 32)
+PROTOCOL_VERSION = 2
 
 
 def _active_rows(template: Path) -> list[dict]:
@@ -67,7 +68,9 @@ def main() -> int:
     rows = pd.read_csv(csv_path).to_dict("records") if csv_path.exists() else []
     completed = {
         (str(row["pdb_id"]), str(row["water_handling"]), int(row["exhaustiveness"]))
-        for row in rows if row.get("status") == "complete"
+        for row in rows
+        if row.get("status") in ("complete", "unsupported")
+        and int(row.get("protocol_version", -1)) == PROTOCOL_VERSION
     }
     app = object.__new__(RedockAnalysisApp)
     app._queue = queue.Queue()
@@ -83,6 +86,7 @@ def main() -> int:
         "seed": 42,
         "variant_mode": "adaptive",
         "variant_selection": "rmsd",
+        "protocol_version": PROTOCOL_VERSION,
     }
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
@@ -113,8 +117,17 @@ def main() -> int:
                 row = {
                     **active, "water_handling": water,
                     "exhaustiveness": exhaustiveness, "status": "failed",
+                    "protocol_version": PROTOCOL_VERSION,
                 }
                 try:
+                    if app._has_covalent_ligand_link(
+                        pdb_file, active["ligand"], ligand_chain
+                    ):
+                        row["status"] = "unsupported"
+                        row["error"] = (
+                            "Covalent receptor-ligand LINK: standard Vina/Smina docking is invalid"
+                        )
+                        raise StopIteration
                     result = app._run_single_case(
                         pdb_file=pdb_file, ligand_name=active["name"], ligand_chain=ligand_chain,
                         smiles=active["smiles"], case_dir=case_dir, threshold=2.0,
@@ -123,6 +136,8 @@ def main() -> int:
                     )
                     row.update(asdict(result))
                     row["status"] = "complete"
+                except StopIteration:
+                    logger.warning("Unsupported covalent complex: {}", key)
                 except Exception as exc:
                     logger.exception("Condition failed: {}", key)
                     row["error"] = str(exc)

@@ -1327,7 +1327,8 @@ END_SECTION
         saw_model = False
         in_first_model = True
 
-        with open(pdb_file) as f_in, open(output_pdb, 'w') as f_out:
+        selected_lines = []
+        with open(pdb_file) as f_in:
             for line in f_in:
                 if line.startswith('MODEL'):
                     if saw_model:
@@ -1355,7 +1356,29 @@ END_SECTION
                 if target_res_id is None:
                     target_res_id = res_id
                 if res_id == target_res_id:
-                    f_out.write(line)
+                    selected_lines.append(line)
+
+        # Keep one coordinate per atom when the crystal reports alternate
+        # conformations. Feeding both A/B locations to RMSD and box generation
+        # creates a non-physical, duplicated reference ligand.
+        best_by_atom = {}
+        for line in selected_lines:
+            atom_name = line[12:16]
+            altloc = line[16:17].strip()
+            try:
+                occupancy = float(line[54:60])
+            except ValueError:
+                occupancy = 0.0
+            priority = (occupancy, altloc in ("", "A"), altloc == "")
+            previous = best_by_atom.get(atom_name)
+            if previous is None or priority > previous[0]:
+                best_by_atom[atom_name] = (priority, line)
+
+        with open(output_pdb, "w") as f_out:
+            for _, line in best_by_atom.values():
+                if line[16:17].strip():
+                    line = line[:16] + " " + line[17:]
+                f_out.write(line)
 
         if output_pdb.stat().st_size == 0:
             raise ValueError(

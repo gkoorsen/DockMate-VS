@@ -23,6 +23,7 @@ from dataclasses import dataclass
 try:
     import MDAnalysis as mda
     from MDAnalysis.analysis import align, rms
+    from MDAnalysis.exceptions import NoDataError
     HAS_MDANALYSIS = True
 except ImportError:
     HAS_MDANALYSIS = False
@@ -250,8 +251,34 @@ class BindingSiteDefinition:
                     f"Available residues: {set(universe.residues.resnames)}"
                 )
 
+        ligand = self._collapse_alternate_locations(ligand)
+
         logger.info(f"Found ligand '{ligand_resname}' with {len(ligand.atoms)} atoms")
         return ligand
+
+    @staticmethod
+    def _collapse_alternate_locations(ligand: 'mda.AtomGroup') -> 'mda.AtomGroup':
+        """Select one coordinate for each atom name in a disordered residue."""
+        try:
+            altlocs = ligand.altLocs
+        except (AttributeError, NoDataError):
+            return ligand
+        if not any(str(value).strip() for value in altlocs):
+            return ligand
+
+        chosen = {}
+        try:
+            occupancies = ligand.occupancies
+        except (AttributeError, NoDataError):
+            occupancies = np.zeros(len(ligand.atoms))
+        for index, atom in enumerate(ligand.atoms):
+            altloc = str(altlocs[index]).strip()
+            occupancy = float(occupancies[index])
+            priority = (occupancy, altloc in ("", "A"), altloc == "")
+            previous = chosen.get(atom.name)
+            if previous is None or priority > previous[0]:
+                chosen[atom.name] = (priority, index)
+        return ligand[[item[1] for item in chosen.values()]]
 
     def _calculate_center(self, ligand: 'mda.AtomGroup') -> np.ndarray:
         """

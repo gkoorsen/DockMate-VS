@@ -252,7 +252,8 @@ def main() -> int:
 
         receptor_pdbqt, _ = pipeline._prepare_receptor(
             str(pdb_path),
-            water_handling=water_mode
+            water_handling=water_mode,
+            site_ligand_resname=ligand_name
         )
 
         binding_site = BindingSiteDefinition(margin=args.box_margin).from_cocrystal(
