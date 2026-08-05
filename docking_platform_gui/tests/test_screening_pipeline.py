@@ -1,4 +1,5 @@
 import json
+import queue
 from pathlib import Path
 
 import numpy as np
@@ -54,6 +55,56 @@ def test_screening_always_selects_ligand_variants_by_score():
     assert app._variant_selection_for_mode("screening", "rmsd") == "score"
     assert app._variant_selection_for_mode("screening", "score") == "score"
     assert app._variant_selection_for_mode("single", "rmsd") == "rmsd"
+
+
+def test_protocol_integer_lists_are_validated_and_deduplicated():
+    assert RedockAnalysisApp._parse_positive_int_list("8, 16, 8", "Values") == [8, 16]
+
+    with pytest.raises(ValueError, match="comma-separated"):
+        RedockAnalysisApp._parse_positive_int_list("8, high", "Values")
+    with pytest.raises(ValueError, match="greater than zero"):
+        RedockAnalysisApp._parse_positive_int_list("8, 0", "Values")
+
+
+def test_protocol_development_uses_unique_control_actives_only():
+    pairs = [
+        {"pdb_id": "1ABC", "site_ligand": "LIG", "chain": "A", "control_label": 1},
+        {"pdb_id": "1ABC", "site_ligand": "LIG", "chain": "A", "control_label": 1},
+        {"pdb_id": "1ABC", "site_ligand": "LIG", "chain": "A", "control_label": 0},
+        {"pdb_id": "2DEF", "site_ligand": "DRG", "chain": None, "control_label": None},
+        {"pdb_id": "3GHI", "site_ligand": "ACT", "chain": "B", "control_label": 1},
+    ]
+
+    actives = RedockAnalysisApp._protocol_active_pairs(pairs)
+
+    assert [(item["pdb_id"], item["site_ligand"]) for item in actives] == [
+        ("1ABC", "LIG"),
+        ("3GHI", "ACT"),
+    ]
+
+
+def test_campaign_inputs_are_prefetched_before_offline_phase(monkeypatch, tmp_path):
+    app = _app_without_tk()
+    app._queue = queue.Queue()
+    downloads = []
+    monkeypatch.setattr(
+        app, "_download_pdb",
+        lambda pdb_id, _directory: downloads.append(pdb_id) or tmp_path / f"{pdb_id}.pdb"
+    )
+    monkeypatch.setattr(app, "_detect_ligand_chain", lambda _path, _ligand: "A")
+    monkeypatch.setattr(app, "_get_ligand_smiles", lambda *_args: "CCO")
+    pairs = [
+        {"pdb_id": "1abc", "site_ligand": "LIG", "smiles": None, "chain": None},
+        {"pdb_id": "1abc", "site_ligand": "LIG", "smiles": "CCC", "chain": None},
+        {"pdb_id": "2def", "site_ligand": None, "smiles": "CCN", "chain": None},
+    ]
+
+    app._prefetch_remote_inputs(pairs, tmp_path)
+
+    assert downloads == ["1ABC", "2DEF"]
+    assert pairs[0]["smiles"] == "CCO"
+    assert pairs[0]["chain"] == "A"
+    assert app._network_phase_complete is True
 
 
 def test_control_preserving_sample_is_balanced_and_keeps_sheet_order():

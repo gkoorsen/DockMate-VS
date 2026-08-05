@@ -133,6 +133,7 @@ class RedockAnalysisApp(tk.Tk):
         self.file_var = tk.StringVar()
         self.output_var = tk.StringVar(value=str(Path("output/redock_analysis").resolve()))
         self.mode_var = tk.StringVar(value="adaptive")
+        self.redock_mode_var = tk.StringVar(value="adaptive")
         self.exclude_additives_var = tk.BooleanVar(value=False)
         self.exclude_cofactors_var = tk.BooleanVar(value=False)
         self.sample_enable_var = tk.BooleanVar(value=False)
@@ -177,6 +178,13 @@ class RedockAnalysisApp(tk.Tk):
         self.rdock_radius_var = tk.StringVar()
 
         self.threshold_var = tk.StringVar(value="2.0")
+        self.protocol_water_vars = {
+            "remove_all": tk.BooleanVar(value=True),
+            "retain_all": tk.BooleanVar(value=True),
+            "selective": tk.BooleanVar(value=True),
+        }
+        self.protocol_exhaustiveness_var = tk.StringVar(value="8, 16, 32")
+        self.protocol_seeds_var = tk.StringVar(value="42")
 
         self.pairs_label_var = tk.StringVar(value="Loaded pairs: 0")
 
@@ -193,6 +201,7 @@ class RedockAnalysisApp(tk.Tk):
         self._pair_count_request_id = 0
         self._variant_all_rmsd_btn: Optional[tk.Radiobutton] = None
         self._rmsd_variant_available = True
+        self._network_phase_complete = False
 
         self._load_filter_config()
         self._build_ui()
@@ -316,36 +325,74 @@ class RedockAnalysisApp(tk.Tk):
         self._register_busy_widget(output_btn)
 
         row += 1
-        tk.Label(container, text="Docking mode:").grid(row=row, column=0, sticky="w", pady=(10, 5))
-        mode_frame = tk.Frame(container)
-        mode_frame.grid(row=row, column=1, sticky="w", pady=(10, 5))
+        self.workflow_notebook = ttk.Notebook(container)
+        self.workflow_notebook.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 5))
+        self.redock_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
+        self.protocol_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
+        self.screening_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
+        self.workflow_notebook.add(self.redock_tab, text="Redock")
+        self.workflow_notebook.add(self.protocol_tab, text="Protocol Development")
+        self.workflow_notebook.add(self.screening_tab, text="Screening")
+        self.workflow_notebook.bind("<<NotebookTabChanged>>", self._on_workflow_changed)
+
+        tk.Label(
+            self.redock_tab,
+            text="Reproduce a co-crystal pose and measure RMSD against the native ligand.",
+            anchor="w"
+        ).pack(anchor="w", pady=(0, 6))
+        mode_frame = tk.Frame(self.redock_tab)
+        mode_frame.pack(anchor="w")
         mode_adaptive = tk.Radiobutton(
             mode_frame,
-            text="Redock (adaptive search)",
-            variable=self.mode_var,
+            text="Adaptive search",
+            variable=self.redock_mode_var,
             value="adaptive",
-            command=self._update_mode
+            command=self._select_redock_mode
         )
         mode_adaptive.pack(side="left", padx=(0, 10))
         self._register_busy_widget(mode_adaptive)
         mode_single = tk.Radiobutton(
             mode_frame,
-            text="Redock (single protocol)",
-            variable=self.mode_var,
+            text="Single protocol",
+            variable=self.redock_mode_var,
             value="single",
-            command=self._update_mode
+            command=self._select_redock_mode
         )
         mode_single.pack(side="left")
         self._register_busy_widget(mode_single)
-        mode_screening = tk.Radiobutton(
-            mode_frame,
-            text="Screen compounds",
-            variable=self.mode_var,
-            value="screening",
-            command=self._update_mode
+        tk.Label(
+            self.protocol_tab,
+            text="Benchmark protocol combinations on control actives only; completed conditions resume automatically.",
+            anchor="w"
+        ).grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
+        tk.Label(self.protocol_tab, text="Water handling:").grid(row=1, column=0, sticky="w")
+        for column, (value, label) in enumerate((
+            ("remove_all", "Remove all"),
+            ("retain_all", "Retain all"),
+            ("selective", "Selective"),
+        ), start=1):
+            widget = tk.Checkbutton(
+                self.protocol_tab, text=label, variable=self.protocol_water_vars[value]
+            )
+            widget.grid(row=1, column=column, sticky="w", padx=(5, 10))
+            self._register_busy_widget(widget)
+        tk.Label(self.protocol_tab, text="Exhaustiveness values:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        protocol_exhaustiveness = tk.Entry(
+            self.protocol_tab, textvariable=self.protocol_exhaustiveness_var, width=18
         )
-        mode_screening.pack(side="left", padx=(10, 0))
-        self._register_busy_widget(mode_screening)
+        protocol_exhaustiveness.grid(row=2, column=1, columnspan=2, sticky="w", pady=(8, 0))
+        self._register_busy_widget(protocol_exhaustiveness)
+        tk.Label(self.protocol_tab, text="Seeds:").grid(row=2, column=3, sticky="e", pady=(8, 0))
+        protocol_seeds = tk.Entry(self.protocol_tab, textvariable=self.protocol_seeds_var, width=14)
+        protocol_seeds.grid(row=2, column=4, sticky="w", padx=5, pady=(8, 0))
+        self._register_busy_widget(protocol_seeds)
+
+        tk.Label(
+            self.screening_tab,
+            text=("Dock controls and screening samples with one validated protocol. "
+                  "Controls are used for enrichment; unlabelled samples are excluded from AUC."),
+            anchor="w", justify="left", wraplength=850
+        ).pack(anchor="w")
 
         row += 1
         tk.Label(container, text="RMSD threshold (A):").grid(row=row, column=0, sticky="w")
@@ -456,6 +503,20 @@ class RedockAnalysisApp(tk.Tk):
         adaptive_btn = tk.Button(self.adaptive_frame, text="Browse", command=self._safe_call(self._browse_rdock))
         adaptive_btn.grid(row=1, column=2, padx=5)
         self._register_busy_widget(adaptive_btn)
+
+        tk.Label(self.adaptive_frame, text="CPU cores:").grid(
+            row=2, column=0, sticky="w", pady=(8, 0)
+        )
+        adaptive_cpu_entry = tk.Entry(
+            self.adaptive_frame, textvariable=self.cpu_var, width=8
+        )
+        adaptive_cpu_entry.grid(row=2, column=1, sticky="w", padx=5, pady=(8, 0))
+        self._register_busy_widget(adaptive_cpu_entry)
+        tk.Label(
+            self.adaptive_frame,
+            text="Used by ligand preparation and each Vina/Smina docking step",
+            fg="#666666"
+        ).grid(row=2, column=2, sticky="w", pady=(8, 0))
 
         row += 1
         self.single_frame = tk.LabelFrame(
@@ -703,6 +764,21 @@ class RedockAnalysisApp(tk.Tk):
             self.vina_bin_var.set(path)
             self._set_status("Vina binary updated")
 
+    def _on_workflow_changed(self, _event: Optional[tk.Event] = None) -> None:
+        selected = self.workflow_notebook.select()
+        if selected == str(self.protocol_tab):
+            self.mode_var.set("protocol_development")
+        elif selected == str(self.screening_tab):
+            self.mode_var.set("screening")
+        else:
+            self.mode_var.set(self.redock_mode_var.get())
+        self._update_mode()
+        self._update_pair_count()
+
+    def _select_redock_mode(self) -> None:
+        self.mode_var.set(self.redock_mode_var.get())
+        self._update_mode()
+
     def _update_mode(self) -> None:
         mode = self.mode_var.get()
         if mode == "adaptive":
@@ -711,6 +787,14 @@ class RedockAnalysisApp(tk.Tk):
         else:
             self.adaptive_frame.grid_remove()
             self.single_frame.grid()
+        if self._run_button:
+            labels = {
+                "adaptive": "Run Redock",
+                "single": "Run Redock",
+                "protocol_development": "Run Protocol Sweep",
+                "screening": "Run Screening",
+            }
+            self._run_button.configure(text=labels.get(mode, "Run Analysis"))
 
     def _update_engine(self) -> None:
         engine = self.engine_var.get()
@@ -738,10 +822,12 @@ class RedockAnalysisApp(tk.Tk):
         excel_path = Path(self.file_var.get())
         exclude_additives = self.exclude_additives_var.get()
         exclude_cofactors = self.exclude_cofactors_var.get()
-        sample_enabled = self.sample_enable_var.get()
+        sample_enabled = self.mode_var.get() == "screening" and self.sample_enable_var.get()
         sample_size_raw = self.sample_size_var.get()
         include_controls = self.sample_include_controls_var.get()
-        use_smiles = self.use_smiles_var.get() or self.mode_var.get() == "screening"
+        use_smiles = self.use_smiles_var.get() or self.mode_var.get() in (
+            "screening", "protocol_development"
+        )
 
         if not excel_path.exists():
             self.pairs_label_var.set("Loaded pairs: 0")
@@ -826,7 +912,8 @@ class RedockAnalysisApp(tk.Tk):
         sample_size = None
         sample_seed = None
         include_controls = self.sample_include_controls_var.get()
-        if self.sample_enable_var.get():
+        sampling_enabled = self.mode_var.get() == "screening" and self.sample_enable_var.get()
+        if sampling_enabled:
             sample_size = self._parse_sample_size(silent=False)
             if sample_size is None:
                 self._set_status("Invalid sample size")
@@ -849,10 +936,12 @@ class RedockAnalysisApp(tk.Tk):
             "filters": {
                 "exclude_additives": self.exclude_additives_var.get(),
                 "exclude_cofactors": self.exclude_cofactors_var.get(),
-                "use_smiles": self.use_smiles_var.get() or self.mode_var.get() == "screening",
+                "use_smiles": self.use_smiles_var.get() or self.mode_var.get() in (
+                    "screening", "protocol_development"
+                ),
             },
             "sampling": {
-                "enabled": self.sample_enable_var.get(),
+                "enabled": sampling_enabled,
                 "size": sample_size,
                 "seed": sample_seed,
                 "include_all_controls": include_controls,
@@ -875,6 +964,13 @@ class RedockAnalysisApp(tk.Tk):
             )
             self._set_status("Configuration invalid - check log for details")
             return
+        if config["mode"] == "protocol_development":
+            try:
+                config["protocol_sweep"] = self._collect_protocol_sweep_config()
+            except ValueError as exc:
+                messagebox.showerror("Protocol settings", str(exc))
+                self._set_status("Invalid protocol sweep settings")
+                return
 
         self._set_busy(True, "Parsing Excel...")
         self.update_idletasks()
@@ -885,7 +981,9 @@ class RedockAnalysisApp(tk.Tk):
                     excel_path,
                     exclude_additives=self.exclude_additives_var.get(),
                     exclude_cofactors=self.exclude_cofactors_var.get(),
-                    use_smiles=self.use_smiles_var.get() or config["mode"] == "screening",
+                    use_smiles=self.use_smiles_var.get() or config["mode"] in (
+                        "screening", "protocol_development"
+                    ),
                     include_controls=include_controls
                 )
             except Exception as exc:
@@ -895,6 +993,19 @@ class RedockAnalysisApp(tk.Tk):
 
             if not pairs:
                 self._run_on_ui(lambda: self._start_run_failed("No pairs", "No valid PDB/ligand pairs found."))
+                return
+
+            if config["mode"] == "protocol_development":
+                actives = self._protocol_active_pairs(pairs)
+                if not actives:
+                    msg = (
+                        "Protocol Development requires at least one control active. "
+                        "In the current template format, a row with a decoy SMILES "
+                        "creates an active/decoy control pair."
+                    )
+                    self._run_on_ui(lambda m=msg: self._start_run_failed("No control actives", m))
+                    return
+                self._run_on_ui(lambda: self._begin_protocol_run(actives, config))
                 return
 
             if sample_size and sample_size > 0:
@@ -975,6 +1086,211 @@ class RedockAnalysisApp(tk.Tk):
         self.after(200, self._poll_queue)
         self._set_status("Run started")
 
+    @staticmethod
+    def _parse_positive_int_list(value: str, field: str) -> List[int]:
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        if not parts:
+            raise ValueError(f"{field} must contain at least one integer.")
+        try:
+            values = list(dict.fromkeys(int(part) for part in parts))
+        except ValueError as exc:
+            raise ValueError(f"{field} must be a comma-separated list of integers.") from exc
+        if any(item <= 0 for item in values):
+            raise ValueError(f"{field} values must be greater than zero.")
+        return values
+
+    @staticmethod
+    def _protocol_active_pairs(pairs: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Return one positive control for each structure/crystal-ligand pair."""
+        active_pairs = []
+        seen = set()
+        for pair in pairs:
+            if pair.get("control_label") != 1 or not pair.get("site_ligand"):
+                continue
+            key = (pair.get("pdb_id"), pair.get("site_ligand"), pair.get("chain"))
+            if key not in seen:
+                seen.add(key)
+                active_pairs.append(pair)
+        return active_pairs
+
+    def _collect_protocol_sweep_config(self) -> dict:
+        water_modes = [
+            mode for mode, variable in self.protocol_water_vars.items() if variable.get()
+        ]
+        if not water_modes:
+            raise ValueError("Select at least one water-handling method.")
+        return {
+            "water_modes": water_modes,
+            "exhaustiveness": self._parse_positive_int_list(
+                self.protocol_exhaustiveness_var.get(), "Exhaustiveness"
+            ),
+            "seeds": self._parse_positive_int_list(self.protocol_seeds_var.get(), "Seeds"),
+        }
+
+    def _begin_protocol_run(self, actives: List[Dict[str, str]], config: dict) -> None:
+        sweep = config["protocol_sweep"]
+        total = (
+            len(actives) * len(sweep["water_modes"])
+            * len(sweep["exhaustiveness"]) * len(sweep["seeds"])
+        )
+        self.progress_dialog = ProgressDialog(self, total_ligands=total)
+        self._queue = queue.Queue()
+        self._worker = threading.Thread(
+            target=self._run_protocol_worker, args=(actives, config), daemon=True
+        )
+        self._worker.start()
+        self.after(200, self._poll_queue)
+        self._set_status(f"Protocol sweep started ({total} conditions)")
+
+    def _run_protocol_worker(self, actives: List[Dict[str, str]], config: dict) -> None:
+        output_dir = config["output_dir"] / "protocol_development"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        results_path = output_dir / "protocol_development_results.csv"
+        manifest_path = output_dir / "protocol_development_manifest.json"
+        rows = pd.read_csv(results_path).to_dict("records") if results_path.exists() else []
+
+        def condition_key(row: dict) -> Tuple[str, str, str, int, int]:
+            return (
+                str(row.get("pdb_id", "")), str(row.get("ligand_resname", row.get("site_ligand", ""))),
+                str(row.get("water_handling", "")), int(row.get("exhaustiveness", -1)),
+                int(row.get("seed", -1)),
+            )
+
+        completed = {condition_key(row) for row in rows if row.get("status") == "complete"}
+        sweep = config["protocol_sweep"]
+        conditions = [
+            (pair, water, exhaustiveness, seed)
+            for pair in actives
+            for water in sweep["water_modes"]
+            for exhaustiveness in sweep["exhaustiveness"]
+            for seed in sweep["seeds"]
+        ]
+        pending_actives = []
+        for pair in actives:
+            has_pending_condition = any(
+                (pair["pdb_id"], pair["site_ligand"], water, exhaustiveness, seed)
+                not in completed
+                for water in sweep["water_modes"]
+                for exhaustiveness in sweep["exhaustiveness"]
+                for seed in sweep["seeds"]
+            )
+            if has_pending_condition:
+                pending_actives.append(pair)
+        if pending_actives and not (self.progress_dialog and self.progress_dialog.cancelled):
+            try:
+                self._prefetch_remote_inputs(pending_actives, output_dir)
+            except Exception as exc:
+                self._queue.put(("preflight_failed", str(exc)))
+                return
+        self._write_json_atomic(manifest_path, {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "input_file": config["input_file"],
+            "protocol_sweep": sweep,
+            "single_protocol": config["single"],
+            "active_count": len(actives),
+        })
+
+        for index, (pair, water, exhaustiveness, seed) in enumerate(conditions, 1):
+            if self.progress_dialog and self.progress_dialog.cancelled:
+                self._queue.put(("cancelled", results_path))
+                return
+            pdb_id = pair["pdb_id"]
+            site_ligand = pair["site_ligand"]
+            key = (pdb_id, site_ligand, water, exhaustiveness, seed)
+            label = f"{pdb_id} {site_ligand}: {water}, e{exhaustiveness}, seed {seed}"
+            self._queue.put(("progress", index - 1, len(conditions), label))
+            if key in completed:
+                self._queue.put(("log", f"Skipping completed condition: {label}"))
+                self._queue.put(("progress", index, len(conditions), f"{label} (resumed)"))
+                continue
+
+            row = {
+                "pdb_id": pdb_id, "ligand_resname": site_ligand,
+                "water_handling": water, "exhaustiveness": exhaustiveness,
+                "seed": seed, "status": "failed",
+            }
+            try:
+                pdb_file = self._download_pdb(pdb_id, output_dir / "pdbs")
+                ligand_chain = pair.get("chain") or self._detect_ligand_chain(pdb_file, site_ligand)
+                if not ligand_chain:
+                    raise ValueError(f"Ligand chain not found for {pdb_id}/{site_ligand}")
+                smiles = pair.get("smiles") or self._get_ligand_smiles(
+                    pdb_file, site_ligand, ligand_chain, output_dir
+                )
+                if not smiles:
+                    raise ValueError(f"Could not resolve SMILES for {pdb_id}/{site_ligand}")
+                single_cfg = dict(config["single"])
+                single_cfg.update({
+                    "water_handling": water,
+                    "exhaustiveness": exhaustiveness,
+                    "seed": seed,
+                    "variant_select_by": "rmsd",
+                })
+                case_id = self._safe_case_id(
+                    f"{pdb_id}_{site_ligand}_{water}_e{exhaustiveness}_s{seed}"
+                )
+                result = self._run_single_case(
+                    pdb_file=pdb_file,
+                    ligand_name=pair.get("dock_name") or site_ligand,
+                    ligand_chain=ligand_chain,
+                    smiles=smiles,
+                    case_dir=output_dir / case_id,
+                    threshold=config["threshold"],
+                    single_cfg=single_cfg,
+                    ligand_resname=site_ligand,
+                    site_mode="cocrystal",
+                    run_mode="protocol_development",
+                    control_label=1,
+                )
+                row.update(asdict(result))
+                row.update({
+                    "water_handling": water, "exhaustiveness": exhaustiveness,
+                    "seed": seed, "status": "complete",
+                })
+                self._queue.put(("log", f"{label}: best RMSD {result.best_rmsd:.2f} A"))
+            except Exception as exc:
+                row["error_message"] = str(exc)
+                self._queue.put(("log", f"{label} failed: {exc}"))
+
+            rows = [old for old in rows if condition_key(old) != key]
+            rows.append(row)
+            temporary = results_path.with_suffix(".tmp")
+            pd.DataFrame(rows).to_csv(temporary, index=False)
+            temporary.replace(results_path)
+            self._queue.put(("progress", index, len(conditions), label))
+
+        report_path = self._write_protocol_report(rows, output_dir)
+        self._queue.put(("protocol_done", results_path, report_path))
+
+    @staticmethod
+    def _write_protocol_report(rows: List[dict], output_dir: Path) -> Path:
+        report_path = output_dir / "protocol_development_summary.md"
+        frame = pd.DataFrame(rows)
+        complete = frame[frame.get("status") == "complete"].copy() if not frame.empty else frame
+        lines = ["# Protocol Development Summary", ""]
+        if complete.empty:
+            lines.append("No protocol conditions completed successfully.")
+        else:
+            grouped = complete.groupby(["water_handling", "exhaustiveness"], dropna=False).agg(
+                cases=("best_rmsd", "count"),
+                success_rate=("success", "mean"),
+                mean_best_rmsd=("best_rmsd", "mean"),
+                median_best_rmsd=("best_rmsd", "median"),
+                mean_runtime_sec=("runtime_sec", "mean"),
+            ).reset_index().sort_values(["success_rate", "mean_best_rmsd"], ascending=[False, True])
+            lines.extend([
+                "| Water handling | Exhaustiveness | Cases | Success | Mean best RMSD | Median best RMSD | Mean runtime (s) |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ])
+            for _, item in grouped.iterrows():
+                lines.append(
+                    f"| {item.water_handling} | {int(item.exhaustiveness)} | {int(item.cases)} | "
+                    f"{item.success_rate:.1%} | {item.mean_best_rmsd:.2f} | "
+                    f"{item.median_best_rmsd:.2f} | {item.mean_runtime_sec:.1f} |"
+                )
+        report_path.write_text("\n".join(lines) + "\n")
+        return report_path
+
     def _poll_queue(self) -> None:
         if not self.progress_dialog:
             return
@@ -998,6 +1314,29 @@ class RedockAnalysisApp(tk.Tk):
                 self.last_results_path = Path(results_path)
                 self._safe_call(self._render_results_from_path)(results_path)
                 self._safe_call(self._show_results)(results_path)
+                self._set_busy(False)
+                return
+            elif msg_type == "protocol_done":
+                _, results_path, report_path = msg
+                self.progress_dialog.log(f"Protocol results saved to {results_path}")
+                self.progress_dialog.destroy()
+                self.progress_dialog = None
+                messagebox.showinfo(
+                    "Completed", f"Protocol development completed.\n{report_path}"
+                )
+                self._set_status("Protocol sweep completed")
+                self._set_busy(False)
+                return
+            elif msg_type == "preflight_failed":
+                _, error = msg
+                self.progress_dialog.destroy()
+                self.progress_dialog = None
+                messagebox.showerror(
+                    "Input download failed",
+                    "The required online inputs could not be downloaded before docking.\n\n"
+                    f"{error}\n\nNo docking calculations were started."
+                )
+                self._set_status("Input download failed; docking not started")
                 self._set_busy(False)
                 return
             elif msg_type == "cancelled":
@@ -1047,7 +1386,7 @@ class RedockAnalysisApp(tk.Tk):
             self._ui_queue.put(func)
 
     def _collect_single_config(self) -> Optional[dict]:
-        if self.mode_var.get() not in ("single", "screening"):
+        if self.mode_var.get() not in ("single", "screening", "protocol_development"):
             return {}
 
         variant_mode, variant_select_by = self._variant_config()
@@ -1235,6 +1574,18 @@ class RedockAnalysisApp(tk.Tk):
                 f"Resuming compatible run: {len(resumed)} completed cases will be skipped"
             ))
         self._write_json_atomic(manifest_path, manifest)
+
+        pending_pairs = [
+            pair for pair in pairs
+            if (pair.get("case_id") or f"{pair['pdb_id']}_{pair.get('dock_name') or pair['ligand']}")
+            not in results_by_case
+        ]
+        if pending_pairs and not (self.progress_dialog and self.progress_dialog.cancelled):
+            try:
+                self._prefetch_remote_inputs(pending_pairs, output_dir)
+            except Exception as exc:
+                self._queue.put(("preflight_failed", str(exc)))
+                return
 
         rescore_cfg = config.get("rescore", {})
         rescore_enabled = bool(rescore_cfg.get("enable"))
@@ -2192,6 +2543,59 @@ class RedockAnalysisApp(tk.Tk):
             raise ValueError(message)
         return Path(file_path)
 
+    def _prefetch_remote_inputs(self, pairs: List[Dict[str, str]], output_dir: Path) -> None:
+        """Download every campaign input before any docking calculation starts."""
+        self._network_phase_complete = False
+        pdb_dir = output_dir / "pdbs"
+        unique_pdb_ids = list(dict.fromkeys(str(pair["pdb_id"]).upper() for pair in pairs))
+        self._queue.put((
+            "log",
+            f"Online preflight: acquiring {len(unique_pdb_ids)} structure(s) and ligand records"
+        ))
+        pdb_files = {}
+        for pdb_id in unique_pdb_ids:
+            self._queue.put(("log", f"Online preflight: {pdb_id}"))
+            pdb_files[pdb_id] = self._download_pdb(pdb_id, pdb_dir)
+
+        resolved_crystal_ligands = {}
+        for pair in pairs:
+            pdb_id = str(pair["pdb_id"]).upper()
+            site_ligand = pair.get("site_ligand")
+            if not site_ligand:
+                smiles = pair.get("smiles")
+                if smiles is None or not str(smiles).strip() or str(smiles).lower() == "nan":
+                    raise ValueError(
+                        f"No SMILES was supplied for an apo/predicted-site case at {pdb_id}."
+                    )
+                continue
+            chain = pair.get("chain") or self._detect_ligand_chain(
+                pdb_files[pdb_id], site_ligand
+            )
+            if not chain:
+                raise ValueError(f"Ligand chain not found for {pdb_id}/{site_ligand}")
+            pair["chain"] = chain
+            ligand_key = (pdb_id, site_ligand, chain)
+            if ligand_key not in resolved_crystal_ligands:
+                resolved_crystal_ligands[ligand_key] = self._get_ligand_smiles(
+                    pdb_files[pdb_id], site_ligand, chain, output_dir
+                )
+
+            smiles = pair.get("smiles")
+            if smiles is None or not str(smiles).strip() or str(smiles).lower() == "nan":
+                smiles = resolved_crystal_ligands[ligand_key]
+                if not smiles:
+                    raise ValueError(
+                        f"Could not resolve ligand SMILES for {pdb_id}/{site_ligand}. "
+                        "Provide it in the template before running offline."
+                    )
+                pair["smiles"] = smiles
+
+        self._network_phase_complete = True
+        self._queue.put((
+            "log",
+            "Online preflight complete. All remaining preparation, docking, and analysis are local."
+        ))
+
     def _detect_ligand_chain(self, pdb_path: Path, ligand_resname: str) -> Optional[str]:
         parser = PDB.PDBParser(QUIET=True)
         structure = parser.get_structure("protein", str(pdb_path))
@@ -2256,10 +2660,13 @@ class RedockAnalysisApp(tk.Tk):
         if ligand_resname in known:
             return known[ligand_resname]
 
-        url = f"https://files.rcsb.org/ligands/view/{ligand_resname}_ideal.sdf"
         sdf_file = output_dir / f"{ligand_resname}_ideal.sdf"
         try:
-            urllib.request.urlretrieve(url, sdf_file)
+            if not sdf_file.exists() and not getattr(self, "_network_phase_complete", False):
+                url = f"https://files.rcsb.org/ligands/view/{ligand_resname}_ideal.sdf"
+                urllib.request.urlretrieve(url, sdf_file)
+            if not sdf_file.exists():
+                raise FileNotFoundError(sdf_file)
             suppl = Chem.SDMolSupplier(str(sdf_file))
             mol = next(suppl)
             if mol is not None:
