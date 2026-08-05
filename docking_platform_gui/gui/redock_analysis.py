@@ -4367,7 +4367,9 @@ class RedockAnalysisApp(tk.Tk):
         score_labels: List[Tuple[float, int]] = []
         summary["n_actives"] = sum(r.control_label == 1 for r in results)
         summary["n_decoys"] = sum(r.control_label == 0 for r in results)
-        summary["n_samples"] = sum(r.control_label is None for r in results)
+        summary["n_samples"] = sum(
+            r.mode == "screening" and r.control_label is None for r in results
+        )
         for result in results:
             if result.control_label not in (0, 1):
                 continue
@@ -4519,8 +4521,26 @@ class RedockAnalysisApp(tk.Tk):
                 summary[key] = float(ef)
         
         # Calculate protocol/engine breakdown (only for actives with valid RMSD)
-        completed = sum(r.docking_completed is True for r in results)
-        failed = sum(r.docking_completed is False for r in results)
+        # Older redock results predate the explicit completion field. A valid
+        # saved output is sufficient to classify those historical cases.
+        completed = sum(
+            r.docking_completed is True
+            or (
+                r.docking_completed is None
+                and bool(r.output_file)
+                and Path(r.output_file).exists()
+                and not r.error_message
+            )
+            for r in results
+        )
+        failed = sum(
+            r.docking_completed is False
+            or (
+                r.docking_completed is None
+                and (not r.output_file or not Path(r.output_file).exists())
+            )
+            for r in results
+        )
         summary["docking_completed"] = completed
         summary["docking_failed"] = failed
 

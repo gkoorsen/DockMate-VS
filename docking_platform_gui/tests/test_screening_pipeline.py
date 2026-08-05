@@ -216,6 +216,20 @@ def test_summary_counts_samples_separately_and_uses_explicit_controls():
     assert "1 actives, 1 decoys" in summary["interpretation"]["enrichment_message"]
 
 
+def test_unlabelled_redock_is_not_counted_as_screening_sample(tmp_path):
+    output = tmp_path / "docked.pdbqt"
+    output.write_text("ATOM\n")
+    result = _result(
+        mode="adaptive", control_label=None, output_file=str(output),
+        best_rmsd=1.0, success=True, docking_completed=None,
+    )
+
+    summary = _app_without_tk()._build_summary([result], threshold=2.0)
+
+    assert summary["n_samples"] == 0
+    assert summary["docking_completed"] == 1
+
+
 def test_property_matching_rejects_charge_and_size_mismatches():
     app = _app_without_tk()
     active = _result(
