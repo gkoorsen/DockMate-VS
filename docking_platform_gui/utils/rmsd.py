@@ -7,7 +7,7 @@ Provides functions to calculate RMSD between crystal and docked ligand structure
 from pathlib import Path
 import numpy as np
 from rdkit import Chem, RDLogger
-from rdkit.Chem import AllChem, rdFMCS, rdMolAlign
+from rdkit.Chem import rdFMCS
 from typing import Optional
 
 
@@ -44,10 +44,7 @@ def calculate_rmsd(
     rmsds = []
     for mol in docked_mols:
         try:
-            if use_symmetry:
-                rmsd = AllChem.GetBestRMS(ref_mol, mol)
-            else:
-                rmsd = AllChem.AlignMol(mol, ref_mol)
+            rmsd = coordinate_rmsd(ref_mol, mol, use_symmetry=use_symmetry)
             rmsds.append(rmsd)
             continue
         except Exception:
@@ -141,14 +138,30 @@ def _load_molecules(file_path: Path) -> list:
     return molecules
 
 
-def _rmsd_via_mcs(ref_mol: Chem.Mol, probe_mol: Chem.Mol) -> float:
-    """Calculate RMSD using an MCS-based atom mapping (heavy atoms only)."""
+def coordinate_rmsd(
+    ref_mol: Chem.Mol,
+    probe_mol: Chem.Mol,
+    use_symmetry: bool = True,
+    max_matches: int = 1000,
+) -> float:
+    """Calculate heavy-atom RMSD in the existing receptor coordinate frame.
+
+    Docked and crystal ligands are already expressed in the same receptor
+    frame.  Aligning one ligand onto the other would erase displacement from
+    the binding site and report conformational RMSD instead of pose RMSD.
+    Atom mappings are therefore evaluated without changing either conformer.
+    """
     ref_noh = Chem.RemoveHs(ref_mol, sanitize=False)
     probe_noh = Chem.RemoveHs(probe_mol, sanitize=False)
 
-    min_atoms = min(ref_noh.GetNumAtoms(), probe_noh.GetNumAtoms())
-    if min_atoms < 3:
-        raise ValueError("MCS RMSD requires at least 3 atoms")
+    ref_atoms = ref_noh.GetNumAtoms()
+    probe_atoms = probe_noh.GetNumAtoms()
+    if ref_atoms != probe_atoms:
+        raise ValueError(
+            f"Heavy-atom counts differ: ref {ref_atoms}, probe {probe_atoms}"
+        )
+    if ref_atoms < 1:
+        raise ValueError("RMSD requires at least one heavy atom")
 
     mcs = rdFMCS.FindMCS(
         [ref_noh, probe_noh],
@@ -159,37 +172,39 @@ def _rmsd_via_mcs(ref_mol: Chem.Mol, probe_mol: Chem.Mol) -> float:
         atomCompare=rdFMCS.AtomCompare.CompareElements
     )
 
-    # Coverage must be judged against BOTH molecules, not just the smaller one.
-    # Scaling by min_atoms made the bar trivial whenever the probe was much
-    # smaller than the reference: an 11-atom compound matched 8 atoms into
-    # 68-atom imatinib (need >= 7) and was handed a 0.06 A "RMSD". Requiring
-    # the MCS to cover most of the reference as well means only genuinely
-    # equivalent molecules pass.
-    ref_atoms = ref_noh.GetNumAtoms()
-    probe_atoms = probe_noh.GetNumAtoms()
-    min_required = max(3, int(min_atoms * 0.7), int(ref_atoms * 0.7))
-    if mcs.numAtoms < min_required:
+    if mcs.numAtoms != ref_atoms:
         raise ValueError(
-            f"MCS coverage too small for RMSD: matched {mcs.numAtoms} atoms, "
-            f"need >= {min_required} (ref {ref_atoms}, probe {probe_atoms})"
-        )
-    # Guard against comparing molecules of clearly different size even when MCS
-    # coverage passes.
-    if max(ref_atoms, probe_atoms) > 1.3 * min_atoms:
-        raise ValueError(
-            f"Heavy-atom counts too dissimilar for RMSD: ref {ref_atoms}, "
-            f"probe {probe_atoms}"
+            f"Molecules are not graph-equivalent: matched {mcs.numAtoms} of "
+            f"{ref_atoms} heavy atoms"
         )
 
     pattern = Chem.MolFromSmarts(mcs.smartsString)
-    ref_match = ref_noh.GetSubstructMatch(pattern)
-    probe_match = probe_noh.GetSubstructMatch(pattern)
-
-    if not ref_match or not probe_match:
+    if pattern is None:
+        raise ValueError("MCS pattern generation failed")
+    ref_matches = ref_noh.GetSubstructMatches(
+        pattern, uniquify=not use_symmetry, maxMatches=max_matches
+    )
+    probe_matches = probe_noh.GetSubstructMatches(
+        pattern, uniquify=not use_symmetry, maxMatches=max_matches
+    )
+    if not ref_matches or not probe_matches:
         raise ValueError("MCS substructure match failed")
 
-    atom_map = list(zip(probe_match, ref_match))
-    return rdMolAlign.AlignMol(probe_noh, ref_noh, atomMap=atom_map)
+    ref_conf = ref_noh.GetConformer()
+    probe_conf = probe_noh.GetConformer()
+    best = float("inf")
+    for ref_match in ref_matches:
+        ref_xyz = np.asarray([ref_conf.GetAtomPosition(i) for i in ref_match])
+        for probe_match in probe_matches:
+            probe_xyz = np.asarray([probe_conf.GetAtomPosition(i) for i in probe_match])
+            value = float(np.sqrt(np.mean(np.sum((ref_xyz - probe_xyz) ** 2, axis=1))))
+            best = min(best, value)
+    return best
+
+
+def _rmsd_via_mcs(ref_mol: Chem.Mol, probe_mol: Chem.Mol) -> float:
+    """Compatibility wrapper for coordinate-frame, MCS-mapped RMSD."""
+    return coordinate_rmsd(ref_mol, probe_mol, use_symmetry=True)
 
 
 class _silence_rdkit:
@@ -296,7 +311,7 @@ def calculate_rmsd_matrix(
     rmsds = []
     for mol in docked_mols[:max_poses]:
         try:
-            rmsd = AllChem.GetBestRMS(ref_mol, mol)
+            rmsd = coordinate_rmsd(ref_mol, mol, use_symmetry=True)
             rmsds.append(rmsd)
         except Exception:
             rmsds.append(999.9)  # Failed alignment

@@ -4029,14 +4029,11 @@ class RedockAnalysisApp(tk.Tk):
         _render_case(0)
 
     def _pose_rmsd(self, ref_mol: Chem.Mol, pose_mol: Chem.Mol) -> Optional[float]:
-        from docking_platform_gui.utils.rmsd import _rmsd_via_mcs  # type: ignore
+        from docking_platform_gui.utils.rmsd import coordinate_rmsd
         try:
-            return rdMolAlign.AlignMol(pose_mol, ref_mol)
+            return coordinate_rmsd(ref_mol, pose_mol, use_symmetry=True)
         except Exception:
-            try:
-                return _rmsd_via_mcs(ref_mol, pose_mol)
-            except Exception:
-                return None
+            return None
 
     def _align_pose_to_ref(self, ref_mol: Chem.Mol, pose_mol: Chem.Mol) -> Chem.Mol:
         aligned = Chem.Mol(pose_mol)

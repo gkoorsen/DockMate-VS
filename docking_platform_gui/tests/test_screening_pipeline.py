@@ -4,8 +4,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from rdkit import Chem
+from rdkit.Chem import AllChem
 
 from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp, RedockResult
+from docking_platform_gui.utils.rmsd import coordinate_rmsd
 
 
 def _app_without_tk() -> RedockAnalysisApp:
@@ -235,3 +238,30 @@ def test_property_matching_rejects_charge_and_size_mismatches():
     assert app._property_matched(active, matched) is True
     assert app._property_matched(active, too_small) is False
     assert app._property_matched(active, wrong_charge) is False
+
+
+def test_coordinate_rmsd_does_not_superimpose_displaced_pose():
+    reference = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    AllChem.EmbedMolecule(reference, randomSeed=1)
+    pose = Chem.Mol(reference)
+    conformer = pose.GetConformer()
+    for atom_index in range(pose.GetNumAtoms()):
+        point = conformer.GetAtomPosition(atom_index)
+        conformer.SetAtomPosition(atom_index, (point.x + 6.0, point.y, point.z))
+
+    assert coordinate_rmsd(reference, pose) == pytest.approx(6.0)
+
+
+def test_coordinate_rmsd_handles_symmetric_atom_permutations():
+    reference = Chem.MolFromSmiles("ClCCl")
+    pose = Chem.RenumberAtoms(reference, [2, 1, 0])
+    reference_conf = Chem.Conformer(reference.GetNumAtoms())
+    pose_conf = Chem.Conformer(pose.GetNumAtoms())
+    coordinates = [(-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    for index, xyz in enumerate(coordinates):
+        reference_conf.SetAtomPosition(index, xyz)
+        pose_conf.SetAtomPosition(index, xyz)
+    reference.AddConformer(reference_conf)
+    pose.AddConformer(pose_conf)
+
+    assert coordinate_rmsd(reference, pose, use_symmetry=True) == pytest.approx(0.0)
