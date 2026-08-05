@@ -31,7 +31,7 @@ from rdkit import Chem
 from rdkit.Chem import Crippen, Descriptors, rdMolAlign, rdFMCS, rdMolDescriptors
 from rdkit.Chem.Draw import rdMolDraw2D
 from rdkit.Geometry import Point2D
-from docking_platform_gui.utils.redock_analysis_fixed import RedockAnalyzer
+from docking_platform_gui.utils.redock_results import RedockAnalyzer
 from Bio import PDB
 
 from docking_platform_gui.adaptive_docking import AdaptiveDockingPipeline

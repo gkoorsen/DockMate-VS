@@ -1,11 +1,4 @@
-"""
-Enhanced Redock Analysis Script
-
-Properly handles actives (self-docking) vs decoys (enrichment) analysis.
-
-Usage:
-    python redock_analysis_fixed.py results.csv --output report.json
-"""
+"""Result statistics for redocking and active/decoy enrichment campaigns."""
 
 import json
 import pandas as pd

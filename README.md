@@ -40,6 +40,7 @@ Core dependencies are in `pyproject.toml`. You may prefer conda for RDKit and Op
 - `docking_platform_gui/adaptive_docking.py`: adaptive protocol logic.
 - `docking_platform_gui/preparation/`: protein/ligand preparation.
 - `docking_platform_gui/docking/`: docking engine wrappers.
+- `docking_platform_gui/utils/redock_results.py`: result and enrichment statistics.
 - `scripts/launch_redock_analysis_gui.py`: launch script.
 
 ## Notes
