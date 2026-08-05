@@ -202,6 +202,7 @@ class RedockAnalysisApp(tk.Tk):
         self._variant_all_rmsd_btn: Optional[tk.Radiobutton] = None
         self._rmsd_variant_available = True
         self._network_phase_complete = False
+        self._protocol_swept_widgets: List[tk.Widget] = []
 
         self._load_filter_config()
         self._build_ui()
@@ -553,7 +554,8 @@ class RedockAnalysisApp(tk.Tk):
         size_z_entry.grid(row=1, column=3, sticky="w")
         self._register_busy_widget(size_z_entry)
 
-        tk.Label(self.single_frame, text="Water handling:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        water_label = tk.Label(self.single_frame, text="Water handling:")
+        water_label.grid(row=2, column=0, sticky="w", pady=(8, 0))
         water_menu = ttk.Combobox(
             self.single_frame,
             textvariable=self.water_handling_var,
@@ -564,7 +566,8 @@ class RedockAnalysisApp(tk.Tk):
         water_menu.grid(row=2, column=1, sticky="w")
         self._register_busy_widget(water_menu)
 
-        tk.Label(self.single_frame, text="Exhaustiveness:").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        exhaust_label = tk.Label(self.single_frame, text="Exhaustiveness:")
+        exhaust_label.grid(row=3, column=0, sticky="w", pady=(8, 0))
         exhaust_entry = tk.Entry(self.single_frame, textvariable=self.exhaustiveness_var, width=8)
         exhaust_entry.grid(row=3, column=1, sticky="w")
         self._register_busy_widget(exhaust_entry)
@@ -582,10 +585,16 @@ class RedockAnalysisApp(tk.Tk):
         cpu_entry.grid(row=4, column=3, sticky="w")
         self._register_busy_widget(cpu_entry)
 
-        tk.Label(self.single_frame, text="Seed:").grid(row=5, column=0, sticky="w", pady=(5, 0))
+        docking_seed_label = tk.Label(self.single_frame, text="Seed:")
+        docking_seed_label.grid(row=5, column=0, sticky="w", pady=(5, 0))
         seed_entry = tk.Entry(self.single_frame, textvariable=self.seed_var, width=8)
         seed_entry.grid(row=5, column=1, sticky="w")
         self._register_busy_widget(seed_entry)
+        self._protocol_swept_widgets = [
+            water_label, water_menu,
+            exhaust_label, exhaust_entry,
+            docking_seed_label, seed_entry,
+        ]
         tk.Label(self.single_frame, text="Timeout (s):").grid(row=5, column=2, sticky="w")
         timeout_entry = tk.Entry(self.single_frame, textvariable=self.timeout_var, width=8)
         timeout_entry.grid(row=5, column=3, sticky="w")
@@ -787,6 +796,16 @@ class RedockAnalysisApp(tk.Tk):
         else:
             self.adaptive_frame.grid_remove()
             self.single_frame.grid()
+        protocol_mode = mode == "protocol_development"
+        for widget in self._protocol_swept_widgets:
+            if protocol_mode:
+                widget.grid_remove()
+            else:
+                widget.grid()
+        if protocol_mode:
+            self.single_frame.configure(text="Base docking protocol (shared by all sweep conditions)")
+        else:
+            self.single_frame.configure(text="Docking protocol (single protocol / screening)")
         if self._run_button:
             labels = {
                 "adaptive": "Run Redock",
