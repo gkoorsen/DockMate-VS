@@ -66,6 +66,44 @@ def test_protocol_integer_lists_are_validated_and_deduplicated():
         RedockAnalysisApp._parse_positive_int_list("8, 0", "Values")
 
 
+def test_protocol_box_definitions_accept_margins_and_fixed_sizes():
+    boxes = RedockAnalysisApp._parse_protocol_box_definitions(
+        "margin:4; margin:6; 20x22x24; margin:4"
+    )
+
+    assert boxes == [
+        {"label": "margin:4", "box_margin": 4.0, "size_override": None},
+        {"label": "margin:6", "box_margin": 6.0, "size_override": None},
+        {"label": "20x22x24", "box_margin": None, "size_override": (20.0, 22.0, 24.0)},
+    ]
+
+    with pytest.raises(ValueError, match="Use margin:4 or 20x20x20"):
+        RedockAnalysisApp._parse_protocol_box_definitions("large")
+    with pytest.raises(ValueError, match="greater than zero"):
+        RedockAnalysisApp._parse_protocol_box_definitions("20x0x20")
+
+
+def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):
+    rows = [
+        {
+            "status": "complete", "engine": "smina", "box_definition": "margin:4",
+            "water_handling": "remove_all", "exhaustiveness": 8,
+            "best_rmsd": 1.2, "success": True, "runtime_sec": 10.0,
+        },
+        {
+            "status": "complete", "engine": "vina", "box_definition": "20x20x20",
+            "water_handling": "retain_all", "exhaustiveness": 16,
+            "best_rmsd": 2.4, "success": False, "runtime_sec": 20.0,
+        },
+    ]
+
+    report = RedockAnalysisApp._write_protocol_report(rows, tmp_path).read_text()
+
+    assert "| Engine | Box | Water handling |" in report
+    assert "| smina | margin:4 | remove_all | 8 |" in report
+    assert "| vina | 20x20x20 | retain_all | 16 |" in report
+
+
 def test_protocol_development_uses_unique_control_actives_only():
     pairs = [
         {"pdb_id": "1ABC", "site_ligand": "LIG", "chain": "A", "control_label": 1},

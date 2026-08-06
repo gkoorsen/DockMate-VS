@@ -185,6 +185,12 @@ class RedockAnalysisApp(tk.Tk):
         }
         self.protocol_exhaustiveness_var = tk.StringVar(value="8, 16, 32")
         self.protocol_seeds_var = tk.StringVar(value="42")
+        self.protocol_engine_vars = {
+            "smina": tk.BooleanVar(value=True),
+            "vina": tk.BooleanVar(value=False),
+            "rdock": tk.BooleanVar(value=False),
+        }
+        self.protocol_box_definitions_var = tk.StringVar(value="margin:4.0")
 
         self.pairs_label_var = tk.StringVar(value="Loaded pairs: 0")
 
@@ -359,6 +365,28 @@ class RedockAnalysisApp(tk.Tk):
         protocol_seeds = tk.Entry(self.protocol_tab, textvariable=self.protocol_seeds_var, width=14)
         protocol_seeds.grid(row=2, column=4, sticky="w", padx=5, pady=(8, 0))
         self._register_busy_widget(protocol_seeds)
+        tk.Label(self.protocol_tab, text="Docking engines:").grid(
+            row=3, column=0, sticky="w", pady=(8, 0)
+        )
+        for column, engine in enumerate(("smina", "vina", "rdock"), start=1):
+            widget = tk.Checkbutton(
+                self.protocol_tab, text=engine, variable=self.protocol_engine_vars[engine]
+            )
+            widget.grid(row=3, column=column, sticky="w", padx=(5, 10), pady=(8, 0))
+            self._register_busy_widget(widget)
+        tk.Label(self.protocol_tab, text="Box definitions:").grid(
+            row=4, column=0, sticky="w", pady=(8, 0)
+        )
+        protocol_boxes = tk.Entry(
+            self.protocol_tab, textvariable=self.protocol_box_definitions_var, width=42
+        )
+        protocol_boxes.grid(row=4, column=1, columnspan=4, sticky="w", pady=(8, 0))
+        self._register_busy_widget(protocol_boxes)
+        tk.Label(
+            self.protocol_tab,
+            text="Separate with ';', e.g. margin:4; margin:6; 20x20x20",
+            fg="#666666",
+        ).grid(row=5, column=1, columnspan=5, sticky="w")
 
         tk.Label(
             self.screening_tab,
@@ -498,7 +526,8 @@ class RedockAnalysisApp(tk.Tk):
         self.single_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 5))
         self.single_frame.grid_columnconfigure(3, weight=1)
 
-        tk.Label(self.single_frame, text="Engine:").grid(row=0, column=0, sticky="w")
+        engine_label = tk.Label(self.single_frame, text="Engine:")
+        engine_label.grid(row=0, column=0, sticky="w")
         engine_menu = ttk.Combobox(
             self.single_frame,
             textvariable=self.engine_var,
@@ -510,12 +539,14 @@ class RedockAnalysisApp(tk.Tk):
         engine_menu.bind("<<ComboboxSelected>>", lambda _e: self._update_engine())
         self._register_busy_widget(engine_menu)
 
-        tk.Label(self.single_frame, text="Box margin (A):").grid(row=0, column=2, sticky="w")
+        box_margin_label = tk.Label(self.single_frame, text="Box margin (A):")
+        box_margin_label.grid(row=0, column=2, sticky="w")
         box_entry = tk.Entry(self.single_frame, textvariable=self.box_margin_var, width=8)
         box_entry.grid(row=0, column=3, sticky="w")
         self._register_busy_widget(box_entry)
 
-        tk.Label(self.single_frame, text="Box size override (x,y,z):").grid(row=1, column=0, sticky="w", pady=(5, 0))
+        box_size_label = tk.Label(self.single_frame, text="Box size override (x,y,z):")
+        box_size_label.grid(row=1, column=0, sticky="w", pady=(5, 0))
         size_x_entry = tk.Entry(self.single_frame, textvariable=self.size_x_var, width=6)
         size_x_entry.grid(row=1, column=1, sticky="w")
         self._register_busy_widget(size_x_entry)
@@ -563,6 +594,9 @@ class RedockAnalysisApp(tk.Tk):
         seed_entry.grid(row=5, column=1, sticky="w")
         self._register_busy_widget(seed_entry)
         self._protocol_swept_widgets = [
+            engine_label, engine_menu,
+            box_margin_label, box_entry,
+            box_size_label, size_x_entry, size_y_entry, size_z_entry,
             water_label, water_menu,
             exhaust_label, exhaust_entry,
             docking_seed_label, seed_entry,
@@ -1085,6 +1119,48 @@ class RedockAnalysisApp(tk.Tk):
         return values
 
     @staticmethod
+    def _parse_protocol_box_definitions(value: str) -> List[dict]:
+        """Parse adaptive margins or fixed XYZ boxes separated by semicolons."""
+        parts = [part.strip() for part in value.split(";") if part.strip()]
+        if not parts:
+            raise ValueError("Box definitions must contain at least one value.")
+        definitions = []
+        seen = set()
+        for part in parts:
+            lowered = part.lower().replace(" ", "")
+            if lowered.startswith("margin:"):
+                try:
+                    margin = float(lowered.split(":", 1)[1])
+                except ValueError as exc:
+                    raise ValueError(f"Invalid box margin definition: {part}") from exc
+                if margin <= 0:
+                    raise ValueError("Box margins must be greater than zero.")
+                definition = {
+                    "label": f"margin:{margin:g}", "box_margin": margin,
+                    "size_override": None,
+                }
+            else:
+                dimensions = lowered.replace(",", "x").split("x")
+                if len(dimensions) != 3:
+                    raise ValueError(
+                        f"Invalid box definition '{part}'. Use margin:4 or 20x20x20."
+                    )
+                try:
+                    size = tuple(float(item) for item in dimensions)
+                except ValueError as exc:
+                    raise ValueError(f"Invalid box size definition: {part}") from exc
+                if any(item <= 0 for item in size):
+                    raise ValueError("Box dimensions must be greater than zero.")
+                definition = {
+                    "label": "x".join(f"{item:g}" for item in size),
+                    "box_margin": None, "size_override": size,
+                }
+            if definition["label"] not in seen:
+                seen.add(definition["label"])
+                definitions.append(definition)
+        return definitions
+
+    @staticmethod
     def _protocol_active_pairs(pairs: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """Return one positive control for each structure/crystal-ligand pair."""
         active_pairs = []
@@ -1104,8 +1180,17 @@ class RedockAnalysisApp(tk.Tk):
         ]
         if not water_modes:
             raise ValueError("Select at least one water-handling method.")
+        engines = [
+            engine for engine, variable in self.protocol_engine_vars.items() if variable.get()
+        ]
+        if not engines:
+            raise ValueError("Select at least one docking engine.")
         return {
             "water_modes": water_modes,
+            "engines": engines,
+            "box_definitions": self._parse_protocol_box_definitions(
+                self.protocol_box_definitions_var.get()
+            ),
             "exhaustiveness": self._parse_positive_int_list(
                 self.protocol_exhaustiveness_var.get(), "Exhaustiveness"
             ),
@@ -1115,7 +1200,8 @@ class RedockAnalysisApp(tk.Tk):
     def _begin_protocol_run(self, actives: List[Dict[str, str]], config: dict) -> None:
         sweep = config["protocol_sweep"]
         total = (
-            len(actives) * len(sweep["water_modes"])
+            len(actives) * len(sweep["water_modes"]) * len(sweep["engines"])
+            * len(sweep["box_definitions"])
             * len(sweep["exhaustiveness"]) * len(sweep["seeds"])
         )
         self.progress_dialog = ProgressDialog(self, total_ligands=total)
@@ -1134,9 +1220,14 @@ class RedockAnalysisApp(tk.Tk):
         manifest_path = output_dir / "protocol_development_manifest.json"
         rows = pd.read_csv(results_path).to_dict("records") if results_path.exists() else []
 
-        def condition_key(row: dict) -> Tuple[str, str, str, int, int]:
+        sweep = config["protocol_sweep"]
+        default_box = sweep["box_definitions"][0]["label"]
+
+        def condition_key(row: dict) -> Tuple[str, str, str, str, str, int, int]:
             return (
                 str(row.get("pdb_id", "")), str(row.get("ligand_resname", row.get("site_ligand", ""))),
+                str(row.get("engine", config["single"].get("engine", ""))),
+                str(row.get("box_definition", default_box)),
                 str(row.get("water_handling", "")), int(row.get("exhaustiveness", -1)),
                 int(row.get("seed", -1)),
             )
@@ -1145,10 +1236,11 @@ class RedockAnalysisApp(tk.Tk):
             condition_key(row) for row in rows
             if row.get("status") in ("complete", "unsupported")
         }
-        sweep = config["protocol_sweep"]
         conditions = [
-            (pair, water, exhaustiveness, seed)
+            (pair, engine, box, water, exhaustiveness, seed)
             for pair in actives
+            for engine in sweep["engines"]
+            for box in sweep["box_definitions"]
             for water in sweep["water_modes"]
             for exhaustiveness in sweep["exhaustiveness"]
             for seed in sweep["seeds"]
@@ -1156,8 +1248,11 @@ class RedockAnalysisApp(tk.Tk):
         pending_actives = []
         for pair in actives:
             has_pending_condition = any(
-                (pair["pdb_id"], pair["site_ligand"], water, exhaustiveness, seed)
+                (pair["pdb_id"], pair["site_ligand"], engine, box["label"],
+                 water, exhaustiveness, seed)
                 not in completed
+                for engine in sweep["engines"]
+                for box in sweep["box_definitions"]
                 for water in sweep["water_modes"]
                 for exhaustiveness in sweep["exhaustiveness"]
                 for seed in sweep["seeds"]
@@ -1178,14 +1273,20 @@ class RedockAnalysisApp(tk.Tk):
             "active_count": len(actives),
         })
 
-        for index, (pair, water, exhaustiveness, seed) in enumerate(conditions, 1):
+        for index, (pair, engine_name, box, water, exhaustiveness, seed) in enumerate(conditions, 1):
             if self.progress_dialog and self.progress_dialog.cancelled:
                 self._queue.put(("cancelled", results_path))
                 return
             pdb_id = pair["pdb_id"]
             site_ligand = pair["site_ligand"]
-            key = (pdb_id, site_ligand, water, exhaustiveness, seed)
-            label = f"{pdb_id} {site_ligand}: {water}, e{exhaustiveness}, seed {seed}"
+            key = (
+                pdb_id, site_ligand, engine_name, box["label"],
+                water, exhaustiveness, seed,
+            )
+            label = (
+                f"{pdb_id} {site_ligand}: {engine_name}, {box['label']}, "
+                f"{water}, e{exhaustiveness}, seed {seed}"
+            )
             self._queue.put(("progress", index - 1, len(conditions), label))
             if key in completed:
                 self._queue.put(("log", f"Skipping completed condition: {label}"))
@@ -1194,6 +1295,7 @@ class RedockAnalysisApp(tk.Tk):
 
             row = {
                 "pdb_id": pdb_id, "ligand_resname": site_ligand,
+                "engine": engine_name, "box_definition": box["label"],
                 "water_handling": water, "exhaustiveness": exhaustiveness,
                 "seed": seed, "status": "failed",
             }
@@ -1216,13 +1318,20 @@ class RedockAnalysisApp(tk.Tk):
                     raise ValueError(f"Could not resolve SMILES for {pdb_id}/{site_ligand}")
                 single_cfg = dict(config["single"])
                 single_cfg.update({
+                    "engine": engine_name,
+                    "box_margin": (
+                        box["box_margin"] if box["box_margin"] is not None
+                        else single_cfg["box_margin"]
+                    ),
+                    "size_override": box["size_override"],
                     "water_handling": water,
                     "exhaustiveness": exhaustiveness,
                     "seed": seed,
                     "variant_select_by": "rmsd",
                 })
                 case_id = self._safe_case_id(
-                    f"{pdb_id}_{site_ligand}_{water}_e{exhaustiveness}_s{seed}"
+                    f"{pdb_id}_{site_ligand}_{engine_name}_{box['label']}_"
+                    f"{water}_e{exhaustiveness}_s{seed}"
                 )
                 result = self._run_single_case(
                     pdb_file=pdb_file,
@@ -1240,6 +1349,7 @@ class RedockAnalysisApp(tk.Tk):
                 result.target_name = pair.get("target_name")
                 row.update(asdict(result))
                 row.update({
+                    "engine": engine_name, "box_definition": box["label"],
                     "water_handling": water, "exhaustiveness": exhaustiveness,
                     "seed": seed, "status": "complete",
                 })
@@ -1277,7 +1387,14 @@ class RedockAnalysisApp(tk.Tk):
         if complete.empty:
             lines.append("No protocol conditions completed successfully.")
         else:
-            grouped = complete.groupby(["water_handling", "exhaustiveness"], dropna=False).agg(
+            if "engine" not in complete:
+                complete["engine"] = "unknown"
+            if "box_definition" not in complete:
+                complete["box_definition"] = "legacy"
+            grouped = complete.groupby(
+                ["engine", "box_definition", "water_handling", "exhaustiveness"],
+                dropna=False,
+            ).agg(
                 cases=("best_rmsd", "count"),
                 success_rate=("success", "mean"),
                 mean_best_rmsd=("best_rmsd", "mean"),
@@ -1285,12 +1402,13 @@ class RedockAnalysisApp(tk.Tk):
                 mean_runtime_sec=("runtime_sec", "mean"),
             ).reset_index().sort_values(["success_rate", "mean_best_rmsd"], ascending=[False, True])
             lines.extend([
-                "| Water handling | Exhaustiveness | Cases | Success | Mean best RMSD | Median best RMSD | Mean runtime (s) |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "| Engine | Box | Water handling | Exhaustiveness | Cases | Success | Mean best RMSD | Median best RMSD | Mean runtime (s) |",
+                "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
             ])
             for _, item in grouped.iterrows():
                 lines.append(
-                    f"| {item.water_handling} | {int(item.exhaustiveness)} | {int(item.cases)} | "
+                    f"| {item.engine} | {item.box_definition} | {item.water_handling} | "
+                    f"{int(item.exhaustiveness)} | {int(item.cases)} | "
                     f"{item.success_rate:.1%} | {item.mean_best_rmsd:.2f} | "
                     f"{item.median_best_rmsd:.2f} | {item.mean_runtime_sec:.1f} |"
                 )
