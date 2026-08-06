@@ -252,6 +252,14 @@ def test_manifest_json_converter_handles_paths_and_numpy_values():
     assert json.loads(payload) == {"path": "run", "array": [1, 2], "number": 3}
 
 
+def test_pose_viewer_uses_protocol_development_csv_directly(tmp_path):
+    protocol_csv = tmp_path / "protocol_development_results.csv"
+    redock_json = tmp_path / "redock_results.json"
+
+    assert RedockAnalysisApp._pose_results_csv(protocol_csv) == protocol_csv
+    assert RedockAnalysisApp._pose_results_csv(redock_json) == tmp_path / "redock_results.csv"
+
+
 def test_summary_counts_samples_separately_and_uses_explicit_controls():
     app = _app_without_tk()
     results = [

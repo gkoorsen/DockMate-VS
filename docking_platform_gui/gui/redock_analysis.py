@@ -133,8 +133,7 @@ class RedockAnalysisApp(tk.Tk):
 
         self.file_var = tk.StringVar()
         self.output_var = tk.StringVar(value=str(Path("output/redock_analysis").resolve()))
-        self.mode_var = tk.StringVar(value="adaptive")
-        self.redock_mode_var = tk.StringVar(value="adaptive")
+        self.mode_var = tk.StringVar(value="protocol_development")
         self.exclude_additives_var = tk.BooleanVar(value=False)
         self.exclude_cofactors_var = tk.BooleanVar(value=False)
         self.sample_enable_var = tk.BooleanVar(value=False)
@@ -329,39 +328,11 @@ class RedockAnalysisApp(tk.Tk):
         row += 1
         self.workflow_notebook = ttk.Notebook(container)
         self.workflow_notebook.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 5))
-        self.redock_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
         self.protocol_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
         self.screening_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
-        self.workflow_notebook.add(self.redock_tab, text="Redock")
         self.workflow_notebook.add(self.protocol_tab, text="Protocol Development")
         self.workflow_notebook.add(self.screening_tab, text="Screening")
         self.workflow_notebook.bind("<<NotebookTabChanged>>", self._on_workflow_changed)
-
-        tk.Label(
-            self.redock_tab,
-            text="Reproduce a co-crystal pose and measure RMSD against the native ligand.",
-            anchor="w"
-        ).pack(anchor="w", pady=(0, 6))
-        mode_frame = tk.Frame(self.redock_tab)
-        mode_frame.pack(anchor="w")
-        mode_adaptive = tk.Radiobutton(
-            mode_frame,
-            text="Adaptive search",
-            variable=self.redock_mode_var,
-            value="adaptive",
-            command=self._select_redock_mode
-        )
-        mode_adaptive.pack(side="left", padx=(0, 10))
-        self._register_busy_widget(mode_adaptive)
-        mode_single = tk.Radiobutton(
-            mode_frame,
-            text="Single protocol",
-            variable=self.redock_mode_var,
-            value="single",
-            command=self._select_redock_mode
-        )
-        mode_single.pack(side="left")
-        self._register_busy_widget(mode_single)
         tk.Label(
             self.protocol_tab,
             text="Benchmark protocol combinations on control actives only; completed conditions resume automatically.",
@@ -776,18 +747,12 @@ class RedockAnalysisApp(tk.Tk):
 
     def _on_workflow_changed(self, _event: Optional[tk.Event] = None) -> None:
         selected = self.workflow_notebook.select()
-        if selected == str(self.protocol_tab):
-            self.mode_var.set("protocol_development")
-        elif selected == str(self.screening_tab):
+        if selected == str(self.screening_tab):
             self.mode_var.set("screening")
         else:
-            self.mode_var.set(self.redock_mode_var.get())
+            self.mode_var.set("protocol_development")
         self._update_mode()
         self._update_pair_count()
-
-    def _select_redock_mode(self) -> None:
-        self.mode_var.set(self.redock_mode_var.get())
-        self._update_mode()
 
     def _update_mode(self) -> None:
         mode = self.mode_var.get()
@@ -1366,6 +1331,7 @@ class RedockAnalysisApp(tk.Tk):
                     "Completed", f"Protocol development completed.\n{report_path}"
                 )
                 self._set_status("Protocol sweep completed")
+                self.last_results_path = Path(results_path)
                 self._set_busy(False)
                 return
             elif msg_type == "preflight_failed":
@@ -2300,6 +2266,14 @@ class RedockAnalysisApp(tk.Tk):
             csv_candidate = output_path / "redock_results.csv"
             if csv_candidate.exists():
                 return csv_candidate
+            direct_protocol_candidate = output_path / "protocol_development_results.csv"
+            if direct_protocol_candidate.exists():
+                return direct_protocol_candidate
+            protocol_candidate = (
+                output_path / "protocol_development" / "protocol_development_results.csv"
+            )
+            if protocol_candidate.exists():
+                return protocol_candidate
         return None
 
     def _load_last_results(self) -> None:
@@ -3961,8 +3935,16 @@ class RedockAnalysisApp(tk.Tk):
 
         return ref_mol, poses[best_idx], best_rmsd, best_score, best_idx, len(poses)
 
+    @staticmethod
+    def _pose_results_csv(results_path: Path) -> Path:
+        results_path = Path(results_path)
+        return (
+            results_path if results_path.suffix.lower() == ".csv"
+            else results_path.with_name("redock_results.csv")
+        )
+
     def _show_pose_viewer(self, results_path: Path) -> None:
-        csv_path = Path(results_path).with_name("redock_results.csv")
+        csv_path = self._pose_results_csv(results_path)
         if not csv_path.exists():
             messagebox.showwarning("Pose viewer", "Results CSV not found.")
             return
