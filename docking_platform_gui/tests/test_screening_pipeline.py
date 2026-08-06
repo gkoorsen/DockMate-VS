@@ -83,6 +83,15 @@ def test_protocol_box_definitions_accept_margins_and_fixed_sizes():
         RedockAnalysisApp._parse_protocol_box_definitions("20x0x20")
 
 
+def test_protocol_rescore_methods_are_validated_and_deduplicated():
+    assert RedockAnalysisApp._parse_protocol_rescore_methods(
+        "none, vina, vinardo, vina"
+    ) == ["none", "vina", "vinardo"]
+
+    with pytest.raises(ValueError, match="Unsupported rescoring"):
+        RedockAnalysisApp._parse_protocol_rescore_methods("vina, imaginary")
+
+
 def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):
     rows = [
         {
@@ -99,9 +108,9 @@ def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):
 
     report = RedockAnalysisApp._write_protocol_report(rows, tmp_path).read_text()
 
-    assert "| Engine | Box | Water handling |" in report
-    assert "| smina | margin:4 | remove_all | 8 |" in report
-    assert "| vina | 20x20x20 | retain_all | 16 |" in report
+    assert "| Engine | Box | Rescoring | Water handling |" in report
+    assert "| smina | margin:4 | none | remove_all | 8 |" in report
+    assert "| vina | 20x20x20 | none | retain_all | 16 |" in report
 
 
 def test_protocol_development_uses_unique_control_actives_only():

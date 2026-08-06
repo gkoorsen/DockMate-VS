@@ -191,6 +191,7 @@ class RedockAnalysisApp(tk.Tk):
             "rdock": tk.BooleanVar(value=False),
         }
         self.protocol_box_definitions_var = tk.StringVar(value="margin:4.0")
+        self.protocol_rescore_methods_var = tk.StringVar(value="none")
 
         self.pairs_label_var = tk.StringVar(value="Loaded pairs: 0")
 
@@ -387,6 +388,19 @@ class RedockAnalysisApp(tk.Tk):
             text="Separate with ';', e.g. margin:4; margin:6; 20x20x20",
             fg="#666666",
         ).grid(row=5, column=1, columnspan=5, sticky="w")
+        tk.Label(self.protocol_tab, text="Rescoring methods:").grid(
+            row=6, column=0, sticky="w", pady=(8, 0)
+        )
+        protocol_rescore = tk.Entry(
+            self.protocol_tab, textvariable=self.protocol_rescore_methods_var, width=42
+        )
+        protocol_rescore.grid(row=6, column=1, columnspan=4, sticky="w", pady=(8, 0))
+        self._register_busy_widget(protocol_rescore)
+        tk.Label(
+            self.protocol_tab,
+            text="Comma-separated: none, vina, vinardo, ad4_scoring, dkoes_fast, dkoes_scoring",
+            fg="#666666",
+        ).grid(row=7, column=1, columnspan=5, sticky="w")
 
         tk.Label(
             self.screening_tab,
@@ -617,7 +631,8 @@ class RedockAnalysisApp(tk.Tk):
         scoring_menu.grid(row=6, column=1, sticky="w")
         self._register_busy_widget(scoring_menu)
 
-        tk.Label(self.single_frame, text="Rescore (smina --score_only):").grid(row=6, column=2, sticky="w", pady=(5, 0))
+        rescore_enable_label = tk.Label(self.single_frame, text="Rescore (smina --score_only):")
+        rescore_enable_label.grid(row=6, column=2, sticky="w", pady=(5, 0))
         rescore_chk = tk.Checkbutton(
             self.single_frame,
             text="Enable",
@@ -626,7 +641,8 @@ class RedockAnalysisApp(tk.Tk):
         rescore_chk.grid(row=6, column=3, sticky="w")
         self._register_busy_widget(rescore_chk)
 
-        tk.Label(self.single_frame, text="Rescore scoring:").grid(row=7, column=0, sticky="w", pady=(5, 0))
+        rescore_method_label = tk.Label(self.single_frame, text="Rescore scoring:")
+        rescore_method_label.grid(row=7, column=0, sticky="w", pady=(5, 0))
         rescore_menu = ttk.Combobox(
             self.single_frame,
             textvariable=self.rescore_scoring_var,
@@ -636,6 +652,9 @@ class RedockAnalysisApp(tk.Tk):
         )
         rescore_menu.grid(row=7, column=1, sticky="w", padx=5, pady=(5, 0))
         self._register_busy_widget(rescore_menu)
+        self._protocol_swept_widgets.extend([
+            rescore_enable_label, rescore_chk, rescore_method_label, rescore_menu,
+        ])
 
         tk.Label(self.single_frame, text="Smina binary:").grid(row=8, column=0, sticky="w", pady=(8, 0))
         smina_entry = tk.Entry(self.single_frame, textvariable=self.smina_bin_var)
@@ -1161,6 +1180,23 @@ class RedockAnalysisApp(tk.Tk):
         return definitions
 
     @staticmethod
+    def _parse_protocol_rescore_methods(value: str) -> List[str]:
+        allowed = {
+            "none", "vina", "vinardo", "ad4_scoring", "dkoes_fast", "dkoes_scoring"
+        }
+        methods = list(dict.fromkeys(
+            part.strip().lower() for part in value.split(",") if part.strip()
+        ))
+        if not methods:
+            raise ValueError("Rescoring methods must contain at least one value.")
+        unsupported = [method for method in methods if method not in allowed]
+        if unsupported:
+            raise ValueError(
+                "Unsupported rescoring method(s): " + ", ".join(unsupported)
+            )
+        return methods
+
+    @staticmethod
     def _protocol_active_pairs(pairs: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """Return one positive control for each structure/crystal-ligand pair."""
         active_pairs = []
@@ -1191,6 +1227,9 @@ class RedockAnalysisApp(tk.Tk):
             "box_definitions": self._parse_protocol_box_definitions(
                 self.protocol_box_definitions_var.get()
             ),
+            "rescore_methods": self._parse_protocol_rescore_methods(
+                self.protocol_rescore_methods_var.get()
+            ),
             "exhaustiveness": self._parse_positive_int_list(
                 self.protocol_exhaustiveness_var.get(), "Exhaustiveness"
             ),
@@ -1202,6 +1241,7 @@ class RedockAnalysisApp(tk.Tk):
         total = (
             len(actives) * len(sweep["water_modes"]) * len(sweep["engines"])
             * len(sweep["box_definitions"])
+            * len(sweep["rescore_methods"])
             * len(sweep["exhaustiveness"]) * len(sweep["seeds"])
         )
         self.progress_dialog = ProgressDialog(self, total_ligands=total)
@@ -1223,11 +1263,12 @@ class RedockAnalysisApp(tk.Tk):
         sweep = config["protocol_sweep"]
         default_box = sweep["box_definitions"][0]["label"]
 
-        def condition_key(row: dict) -> Tuple[str, str, str, str, str, int, int]:
+        def condition_key(row: dict) -> Tuple[str, str, str, str, str, str, int, int]:
             return (
                 str(row.get("pdb_id", "")), str(row.get("ligand_resname", row.get("site_ligand", ""))),
                 str(row.get("engine", config["single"].get("engine", ""))),
                 str(row.get("box_definition", default_box)),
+                str(row.get("rescore_method") or "none"),
                 str(row.get("water_handling", "")), int(row.get("exhaustiveness", -1)),
                 int(row.get("seed", -1)),
             )
@@ -1237,10 +1278,11 @@ class RedockAnalysisApp(tk.Tk):
             if row.get("status") in ("complete", "unsupported")
         }
         conditions = [
-            (pair, engine, box, water, exhaustiveness, seed)
+            (pair, engine, box, rescore_method, water, exhaustiveness, seed)
             for pair in actives
             for engine in sweep["engines"]
             for box in sweep["box_definitions"]
+            for rescore_method in sweep["rescore_methods"]
             for water in sweep["water_modes"]
             for exhaustiveness in sweep["exhaustiveness"]
             for seed in sweep["seeds"]
@@ -1248,11 +1290,12 @@ class RedockAnalysisApp(tk.Tk):
         pending_actives = []
         for pair in actives:
             has_pending_condition = any(
-                (pair["pdb_id"], pair["site_ligand"], engine, box["label"],
+                (pair["pdb_id"], pair["site_ligand"], engine, box["label"], rescore_method,
                  water, exhaustiveness, seed)
                 not in completed
                 for engine in sweep["engines"]
                 for box in sweep["box_definitions"]
+                for rescore_method in sweep["rescore_methods"]
                 for water in sweep["water_modes"]
                 for exhaustiveness in sweep["exhaustiveness"]
                 for seed in sweep["seeds"]
@@ -1273,18 +1316,25 @@ class RedockAnalysisApp(tk.Tk):
             "active_count": len(actives),
         })
 
-        for index, (pair, engine_name, box, water, exhaustiveness, seed) in enumerate(conditions, 1):
+        needs_rescore = any(method != "none" for method in sweep["rescore_methods"])
+        rescore_binary = (
+            self._resolve_smina_binary(config.get("rescore", {}).get("smina_binary"))
+            if needs_rescore else None
+        )
+
+        for index, (pair, engine_name, box, rescore_method, water, exhaustiveness, seed) in enumerate(conditions, 1):
             if self.progress_dialog and self.progress_dialog.cancelled:
                 self._queue.put(("cancelled", results_path))
                 return
             pdb_id = pair["pdb_id"]
             site_ligand = pair["site_ligand"]
             key = (
-                pdb_id, site_ligand, engine_name, box["label"],
+                pdb_id, site_ligand, engine_name, box["label"], rescore_method,
                 water, exhaustiveness, seed,
             )
             label = (
                 f"{pdb_id} {site_ligand}: {engine_name}, {box['label']}, "
+                f"rescore={rescore_method}, "
                 f"{water}, e{exhaustiveness}, seed {seed}"
             )
             self._queue.put(("progress", index - 1, len(conditions), label))
@@ -1296,6 +1346,7 @@ class RedockAnalysisApp(tk.Tk):
             row = {
                 "pdb_id": pdb_id, "ligand_resname": site_ligand,
                 "engine": engine_name, "box_definition": box["label"],
+                "rescore_method": rescore_method,
                 "water_handling": water, "exhaustiveness": exhaustiveness,
                 "seed": seed, "status": "failed",
             }
@@ -1331,7 +1382,7 @@ class RedockAnalysisApp(tk.Tk):
                 })
                 case_id = self._safe_case_id(
                     f"{pdb_id}_{site_ligand}_{engine_name}_{box['label']}_"
-                    f"{water}_e{exhaustiveness}_s{seed}"
+                    f"r{rescore_method}_{water}_e{exhaustiveness}_s{seed}"
                 )
                 result = self._run_single_case(
                     pdb_file=pdb_file,
@@ -1348,8 +1399,23 @@ class RedockAnalysisApp(tk.Tk):
                 )
                 result.target_name = pair.get("target_name")
                 row.update(asdict(result))
+                if rescore_method != "none":
+                    if not rescore_binary:
+                        result.rescore_error = "Smina binary not found"
+                    elif result.output_file:
+                        rescored = self._rescore_with_smina(
+                            output_file=Path(result.output_file),
+                            case_dir=output_dir / case_id,
+                            smina_binary=rescore_binary,
+                            scoring=rescore_method,
+                        )
+                        if rescored:
+                            result.rescore_score = rescored.get("score")
+                            result.rescore_error = rescored.get("error")
+                    row.update(asdict(result))
                 row.update({
                     "engine": engine_name, "box_definition": box["label"],
+                    "rescore_method": rescore_method,
                     "water_handling": water, "exhaustiveness": exhaustiveness,
                     "seed": seed, "status": "complete",
                 })
@@ -1391,8 +1457,13 @@ class RedockAnalysisApp(tk.Tk):
                 complete["engine"] = "unknown"
             if "box_definition" not in complete:
                 complete["box_definition"] = "legacy"
+            if "rescore_method" not in complete:
+                complete["rescore_method"] = "none"
+            complete["rescore_method"] = complete["rescore_method"].fillna("none")
+            if "rescore_error" not in complete:
+                complete["rescore_error"] = None
             grouped = complete.groupby(
-                ["engine", "box_definition", "water_handling", "exhaustiveness"],
+                ["engine", "box_definition", "rescore_method", "water_handling", "exhaustiveness"],
                 dropna=False,
             ).agg(
                 cases=("best_rmsd", "count"),
@@ -1400,17 +1471,20 @@ class RedockAnalysisApp(tk.Tk):
                 mean_best_rmsd=("best_rmsd", "mean"),
                 median_best_rmsd=("best_rmsd", "median"),
                 mean_runtime_sec=("runtime_sec", "mean"),
+                rescore_failures=("rescore_error", lambda values: values.notna().sum()),
             ).reset_index().sort_values(["success_rate", "mean_best_rmsd"], ascending=[False, True])
             lines.extend([
-                "| Engine | Box | Water handling | Exhaustiveness | Cases | Success | Mean best RMSD | Median best RMSD | Mean runtime (s) |",
-                "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "| Engine | Box | Rescoring | Water handling | Exhaustiveness | Cases | Success | Mean best RMSD | Median best RMSD | Rescore failures | Mean runtime (s) |",
+                "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ])
             for _, item in grouped.iterrows():
                 lines.append(
-                    f"| {item.engine} | {item.box_definition} | {item.water_handling} | "
+                    f"| {item.engine} | {item.box_definition} | {item.rescore_method} | "
+                    f"{item.water_handling} | "
                     f"{int(item.exhaustiveness)} | {int(item.cases)} | "
                     f"{item.success_rate:.1%} | {item.mean_best_rmsd:.2f} | "
-                    f"{item.median_best_rmsd:.2f} | {item.mean_runtime_sec:.1f} |"
+                    f"{item.median_best_rmsd:.2f} | {int(item.rescore_failures)} | "
+                    f"{item.mean_runtime_sec:.1f} |"
                 )
         report_path.write_text("\n".join(lines) + "\n")
         return report_path
