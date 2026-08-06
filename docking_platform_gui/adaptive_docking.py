@@ -547,7 +547,8 @@ class AdaptiveDockingPipeline:
                 ligand_name=ligand_name,
                 binding_site=binding_site,
                 output_dir=protocol_dir,
-                prepared_receptor_pdb=prepared_receptor_pdb
+                prepared_receptor_pdb=prepared_receptor_pdb,
+                reference_ligand_pdb=crystal_ligand_pdb,
             )
         else:
             raise ValueError(f"Unknown engine: {protocol.engine}")
@@ -984,6 +985,35 @@ class AdaptiveDockingPipeline:
                 return True
         return False
 
+    @staticmethod
+    def _translate_sdf_to_center(source: Path, destination: Path, center) -> None:
+        """Copy an SDF while translating its molecular centroid to ``center``."""
+        from rdkit import Chem
+
+        molecule = Chem.SDMolSupplier(
+            str(source), removeHs=False, sanitize=False
+        )[0]
+        if molecule is None or molecule.GetNumConformers() == 0:
+            raise RuntimeError("Could not build rDock cavity reference molecule")
+        conformer = molecule.GetConformer()
+        coordinates = [
+            conformer.GetAtomPosition(index)
+            for index in range(molecule.GetNumAtoms())
+        ]
+        centroid = tuple(
+            sum(getattr(point, axis) for point in coordinates) / len(coordinates)
+            for axis in ("x", "y", "z")
+        )
+        shift = tuple(float(center[index]) - centroid[index] for index in range(3))
+        for index, point in enumerate(coordinates):
+            conformer.SetAtomPosition(
+                index,
+                (point.x + shift[0], point.y + shift[1], point.z + shift[2]),
+            )
+        writer = Chem.SDWriter(str(destination))
+        writer.write(molecule)
+        writer.close()
+
     def _dock_with_smina(
         self,
         receptor_pdbqt: Path,
@@ -1036,6 +1066,7 @@ class AdaptiveDockingPipeline:
         binding_site: 'BindingSite',
         output_dir: Path,
         prepared_receptor_pdb: Optional[Path] = None,
+        reference_ligand_pdb: Optional[Path] = None,
         radius_override: Optional[float] = None,
         runs: int = 20,
         seed: int = 42
@@ -1200,6 +1231,30 @@ class AdaptiveDockingPipeline:
                     writer.write(mol, confId=best_conf_id)
                     writer.close()
 
+            # RbtLigandSiteMapper uses the coordinates of REF_MOL. The docking
+            # input conformer is generated around the origin, so using it
+            # directly creates a cavity far from most crystallographic sites.
+            cavity_reference_sdf = output_dir / "cavity_reference.sdf"
+            if reference_ligand_pdb and reference_ligand_pdb.exists():
+                result = subprocess.run(
+                    [
+                        obabel, str(reference_ligand_pdb),
+                        "-O", str(cavity_reference_sdf), "-h",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env=env,
+                )
+                if result.returncode != 0 or not cavity_reference_sdf.exists():
+                    raise RuntimeError(
+                        "Open Babel crystal-ligand conversion failed: " + result.stderr
+                    )
+            else:
+                self._translate_sdf_to_center(
+                    ligand_sdf, cavity_reference_sdf, binding_site.center
+                )
+
             # Create receptor parameter file
             if radius_override is not None:
                 radius = float(radius_override)
@@ -1220,7 +1275,7 @@ RECEPTOR_FLEX 3.0
 ##################################################################
 SECTION MAPPER
     SITE_MAPPER RbtLigandSiteMapper
-    REF_MOL {ligand_sdf.name}
+    REF_MOL {cavity_reference_sdf.name}
     RADIUS {radius:.1f}
     SMALL_SPHERE 1.0
     MIN_VOLUME 100

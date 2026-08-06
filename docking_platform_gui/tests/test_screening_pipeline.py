@@ -8,6 +8,7 @@ import pytest
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
+from docking_platform_gui.adaptive_docking import AdaptiveDockingPipeline
 from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp, RedockResult
 from docking_platform_gui.utils.rmsd import coordinate_rmsd
 
@@ -90,6 +91,29 @@ def test_protocol_rescore_methods_are_validated_and_deduplicated():
 
     with pytest.raises(ValueError, match="Unsupported rescoring"):
         RedockAnalysisApp._parse_protocol_rescore_methods("vina, imaginary")
+
+
+def test_rdock_fallback_cavity_reference_is_translated_to_site_center(tmp_path: Path):
+    molecule = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    AllChem.EmbedMolecule(molecule, randomSeed=7)
+    source = tmp_path / "input.sdf"
+    destination = tmp_path / "cavity_reference.sdf"
+    writer = Chem.SDWriter(str(source))
+    writer.write(molecule)
+    writer.close()
+
+    target = (12.5, -3.25, 8.75)
+    AdaptiveDockingPipeline._translate_sdf_to_center(source, destination, target)
+
+    translated = Chem.SDMolSupplier(
+        str(destination), removeHs=False, sanitize=False
+    )[0]
+    conformer = translated.GetConformer()
+    centroid = np.mean([
+        list(conformer.GetAtomPosition(index))
+        for index in range(translated.GetNumAtoms())
+    ], axis=0)
+    assert centroid == pytest.approx(target, abs=1e-3)
 
 
 def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):

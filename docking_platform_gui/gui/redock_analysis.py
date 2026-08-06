@@ -1263,7 +1263,7 @@ class RedockAnalysisApp(tk.Tk):
         sweep = config["protocol_sweep"]
         default_box = sweep["box_definitions"][0]["label"]
 
-        def condition_key(row: dict) -> Tuple[str, str, str, str, str, str, int, int]:
+        def condition_identity(row: dict) -> Tuple[str, str, str, str, str, str, int, int]:
             return (
                 str(row.get("pdb_id", "")), str(row.get("ligand_resname", row.get("site_ligand", ""))),
                 str(row.get("engine", config["single"].get("engine", ""))),
@@ -1272,6 +1272,14 @@ class RedockAnalysisApp(tk.Tk):
                 str(row.get("water_handling", "")), int(row.get("exhaustiveness", -1)),
                 int(row.get("seed", -1)),
             )
+
+        def condition_key(row: dict) -> tuple:
+            identity = condition_identity(row)
+            engine = identity[2]
+            cavity_version = row.get("rdock_cavity_version")
+            if not cavity_version:
+                cavity_version = "legacy" if engine == "rdock" else "not_applicable"
+            return (*identity, str(cavity_version))
 
         completed = {
             condition_key(row) for row in rows
@@ -1291,7 +1299,8 @@ class RedockAnalysisApp(tk.Tk):
         for pair in actives:
             has_pending_condition = any(
                 (pair["pdb_id"], pair["site_ligand"], engine, box["label"], rescore_method,
-                 water, exhaustiveness, seed)
+                 water, exhaustiveness, seed,
+                 "crystal_or_center_v2" if engine == "rdock" else "not_applicable")
                 not in completed
                 for engine in sweep["engines"]
                 for box in sweep["box_definitions"]
@@ -1331,6 +1340,7 @@ class RedockAnalysisApp(tk.Tk):
             key = (
                 pdb_id, site_ligand, engine_name, box["label"], rescore_method,
                 water, exhaustiveness, seed,
+                "crystal_or_center_v2" if engine_name == "rdock" else "not_applicable",
             )
             label = (
                 f"{pdb_id} {site_ligand}: {engine_name}, {box['label']}, "
@@ -1347,6 +1357,9 @@ class RedockAnalysisApp(tk.Tk):
                 "pdb_id": pdb_id, "ligand_resname": site_ligand,
                 "engine": engine_name, "box_definition": box["label"],
                 "rescore_method": rescore_method,
+                "rdock_cavity_version": (
+                    "crystal_or_center_v2" if engine_name == "rdock" else "not_applicable"
+                ),
                 "water_handling": water, "exhaustiveness": exhaustiveness,
                 "seed": seed, "status": "failed",
             }
@@ -1426,7 +1439,7 @@ class RedockAnalysisApp(tk.Tk):
                 row["error_message"] = str(exc)
                 self._queue.put(("log", f"{label} failed: {exc}"))
 
-            rows = [old for old in rows if condition_key(old) != key]
+            rows = [old for old in rows if condition_identity(old) != key[:-1]]
             rows.append(row)
             temporary = results_path.with_suffix(".tmp")
             pd.DataFrame(rows).to_csv(temporary, index=False)
@@ -2242,6 +2255,7 @@ class RedockAnalysisApp(tk.Tk):
                     binding_site=binding_site,
                     output_dir=variant_dir,
                     prepared_receptor_pdb=receptor_pdb,
+                    reference_ligand_pdb=crystal_ligand_pdb,
                     radius_override=single_cfg["rdock_radius"],
                     runs=single_cfg["rdock_runs"],
                     seed=single_cfg["rdock_seed"]
