@@ -278,6 +278,55 @@ def test_summary_counts_samples_separately_and_uses_explicit_controls():
     assert "1 actives, 1 decoys" in summary["interpretation"]["enrichment_message"]
 
 
+def test_summary_reports_macro_and_pooled_auc_per_target():
+    results = [
+        _result(pdb_id="1AAA", ligand_resname="A01", target_name="NQO2",
+                dock_name="active_a", control_label=1, best_score=-10.0,
+                best_rmsd=1.0, top1_rmsd=3.0, top5_rmsd=1.0, top10_rmsd=1.0),
+        _result(pdb_id="1AAA", ligand_resname="A01", target_name="NQO2",
+                dock_name="decoy_a", control_label=0, best_score=-5.0),
+        _result(pdb_id="2BBB", ligand_resname="B01", target_name="NQO2",
+                dock_name="active_b", control_label=1, best_score=-8.0,
+                best_rmsd=3.0, top1_rmsd=4.0, top5_rmsd=3.0, top10_rmsd=3.0),
+        _result(pdb_id="2BBB", ligand_resname="B01", target_name="NQO2",
+                dock_name="decoy_b", control_label=0, best_score=-9.0),
+    ]
+
+    summary = _app_without_tk()._build_summary(results, threshold=2.0)
+    target = summary["per_target_enrichment"][0]
+
+    assert target["target_name"] == "NQO2"
+    assert target["structures"] == 2
+    assert target["macro_roc_auc"] == pytest.approx(0.5)
+    assert target["pooled_roc_auc"] == pytest.approx(0.75)
+    pose = summary["per_target_pose_recovery"][0]
+    assert pose["success_rate_best"] == pytest.approx(50.0)
+    assert pose["success_rate_top1"] == pytest.approx(0.0)
+    assert summary["screening_validation"] == "needs_review"
+    markdown = _app_without_tk()._summary_to_markdown(summary)
+    assert "Control Enrichment (per target)" in markdown
+    assert "Pose Recovery (per target)" in markdown
+
+
+def test_strong_auc_passes_enrichment_without_requiring_active_rank_one():
+    results = [
+        _result(dock_name="active", control_label=1, best_score=-9.5),
+        _result(dock_name="better_decoy", control_label=0, best_score=-10.0),
+    ]
+    results.extend(
+        _result(dock_name=f"decoy_{index}", control_label=0, best_score=-float(index))
+        for index in range(1, 10)
+    )
+
+    summary = _app_without_tk()._build_summary(results, threshold=2.0)
+    markdown = _app_without_tk()._summary_to_markdown(summary)
+
+    assert summary["per_structure_enrichment"][0]["roc_auc"] == pytest.approx(0.9)
+    assert summary["screening_validation"] == "passed_enrichment"
+    assert "PASSED (ENRICHMENT)" in markdown
+    assert "does not by itself invalidate useful enrichment" in markdown
+
+
 def test_unlabelled_redock_is_not_counted_as_screening_sample(tmp_path):
     output = tmp_path / "docked.pdbqt"
     output.write_text("ATOM\n")

@@ -113,6 +113,7 @@ class RedockResult:
     logp: Optional[float] = None
     tpsa: Optional[float] = None
     rotatable_bonds: Optional[int] = None
+    target_name: Optional[str] = None
 
 
 class RedockAnalysisApp(tk.Tk):
@@ -1271,6 +1272,7 @@ class RedockAnalysisApp(tk.Tk):
                     run_mode="protocol_development",
                     control_label=1,
                 )
+                result.target_name = pair.get("target_name")
                 row.update(asdict(result))
                 row.update({
                     "water_handling": water, "exhaustiveness": exhaustiveness,
@@ -1601,6 +1603,7 @@ class RedockAnalysisApp(tk.Tk):
                     "dock_name": p.get("dock_name"),
                     "control_label": p.get("control_label"),
                     "case_id": p.get("case_id"),
+                    **({"target_name": p.get("target_name")} if p.get("target_name") else {}),
                 }
                 for p in pairs
             ],
@@ -1664,6 +1667,7 @@ class RedockAnalysisApp(tk.Tk):
                 single_cfg["apo_site_mode"] = "protein_centroid"
             chain = item.get("chain")
             control_label = item.get("control_label")
+            target_name = item.get("target_name")
             # Report the case as STARTING (idx-1 complete), not as finished.
             # Emitting idx here drove the bar to 100% while the final case was
             # still docking.
@@ -1759,6 +1763,7 @@ class RedockAnalysisApp(tk.Tk):
                         control_label=control_label
                     )
                 result.control_label = control_label
+                result.target_name = target_name
                 result.ligand_charge = ligand_charge
                 result.molecular_weight = ligand_properties.get("molecular_weight")
                 result.logp = ligand_properties.get("logp")
@@ -1806,7 +1811,8 @@ class RedockAnalysisApp(tk.Tk):
                     dock_name=dock_name,
                     site_method=site_mode,
                     docking_completed=False,
-                    case_id=case_id
+                    case_id=case_id,
+                    target_name=target_name
                 )
                 self._queue.put(("log", f"{pdb_id} {ligand} failed: {exc}"))
 
@@ -4863,6 +4869,47 @@ class RedockAnalysisApp(tk.Tk):
                 continue
             score_labels.append((rank_score, int(result.control_label)))
 
+        pose_results_by_target: Dict[str, List[RedockResult]] = {}
+        for result in results:
+            if result.control_label == 0 or result.best_rmsd is None or result.best_rmsd >= 900:
+                continue
+            target_name = result.target_name or result.pdb_id
+            pose_results_by_target.setdefault(target_name, []).append(result)
+
+        def _target_pose_rate(target_results: List[RedockResult], field: str) -> Optional[float]:
+            values = [
+                getattr(result, field) for result in target_results
+                if getattr(result, field) is not None and getattr(result, field) < 900
+            ]
+            if not values:
+                return None
+            return float(100.0 * sum(value < threshold for value in values) / len(values))
+
+        target_pose_rows = []
+        for target_name, target_results in sorted(pose_results_by_target.items()):
+            target_pose_rows.append({
+                "target_name": target_name,
+                "cases": len(target_results),
+                "success_rate_best": _target_pose_rate(target_results, "best_rmsd"),
+                "success_rate_top1": _target_pose_rate(target_results, "top1_rmsd"),
+                "success_rate_top5": _target_pose_rate(target_results, "top5_rmsd"),
+                "success_rate_top10": _target_pose_rate(target_results, "top10_rmsd"),
+                "mean_best_rmsd": float(np.mean([
+                    result.best_rmsd for result in target_results
+                ])),
+                "mean_top1_rmsd": (
+                    float(np.mean([
+                        result.top1_rmsd for result in target_results
+                        if result.top1_rmsd is not None and result.top1_rmsd < 900
+                    ]))
+                    if any(
+                        result.top1_rmsd is not None and result.top1_rmsd < 900
+                        for result in target_results
+                    ) else None
+                ),
+            })
+        summary["per_target_pose_recovery"] = target_pose_rows
+
         # Per-structure enrichment.
         #
         # Docking scores are not comparable across different proteins: each
@@ -4878,6 +4925,8 @@ class RedockAnalysisApp(tk.Tk):
         # pooled number too, but label it as diagnostic only.
         per_structure: Dict[tuple, List[Tuple[float, int]]] = {}
         per_structure_details: Dict[tuple, List[Tuple[float, int, str]]] = {}
+        structure_targets: Dict[tuple, str] = {}
+        per_target: Dict[str, List[Tuple[float, int]]] = {}
         for result in results:
             if result.control_label not in (0, 1):
                 continue
@@ -4885,6 +4934,11 @@ class RedockAnalysisApp(tk.Tk):
             if rank_score is None:
                 continue
             key = (result.pdb_id, result.ligand_resname)
+            target_name = result.target_name or result.pdb_id
+            structure_targets[key] = target_name
+            per_target.setdefault(target_name, []).append(
+                (rank_score, int(result.control_label))
+            )
             per_structure.setdefault(key, []).append(
                 (rank_score, int(result.control_label))
             )
@@ -4913,6 +4967,7 @@ class RedockAnalysisApp(tk.Tk):
             )
             struct_rows.append({
                 "pdb_id": pdb_id,
+                "target_name": structure_targets[(pdb_id, resname)],
                 "ligand": resname,
                 "roc_auc": m["roc_auc"],
                 "actives": m["actives"],
@@ -4933,17 +4988,46 @@ class RedockAnalysisApp(tk.Tk):
 
         if struct_rows:
             aucs = [r["roc_auc"] for r in struct_rows]
+            validation_auc_threshold = 0.70
             n_clean = sum(1 for r in struct_rows if r["active_beats_all_decoys"])
+            n_auc_pass = sum(
+                1 for r in struct_rows if r["roc_auc"] >= validation_auc_threshold
+            )
             summary["per_structure_enrichment"] = struct_rows
             summary["n_structures_with_controls"] = len(struct_rows)
             summary["mean_structure_roc_auc"] = float(np.mean(aucs))
             summary["median_structure_roc_auc"] = float(np.median(aucs))
             summary["n_structures_active_top"] = n_clean
             summary["frac_structures_active_top"] = float(n_clean / len(struct_rows))
+            summary["validation_auc_threshold"] = validation_auc_threshold
+            summary["n_structures_auc_pass"] = n_auc_pass
             summary["failed_control_structures"] = [
                 f"{r['pdb_id']}/{r['ligand']}"
                 for r in struct_rows if not r["active_beats_all_decoys"]
             ]
+            target_rows = []
+            for target_name, target_scores in sorted(per_target.items()):
+                target_metrics = self._compute_enrichment_metrics(target_scores)
+                target_structures = [
+                    row for row in struct_rows if row["target_name"] == target_name
+                ]
+                if not target_metrics or not target_structures:
+                    continue
+                target_rows.append({
+                    "target_name": target_name,
+                    "structures": len(target_structures),
+                    "actives": target_metrics["actives"],
+                    "decoys": target_metrics["decoys"],
+                    "macro_roc_auc": float(np.mean([
+                        row["roc_auc"] for row in target_structures
+                    ])),
+                    "pooled_roc_auc": target_metrics["roc_auc"],
+                    "structures_active_top": sum(
+                        bool(row["active_beats_all_decoys"])
+                        for row in target_structures
+                    ),
+                })
+            summary["per_target_enrichment"] = target_rows
             property_checks = []
             for key in sorted(per_structure):
                 structure_results = [
@@ -4969,11 +5053,12 @@ class RedockAnalysisApp(tk.Tk):
             )
             if summary["control_property_match_passed"] is False:
                 summary["screening_validation"] = "invalid_decoy_matching"
+            elif n_clean == len(struct_rows) and len(struct_rows) > 0:
+                summary["screening_validation"] = "passed_strict"
+            elif n_auc_pass == len(struct_rows) and len(struct_rows) > 0:
+                summary["screening_validation"] = "passed_enrichment"
             else:
-                summary["screening_validation"] = (
-                    "passed" if n_clean == len(struct_rows) and len(struct_rows) > 0
-                    else "failed"
-                )
+                summary["screening_validation"] = "needs_review"
 
         enrichment = self._compute_enrichment_metrics(score_labels)
         if enrichment:
@@ -5098,6 +5183,27 @@ class RedockAnalysisApp(tk.Tk):
             f"- Median runtime (s): {self._fmt(summary.get('median_runtime_sec'))}",
         ]
 
+        target_pose_rows = summary.get("per_target_pose_recovery") or []
+        if target_pose_rows:
+            lines.extend([
+                "",
+                "## Pose Recovery (per target)",
+                "",
+                "| Target | Cases | Best-pose success | Top-1 success | Top-5 success | "
+                "Top-10 success | Mean best RMSD | Mean Top-1 RMSD |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ])
+            for row in target_pose_rows:
+                lines.append(
+                    f"| {row['target_name']} | {row['cases']} | "
+                    f"{self._fmt(row['success_rate_best'])}% | "
+                    f"{self._fmt(row['success_rate_top1'])}% | "
+                    f"{self._fmt(row['success_rate_top5'])}% | "
+                    f"{self._fmt(row['success_rate_top10'])}% | "
+                    f"{self._fmt(row['mean_best_rmsd'])} | "
+                    f"{self._fmt(row['mean_top1_rmsd'])} |"
+                )
+
         if summary.get("rescore_count"):
             methods = summary.get("rescore_methods") or []
             method_text = ", ".join(methods) if methods else "unknown"
@@ -5110,17 +5216,49 @@ class RedockAnalysisApp(tk.Tk):
                 f"- Methods: {method_text}"
             ])
 
+        target_rows = summary.get("per_target_enrichment") or []
+        if target_rows:
+            lines.extend([
+                "",
+                "## Control Enrichment (per target)",
+                "",
+                "Macro AUC is the mean of the target's per-structure AUC values and is the "
+                "preferred target-level statistic. Target-pooled AUC combines raw scores "
+                "across that target's receptor structures and is diagnostic only.",
+                "",
+                "| Target | Structures | Macro AUC | Target-pooled AUC | Actives | Decoys | Active top |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ])
+            for row in sorted(target_rows, key=lambda item: item["target_name"]):
+                lines.append(
+                    f"| {row['target_name']} | {row['structures']} | "
+                    f"{self._fmt(row['macro_roc_auc'])} | "
+                    f"{self._fmt(row['pooled_roc_auc'])} | {row['actives']} | "
+                    f"{row['decoys']} | {row['structures_active_top']}/{row['structures']} |"
+                )
+
         if summary.get("n_structures_with_controls"):
             n_s = summary["n_structures_with_controls"]
             n_top = summary.get("n_structures_active_top")
             failed = summary.get("failed_control_structures") or []
+            validation_labels = {
+                "passed_strict": "PASSED (STRICT)",
+                "passed_enrichment": "PASSED (ENRICHMENT)",
+                "needs_review": "NEEDS REVIEW",
+                "invalid_decoy_matching": "INVALID DECOY MATCHING",
+            }
+            validation = summary.get("screening_validation", "unknown")
+            validation_label = validation_labels.get(validation, str(validation).upper())
             lines.extend([
                 "",
                 "## Control Enrichment (per structure)",
                 "",
                 f"- Structures with controls: {n_s}",
-                f"- Screening validation: {str(summary.get('screening_validation', 'unknown')).upper()}",
-                f"- Crystal ligand outscores all decoys: {n_top}/{n_s} "
+                f"- Screening validation: {validation_label}",
+                f"- Structures meeting AUC >= "
+                f"{self._fmt(summary.get('validation_auc_threshold'))}: "
+                f"{summary.get('n_structures_auc_pass')}/{n_s}",
+                f"- Crystal ligand ranks first (strict diagnostic): {n_top}/{n_s} "
                 f"({self._fmt(summary.get('frac_structures_active_top'))})",
                 f"- Mean per-structure ROC AUC: "
                 f"{self._fmt(summary.get('mean_structure_roc_auc'))}",
@@ -5130,8 +5268,9 @@ class RedockAnalysisApp(tk.Tk):
             if failed:
                 lines.extend([
                     "",
-                    "Structures where the crystal ligand did NOT beat its decoys - "
-                    "screening scores at these structures are not interpretable:",
+                    "Structures where one or more decoys marginally or substantially "
+                    "outscored the crystal ligand. Review AUC, active rank, and score "
+                    "margin; this does not by itself invalidate useful enrichment:",
                     "",
                 ])
                 lines.extend(f"- {s}" for s in failed[:25])
@@ -5153,7 +5292,7 @@ class RedockAnalysisApp(tk.Tk):
                         f"{self._fmt(r.get('active_score'))} | {r.get('best_decoy')} | "
                         f"{self._fmt(r.get('best_decoy_score'))} | "
                         f"{self._fmt(r.get('score_margin'))} | "
-                        f"{'yes' if r['active_beats_all_decoys'] else 'NO'} |"
+                        f"{'yes' if r['active_beats_all_decoys'] else 'no'} |"
                     )
 
         if summary.get("roc_auc") is not None:
@@ -5170,9 +5309,9 @@ class RedockAnalysisApp(tk.Tk):
             if cross:
                 lines.extend([
                     "",
-                    "DIAGNOSTIC ONLY: these controls span multiple proteins. "
-                    "Docking scores are not comparable across receptors, so the "
-                    "pooled AUC partly measures between-protein score offsets. "
+                    "DIAGNOSTIC ONLY: these controls span multiple receptor structures. "
+                    "Raw docking scores are not necessarily comparable across receptors, "
+                    "so the pooled AUC can include receptor-specific score offsets. "
                     "Use the per-structure table above to judge whether "
                     "screening scores are trustworthy.",
                 ])
@@ -5432,6 +5571,9 @@ class RedockAnalysisApp(tk.Tk):
             col_map,
             ["target_ligand", "targetligand", "target_ligand_name", "targetligandname"]
         )
+        target_col = self._find_col(
+            col_map, ["protein", "target", "target_name", "targetname", "protein_name"]
+        )
         chain_col = self._find_col(col_map, ["chain", "ligandchain", "ligand_chain"])
         label_col = self._find_col(col_map, ["label", "class", "is_active", "isactive", "active", "actives"])
         smiles_col = self._find_col(col_map, ["smiles", "smile", "smiles_string", "smilesstring"])
@@ -5472,6 +5614,7 @@ class RedockAnalysisApp(tk.Tk):
         def _add_pair(
             pdb_id: str,
             ligand: str,
+            target_name: Optional[str],
             chain: Optional[str],
             smiles: Optional[str],
             control_label: Optional[int],
@@ -5493,6 +5636,7 @@ class RedockAnalysisApp(tk.Tk):
             pairs.append({
                 "pdb_id": pdb_id,
                 "ligand": ligand,
+                "target_name": target_name,
                 "chain": chain,
                 "control_label": control_label,
                 "smiles": smiles,
@@ -5529,6 +5673,13 @@ class RedockAnalysisApp(tk.Tk):
 
             site_ligand = None if (not ligand_text or ligand_text in invalid_tokens) else ligand_text
             ligand = site_ligand or "APO"
+            target_name = None
+            if target_col:
+                target_value = row.get(target_col)
+                if not pd.isna(target_value):
+                    target_text = str(target_value).strip()
+                    if target_text and target_text.upper() not in invalid_tokens:
+                        target_name = target_text
 
             chain = None
             if chain_col:
@@ -5573,6 +5724,7 @@ class RedockAnalysisApp(tk.Tk):
                     _add_pair(
                         pdb_id=pdb_id,
                         ligand=ligand,
+                        target_name=target_name,
                         chain=chain,
                         smiles=active_smiles,
                         control_label=1,
@@ -5587,6 +5739,7 @@ class RedockAnalysisApp(tk.Tk):
                         _add_pair(
                             pdb_id=pdb_id,
                             ligand=ligand,
+                            target_name=target_name,
                             chain=chain,
                             smiles=decoy_smiles,
                             control_label=0,
@@ -5601,6 +5754,7 @@ class RedockAnalysisApp(tk.Tk):
                     _add_pair(
                         pdb_id=pdb_id,
                         ligand=ligand,
+                        target_name=target_name,
                         chain=chain,
                         smiles=active_smiles,
                         control_label=None,
@@ -5635,6 +5789,7 @@ class RedockAnalysisApp(tk.Tk):
             _add_pair(
                 pdb_id=pdb_id,
                 ligand=ligand,
+                target_name=target_name,
                 chain=chain,
                 smiles=smiles,
                 control_label=control_label,
@@ -5654,6 +5809,7 @@ class RedockAnalysisApp(tk.Tk):
             "decoy_smiles_col": decoy_smiles_col,
             "decoy_compound_col": decoy_compound_col,
             "target_ligand_col": target_ligand_col,
+            "target_col": target_col,
             "center_x_col": center_x_col,
             "center_y_col": center_y_col,
             "center_z_col": center_z_col,
