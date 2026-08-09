@@ -93,6 +93,27 @@ def test_protocol_rescore_methods_are_validated_and_deduplicated():
         RedockAnalysisApp._parse_protocol_rescore_methods("vina, imaginary")
 
 
+def test_rescored_pose_metrics_follow_rescored_ranking(monkeypatch, tmp_path: Path):
+    app = _app_without_tk()
+    poses = [Chem.MolFromSmiles("C"), Chem.MolFromSmiles("CC"), Chem.MolFromSmiles("CCC")]
+    rmsd_by_pose = {id(poses[0]): 0.8, id(poses[1]): 3.0, id(poses[2]): 1.5}
+    monkeypatch.setattr(app, "_load_poses_and_scores", lambda _path: (poses, [None] * 3))
+    monkeypatch.setattr(app, "_load_reference_mol", lambda _path: Chem.MolFromSmiles("C"))
+    monkeypatch.setattr(app, "_pose_rmsd", lambda _reference, pose: rmsd_by_pose[id(pose)])
+
+    metrics = app._compute_rescored_pose_metrics(
+        tmp_path / "reference.pdb", tmp_path / "poses.pdbqt",
+        scores=[-7.0, -9.0, -8.0], threshold=2.0,
+        control_label=1, is_self_dock=True,
+    )
+
+    assert metrics["rescore_score"] == -9.0
+    assert metrics["rescore_top1_rmsd"] == 3.0
+    assert metrics["rescore_top5_rmsd"] == 0.8
+    assert metrics["rescore_best_rmsd_rank"] == 3
+    assert metrics["rescore_rmsd_best_score"] == 3.0
+
+
 def test_rdock_fallback_cavity_reference_is_translated_to_site_center(tmp_path: Path):
     molecule = Chem.AddHs(Chem.MolFromSmiles("CCO"))
     AllChem.EmbedMolecule(molecule, randomSeed=7)
@@ -132,7 +153,7 @@ def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):
 
     report = RedockAnalysisApp._write_protocol_report(rows, tmp_path).read_text()
 
-    assert "| Engine | Box | Rescoring | Water handling |" in report
+    assert "| Engine | Box | Rescoring | Water |" in report
     assert "| smina | margin:4 | none | remove_all | 8 |" in report
     assert "| vina | 20x20x20 | none | retain_all | 16 |" in report
 

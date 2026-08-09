@@ -194,7 +194,7 @@ def test_all_failed_variants_raise_clear_error(monkeypatch, tmp_path):
         )
 
 
-def test_rescoring_extracts_first_pose_from_multimodel_pdbqt(monkeypatch, tmp_path):
+def test_rescoring_scores_every_pose_from_multimodel_pdbqt(monkeypatch, tmp_path):
     app = object.__new__(RedockAnalysisApp)
     case_dir = tmp_path / "case"
     case_dir.mkdir()
@@ -204,23 +204,26 @@ def test_rescoring_extracts_first_pose_from_multimodel_pdbqt(monkeypatch, tmp_pa
         "MODEL 1\nREMARK pose-one\nATOM one\nENDMDL\n"
         "MODEL 2\nREMARK pose-two\nATOM two\nENDMDL\n"
     )
-    seen = {}
+    seen = []
 
     def fake_run(command, **kwargs):
         ligand = Path(command[command.index("--ligand") + 1])
-        seen["ligand"] = ligand
-        seen["content"] = ligand.read_text()
-        return SimpleNamespace(returncode=0, stdout="Affinity: -8.25 (kcal/mol)\n", stderr="")
+        content = ligand.read_text()
+        seen.append((ligand, content))
+        score = -8.25 if "pose-one" in content else -9.5
+        return SimpleNamespace(returncode=0, stdout=f"Affinity: {score} (kcal/mol)\n", stderr="")
 
     monkeypatch.setattr(redock_module.subprocess, "run", fake_run)
     result = app._rescore_with_smina(docked, case_dir, "smina", "vinardo")
 
-    assert result["score"] == -8.25
+    assert result["score"] == -9.5
+    assert result["scores"] == [-8.25, -9.5]
+    assert result["pose_count"] == 2
     assert result["method"] == "smina_score_only:vinardo"
-    assert seen["ligand"].name == "rescore_pose_1.pdbqt"
-    assert "pose-one" in seen["content"]
-    assert "pose-two" not in seen["content"]
-    assert "MODEL" not in seen["content"]
+    assert [item[0].name for item in seen] == ["pose_001.pdbqt", "pose_002.pdbqt"]
+    assert "pose-one" in seen[0][1]
+    assert "pose-two" in seen[1][1]
+    assert all("MODEL" not in content for _, content in seen)
 
 
 def test_rescoring_returns_subprocess_error_instead_of_raising(monkeypatch, tmp_path):
@@ -240,7 +243,7 @@ def test_rescoring_returns_subprocess_error_instead_of_raising(monkeypatch, tmp_
 
     result = app._rescore_with_smina(docked, case_dir, "smina", "not_supported")
 
-    assert result == {"error": "unsupported scoring function"}
+    assert result == {"error": "Pose 1: unsupported scoring function"}
 
 
 def _resume_manifest(tmp_path, scoring="vina"):

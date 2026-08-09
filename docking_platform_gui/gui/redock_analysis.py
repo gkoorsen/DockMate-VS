@@ -3,6 +3,7 @@ GUI for redock analysis using single or adaptive docking.
 """
 
 import base64
+import copy
 import json
 import os
 import math
@@ -101,6 +102,14 @@ class RedockResult:
     ligand_charge: Optional[int] = None
     rescore_method: Optional[str] = None
     rescore_score: Optional[float] = None
+    rescore_pose_count: Optional[int] = None
+    rescore_top1_rmsd: Optional[float] = None
+    rescore_top5_rmsd: Optional[float] = None
+    rescore_top10_rmsd: Optional[float] = None
+    rescore_best_rmsd_rank: Optional[int] = None
+    rescore_rmsd_best_score: Optional[float] = None
+    rescore_score_rmsd_pearson: Optional[float] = None
+    rescore_score_rmsd_spearman: Optional[float] = None
     rescore_cnn_score: Optional[float] = None
     rescore_cnn_affinity: Optional[float] = None
     rescore_error: Optional[str] = None
@@ -1276,10 +1285,14 @@ class RedockAnalysisApp(tk.Tk):
         def condition_key(row: dict) -> tuple:
             identity = condition_identity(row)
             engine = identity[2]
+            rescore_method = identity[4]
             cavity_version = row.get("rdock_cavity_version")
             if not cavity_version:
                 cavity_version = "legacy" if engine == "rdock" else "not_applicable"
-            return (*identity, str(cavity_version))
+            pose_version = row.get("rescore_pose_version")
+            if not pose_version:
+                pose_version = "legacy"
+            return (*identity, str(cavity_version), str(pose_version))
 
         completed = {
             condition_key(row) for row in rows
@@ -1290,17 +1303,18 @@ class RedockAnalysisApp(tk.Tk):
             for pair in actives
             for engine in sweep["engines"]
             for box in sweep["box_definitions"]
-            for rescore_method in sweep["rescore_methods"]
             for water in sweep["water_modes"]
             for exhaustiveness in sweep["exhaustiveness"]
             for seed in sweep["seeds"]
+            for rescore_method in sweep["rescore_methods"]
         ]
         pending_actives = []
         for pair in actives:
             has_pending_condition = any(
                 (pair["pdb_id"], pair["site_ligand"], engine, box["label"], rescore_method,
                  water, exhaustiveness, seed,
-                 "crystal_or_center_v2" if engine == "rdock" else "not_applicable")
+                 "crystal_or_center_v2" if engine == "rdock" else "not_applicable",
+                 "all_poses_v2" if rescore_method != "none" else "baseline_v2")
                 not in completed
                 for engine in sweep["engines"]
                 for box in sweep["box_definitions"]
@@ -1330,6 +1344,7 @@ class RedockAnalysisApp(tk.Tk):
             self._resolve_smina_binary(config.get("rescore", {}).get("smina_binary"))
             if needs_rescore else None
         )
+        docking_cache = {}
 
         for index, (pair, engine_name, box, rescore_method, water, exhaustiveness, seed) in enumerate(conditions, 1):
             if self.progress_dialog and self.progress_dialog.cancelled:
@@ -1341,6 +1356,7 @@ class RedockAnalysisApp(tk.Tk):
                 pdb_id, site_ligand, engine_name, box["label"], rescore_method,
                 water, exhaustiveness, seed,
                 "crystal_or_center_v2" if engine_name == "rdock" else "not_applicable",
+                "all_poses_v2" if rescore_method != "none" else "baseline_v2",
             )
             label = (
                 f"{pdb_id} {site_ligand}: {engine_name}, {box['label']}, "
@@ -1359,6 +1375,9 @@ class RedockAnalysisApp(tk.Tk):
                 "rescore_method": rescore_method,
                 "rdock_cavity_version": (
                     "crystal_or_center_v2" if engine_name == "rdock" else "not_applicable"
+                ),
+                "rescore_pose_version": (
+                    "all_poses_v2" if rescore_method != "none" else "baseline_v2"
                 ),
                 "water_handling": water, "exhaustiveness": exhaustiveness,
                 "seed": seed, "status": "failed",
@@ -1395,24 +1414,44 @@ class RedockAnalysisApp(tk.Tk):
                 })
                 case_id = self._safe_case_id(
                     f"{pdb_id}_{site_ligand}_{engine_name}_{box['label']}_"
-                    f"r{rescore_method}_{water}_e{exhaustiveness}_s{seed}"
+                    f"{water}_e{exhaustiveness}_s{seed}"
                 )
-                result = self._run_single_case(
-                    pdb_file=pdb_file,
-                    ligand_name=pair.get("dock_name") or site_ligand,
-                    ligand_chain=ligand_chain,
-                    smiles=smiles,
-                    case_dir=output_dir / case_id,
-                    threshold=config["threshold"],
-                    single_cfg=single_cfg,
-                    ligand_resname=site_ligand,
-                    site_mode="cocrystal",
-                    run_mode="protocol_development",
-                    control_label=1,
+                docking_key = (
+                    pdb_id, site_ligand, engine_name, box["label"], water,
+                    exhaustiveness, seed,
                 )
+                if docking_key in docking_cache:
+                    result = copy.deepcopy(docking_cache[docking_key])
+                    self._queue.put(("log", f"Reusing docking poses for {label}"))
+                else:
+                    result = self._run_single_case(
+                        pdb_file=pdb_file,
+                        ligand_name=pair.get("dock_name") or site_ligand,
+                        ligand_chain=ligand_chain,
+                        smiles=smiles,
+                        case_dir=output_dir / case_id,
+                        threshold=config["threshold"],
+                        single_cfg=single_cfg,
+                        ligand_resname=site_ligand,
+                        site_mode="cocrystal",
+                        run_mode="protocol_development",
+                        control_label=1,
+                    )
+                    docking_cache[docking_key] = copy.deepcopy(result)
                 result.target_name = pair.get("target_name")
                 row.update(asdict(result))
-                if rescore_method != "none":
+                if rescore_method == "none":
+                    result.rescore_score = result.best_score
+                    result.rescore_pose_count = result.pose_count
+                    result.rescore_top1_rmsd = result.top1_rmsd
+                    result.rescore_top5_rmsd = result.top5_rmsd
+                    result.rescore_top10_rmsd = result.top10_rmsd
+                    result.rescore_best_rmsd_rank = result.best_rmsd_rank
+                    result.rescore_rmsd_best_score = result.rmsd_best_score
+                    result.rescore_score_rmsd_pearson = result.score_rmsd_pearson
+                    result.rescore_score_rmsd_spearman = result.score_rmsd_spearman
+                    row.update(asdict(result))
+                else:
                     if not rescore_binary:
                         result.rescore_error = "Smina binary not found"
                     elif result.output_file:
@@ -1425,6 +1464,17 @@ class RedockAnalysisApp(tk.Tk):
                         if rescored:
                             result.rescore_score = rescored.get("score")
                             result.rescore_error = rescored.get("error")
+                            if rescored.get("scores"):
+                                rescored_metrics = self._compute_rescored_pose_metrics(
+                                    crystal_ligand_pdb=(output_dir / case_id / "crystal_ligand.pdb"),
+                                    docked_file=Path(result.output_file),
+                                    scores=rescored["scores"],
+                                    threshold=config["threshold"],
+                                    control_label=1,
+                                    is_self_dock=True,
+                                )
+                                for field, value in rescored_metrics.items():
+                                    setattr(result, field, value)
                     row.update(asdict(result))
                 row.update({
                     "engine": engine_name, "box_definition": box["label"],
@@ -1439,7 +1489,7 @@ class RedockAnalysisApp(tk.Tk):
                 row["error_message"] = str(exc)
                 self._queue.put(("log", f"{label} failed: {exc}"))
 
-            rows = [old for old in rows if condition_identity(old) != key[:-1]]
+            rows = [old for old in rows if condition_identity(old) != key[:-2]]
             rows.append(row)
             temporary = results_path.with_suffix(".tmp")
             pd.DataFrame(rows).to_csv(temporary, index=False)
@@ -1475,6 +1525,13 @@ class RedockAnalysisApp(tk.Tk):
             complete["rescore_method"] = complete["rescore_method"].fillna("none")
             if "rescore_error" not in complete:
                 complete["rescore_error"] = None
+            for column in (
+                "rescore_score", "rescore_top1_rmsd", "rescore_top5_rmsd",
+                "rescore_top10_rmsd", "rescore_best_rmsd_rank",
+                "rescore_score_rmsd_pearson", "rescore_score_rmsd_spearman",
+            ):
+                if column not in complete:
+                    complete[column] = np.nan
             grouped = complete.groupby(
                 ["engine", "box_definition", "rescore_method", "water_handling", "exhaustiveness"],
                 dropna=False,
@@ -1485,18 +1542,32 @@ class RedockAnalysisApp(tk.Tk):
                 median_best_rmsd=("best_rmsd", "median"),
                 mean_runtime_sec=("runtime_sec", "mean"),
                 rescore_failures=("rescore_error", lambda values: values.notna().sum()),
+                mean_rescore_score=("rescore_score", "mean"),
+                mean_rescore_top1_rmsd=("rescore_top1_rmsd", "mean"),
+                mean_rescore_top5_rmsd=("rescore_top5_rmsd", "mean"),
+                mean_rescore_top10_rmsd=("rescore_top10_rmsd", "mean"),
+                mean_rescore_best_rmsd_rank=("rescore_best_rmsd_rank", "mean"),
+                mean_rescore_pearson=("rescore_score_rmsd_pearson", "mean"),
+                mean_rescore_spearman=("rescore_score_rmsd_spearman", "mean"),
             ).reset_index().sort_values(["success_rate", "mean_best_rmsd"], ascending=[False, True])
             lines.extend([
-                "| Engine | Box | Rescoring | Water handling | Exhaustiveness | Cases | Success | Mean best RMSD | Median best RMSD | Rescore failures | Mean runtime (s) |",
-                "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "| Engine | Box | Rescoring | Water | Exhaust. | Cases | Best-pose success | Mean best RMSD | Rescore Top-1 RMSD | Top-5 RMSD | Top-10 RMSD | Best-RMSD rank | Rescore score | Pearson | Spearman | Failures | Runtime (s) |",
+                "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ])
             for _, item in grouped.iterrows():
+                def _value(name: str) -> str:
+                    value = getattr(item, name)
+                    return "N/A" if pd.isna(value) else f"{value:.2f}"
                 lines.append(
                     f"| {item.engine} | {item.box_definition} | {item.rescore_method} | "
                     f"{item.water_handling} | "
                     f"{int(item.exhaustiveness)} | {int(item.cases)} | "
                     f"{item.success_rate:.1%} | {item.mean_best_rmsd:.2f} | "
-                    f"{item.median_best_rmsd:.2f} | {int(item.rescore_failures)} | "
+                    f"{_value('mean_rescore_top1_rmsd')} | {_value('mean_rescore_top5_rmsd')} | "
+                    f"{_value('mean_rescore_top10_rmsd')} | "
+                    f"{_value('mean_rescore_best_rmsd_rank')} | {_value('mean_rescore_score')} | "
+                    f"{_value('mean_rescore_pearson')} | {_value('mean_rescore_spearman')} | "
+                    f"{int(item.rescore_failures)} | "
                     f"{item.mean_runtime_sec:.1f} |"
                 )
         report_path.write_text("\n".join(lines) + "\n")
@@ -1957,6 +2028,17 @@ class RedockAnalysisApp(tk.Tk):
                             result.rescore_method = rescore.get("method")
                             result.rescore_score = rescore.get("score")
                             result.rescore_error = rescore.get("error")
+                            if rescore.get("scores"):
+                                rescored_metrics = self._compute_rescored_pose_metrics(
+                                    crystal_ligand_pdb=case_dir / "crystal_ligand.pdb",
+                                    docked_file=out_path,
+                                    scores=rescore["scores"],
+                                    threshold=config["threshold"],
+                                    control_label=control_label,
+                                    is_self_dock=config["mode"] != "screening",
+                                )
+                                for field, value in rescored_metrics.items():
+                                    setattr(result, field, value)
                 results_by_case[case_id] = result
                 if result.best_rmsd >= 900 and result.best_score is not None:
                     self._queue.put((
@@ -3297,40 +3379,81 @@ class RedockAnalysisApp(tk.Tk):
 
         ligand_pdbqt = output_file
         if output_file.suffix.lower() not in (".pdbqt",):
-            candidate = output_file.with_suffix(".pdbqt")
+            candidate = case_dir / f"rescore_{output_file.stem}.pdbqt"
             if self._convert_to_pdbqt(output_file, candidate):
                 ligand_pdbqt = candidate
             else:
                 return {"error": f"Cannot rescore non-PDBQT output: {output_file.name}"}
-        else:
-            ligand_pdbqt = self._single_model_pdbqt(
-                output_file, case_dir / "rescore_pose_1.pdbqt"
-            )
 
-        try:
-            result = subprocess.run(
-                [
-                    smina_binary,
-                    "--receptor", str(receptor_pdbqt),
-                    "--ligand", str(ligand_pdbqt),
-                    "--score_only",
-                    "--scoring", scoring
-                ],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-        except Exception as exc:
-            return {"error": f"Smina rescoring failed: {exc}"}
+        pose_files = self._split_pdbqt_models(
+            ligand_pdbqt, case_dir / f"rescore_{scoring}_poses"
+        )
+        scores = []
+        for pose_index, pose_file in enumerate(pose_files, 1):
+            try:
+                result = subprocess.run(
+                    [
+                        smina_binary,
+                        "--receptor", str(receptor_pdbqt),
+                        "--ligand", str(pose_file),
+                        "--score_only",
+                        "--scoring", scoring,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+            except Exception as exc:
+                return {"error": f"Smina rescoring failed for pose {pose_index}: {exc}"}
+            if result.returncode != 0:
+                message = result.stderr.strip() or "Smina rescoring failed"
+                return {"error": f"Pose {pose_index}: {message}"}
+            parsed = self._parse_smina_score(result.stdout)
+            if not parsed:
+                return {"error": f"Pose {pose_index}: Smina output did not contain scores"}
+            scores.append(float(parsed["score"]))
 
-        if result.returncode != 0:
-            return {"error": result.stderr.strip() or "Smina rescoring failed"}
+        if not scores:
+            return {"error": "No poses available for rescoring"}
+        return {
+            "method": f"smina_score_only:{scoring}",
+            "score": min(scores),
+            "scores": scores,
+            "pose_count": len(scores),
+        }
 
-        parsed = self._parse_smina_score(result.stdout)
-        if not parsed:
-            return {"error": "Smina output did not contain scores"}
-        parsed["method"] = f"smina_score_only:{scoring}"
-        return parsed
+    @staticmethod
+    def _split_pdbqt_models(source: Path, output_dir: Path) -> List[Path]:
+        """Split a Vina/Smina multi-model PDBQT into score-only inputs."""
+        lines = source.read_text().splitlines(keepends=True)
+        models: List[List[str]] = []
+        current: Optional[List[str]] = None
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith("MODEL"):
+                if current:
+                    models.append(current)
+                current = []
+                continue
+            if stripped.startswith("ENDMDL"):
+                if current is not None:
+                    models.append(current)
+                    current = None
+                continue
+            if current is not None:
+                current.append(line)
+        if current:
+            models.append(current)
+        if not models:
+            models = [lines]
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        outputs = []
+        for index, model in enumerate(models, 1):
+            destination = output_dir / f"pose_{index:03d}.pdbqt"
+            destination.write_text("".join(model))
+            outputs.append(destination)
+        return outputs
 
     @staticmethod
     def _aggregate_pose_metrics(results: list, threshold: float) -> dict:
@@ -3505,6 +3628,57 @@ class RedockAnalysisApp(tk.Tk):
             "score_rmsd_pearson": score_rmsd_pearson,
             "score_rmsd_spearman": score_rmsd_spearman
         }
+
+    def _compute_rescored_pose_metrics(
+        self,
+        crystal_ligand_pdb: Path,
+        docked_file: Path,
+        scores: List[float],
+        threshold: float,
+        control_label: Optional[int],
+        is_self_dock: bool,
+    ) -> dict:
+        """Calculate pose-recovery metrics after ranking poses by rescored values."""
+        poses, _ = self._load_poses_and_scores(docked_file)
+        count = min(len(poses), len(scores))
+        if not count:
+            return {}
+        scores = [float(value) for value in scores[:count]]
+        metrics = {
+            "rescore_score": min(scores),
+            "rescore_pose_count": count,
+        }
+        if not (is_self_dock or control_label == 1):
+            return metrics
+        reference = self._load_reference_mol(crystal_ligand_pdb)
+        if reference is None:
+            return metrics
+        rmsds = [self._pose_rmsd(reference, pose) for pose in poses[:count]]
+        ranked_indices = sorted(range(count), key=lambda index: scores[index])
+        ranked_rmsds = [rmsds[index] for index in ranked_indices]
+        valid = [value for value in ranked_rmsds if value is not None]
+        if not valid:
+            return metrics
+
+        def _top_best(limit: int) -> Optional[float]:
+            values = [value for value in ranked_rmsds[:limit] if value is not None]
+            return min(values) if values else None
+
+        best_rmsd_index = min(
+            (index for index, value in enumerate(rmsds) if value is not None),
+            key=lambda index: rmsds[index],
+        )
+        metrics.update({
+            "rescore_top1_rmsd": ranked_rmsds[0],
+            "rescore_top5_rmsd": _top_best(5),
+            "rescore_top10_rmsd": _top_best(10),
+            "rescore_best_rmsd_rank": ranked_indices.index(best_rmsd_index) + 1,
+            "rescore_rmsd_best_score": ranked_rmsds[0],
+        })
+        pearson, spearman = self._score_rmsd_corr(scores, rmsds)
+        metrics["rescore_score_rmsd_pearson"] = pearson
+        metrics["rescore_score_rmsd_spearman"] = spearman
+        return metrics
 
     def _load_reference_mol(self, pdb_file: Path) -> Optional[Chem.Mol]:
         if not pdb_file.exists() or pdb_file.stat().st_size == 0:
