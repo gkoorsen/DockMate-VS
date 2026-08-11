@@ -156,6 +156,8 @@ def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):
     assert "| Engine | Box | Rescoring | Water |" in report
     assert "| smina | margin:4 | none | remove_all | 8 |" in report
     assert "| vina | 20x20x20 | none | retain_all | 16 |" in report
+    assert "## Overall pose recovery" in report
+    assert "## Recommended protocol per target" in report
 
 
 def test_protocol_markdown_parser_extracts_renderable_table():
@@ -182,6 +184,68 @@ Comparison explanation.
     assert rows == [
         ["smina", "remove_all", "4.67 / 2.00"],
         ["rdock", "selective", "10.50 / 12.50"],
+    ]
+
+
+def test_protocol_section_parser_keeps_each_summary_table_separate():
+    report = """# Protocol Development Summary
+
+| Engine | Water |
+| --- | --- |
+| smina | remove_all |
+
+## Overall pose recovery
+
+| Water | Top-1 |
+| --- | ---: |
+| remove_all | 75.0% |
+
+## Recommended protocol per target
+
+| Target | Ranking |
+| --- | --- |
+| NQO2 | rescored |
+"""
+
+    prose, tables = RedockAnalysisApp._parse_protocol_markdown_sections(report)
+
+    assert prose[0] == "Protocol Development Summary"
+    assert [table[0] for table in tables] == [
+        "Protocol comparison", "Overall pose recovery", "Recommended protocol per target"
+    ]
+    assert tables[2][2] == [["NQO2", "rescored"]]
+
+
+def test_protocol_chart_data_uses_completed_csv_rows_and_excludes_sentinels():
+    frame = pd.DataFrame([
+        {
+            "status": "complete", "water_handling": "remove_all",
+            "best_rmsd": 1.0, "top1_rmsd": 3.0, "top5_rmsd": 1.0,
+            "rescore_top1_rmsd": 1.5, "rescore_top5_rmsd": 1.0,
+        },
+        {
+            "status": "complete", "water_handling": "remove_all",
+            "best_rmsd": 999.9, "top1_rmsd": 999.9, "top5_rmsd": 999.9,
+            "rescore_top1_rmsd": 999.9, "rescore_top5_rmsd": 999.9,
+        },
+        {
+            "status": "failed", "water_handling": "remove_all",
+            "best_rmsd": 0.1, "top1_rmsd": 0.1, "top5_rmsd": 0.1,
+            "rescore_top1_rmsd": 0.1, "rescore_top5_rmsd": 0.1,
+        },
+    ])
+
+    data = RedockAnalysisApp._protocol_chart_data(frame)
+
+    assert data["best"] == [("remove all", 100.0)]
+    assert data["top1"] == [
+        ("remove all\nbaseline", 0.0), ("remove all\nrescored", 100.0)
+    ]
+    assert data["top5"] == [
+        ("remove all\nbaseline", 100.0), ("remove all\nrescored", 100.0)
+    ]
+    assert data["ranking_change"] == [
+        ("Improved", 1.0), ("Unchanged", 0.0), ("Worse", 0.0)
     ]
 
 

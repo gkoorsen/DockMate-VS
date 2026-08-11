@@ -753,7 +753,7 @@ class RedockAnalysisApp(tk.Tk):
         load_results_btn = tk.Button(
             results_actions,
             text="Load Results",
-            command=self._safe_call(self._load_last_results)
+            command=self._safe_call(self._browse_results_file)
         )
         load_results_btn.pack(side="left")
         self._register_busy_widget(load_results_btn)
@@ -1497,11 +1497,13 @@ class RedockAnalysisApp(tk.Tk):
             temporary.replace(results_path)
             self._queue.put(("progress", index, len(conditions), label))
 
-        report_path = self._write_protocol_report(rows, output_dir)
+        report_path = self._write_protocol_report(rows, output_dir, config["threshold"])
         self._queue.put(("protocol_done", results_path, report_path))
 
     @staticmethod
-    def _write_protocol_report(rows: List[dict], output_dir: Path) -> Path:
+    def _write_protocol_report(
+        rows: List[dict], output_dir: Path, threshold: float = 2.0
+    ) -> Path:
         report_path = output_dir / "protocol_development_summary.md"
         frame = pd.DataFrame(rows)
         complete = frame[frame.get("status") == "complete"].copy() if not frame.empty else frame
@@ -1591,6 +1593,101 @@ class RedockAnalysisApp(tk.Tk):
                     f"{_value('mean_baseline_spearman')} / {_value('mean_rescore_spearman')} | "
                     f"{int(item.rescore_failures)} | "
                     f"{item.mean_runtime_sec:.1f} |"
+                )
+
+            lines.extend([
+                "",
+                "## Overall pose recovery",
+                "",
+                f"Success rates use an RMSD threshold of {threshold:g} A.",
+                "",
+                "| Water | Rescoring | Cases | Best-pose success | Baseline Top-1 | Rescored Top-1 | Baseline Top-5 | Rescored Top-5 |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ])
+            for (water, method), group in complete.groupby(
+                ["water_handling", "rescore_method"], dropna=False
+            ):
+                valid_best = group["best_rmsd"].dropna()
+
+                def _success_rate(column: str, limit: Optional[int] = None) -> str:
+                    values = group[column].dropna()
+                    if limit is not None:
+                        # Top-N columns already contain the best RMSD within N.
+                        values = values
+                    if values.empty:
+                        return "N/A"
+                    return f"{(values < threshold).mean():.1%}"
+
+                best_success = (
+                    f"{(valid_best < threshold).mean():.1%}" if not valid_best.empty else "N/A"
+                )
+                lines.append(
+                    f"| {water} | {method} | {len(group)} | {best_success} | "
+                    f"{_success_rate('top1_rmsd')} | {_success_rate('rescore_top1_rmsd')} | "
+                    f"{_success_rate('top5_rmsd', 5)} | {_success_rate('rescore_top5_rmsd', 5)} |"
+                )
+
+            recommendation_frame = complete.copy()
+            if "target_name" not in recommendation_frame:
+                recommendation_frame["target_name"] = None
+            if "pdb_id" not in recommendation_frame:
+                recommendation_frame["pdb_id"] = "Unknown"
+            recommendation_frame["report_target"] = recommendation_frame["target_name"].where(
+                recommendation_frame["target_name"].notna(), recommendation_frame["pdb_id"]
+            )
+            protocol_columns = [
+                "report_target", "engine", "box_definition", "rescore_method",
+                "water_handling", "exhaustiveness",
+            ]
+            recommendations = []
+            for protocol_key, group in recommendation_frame.groupby(protocol_columns, dropna=False):
+                for ranking, top1_column, top5_column, rank_column in (
+                    ("baseline", "top1_rmsd", "top5_rmsd", "best_rmsd_rank"),
+                    ("rescored", "rescore_top1_rmsd", "rescore_top5_rmsd", "rescore_best_rmsd_rank"),
+                ):
+                    top1 = group[top1_column].dropna()
+                    top5 = group[top5_column].dropna()
+                    if top1.empty:
+                        continue
+                    recommendations.append({
+                        "target": protocol_key[0], "engine": protocol_key[1],
+                        "box": protocol_key[2], "rescore": protocol_key[3],
+                        "water": protocol_key[4], "exhaustiveness": protocol_key[5],
+                        "ranking": ranking, "cases": len(top1),
+                        "top1_success": float((top1 < threshold).mean()),
+                        "top5_success": float((top5 < threshold).mean()) if not top5.empty else 0.0,
+                        "mean_top1": float(top1.mean()),
+                        "mean_best": float(group["best_rmsd"].mean()),
+                        "mean_rank": float(group[rank_column].mean()),
+                    })
+
+            best_by_target = {}
+            for candidate in recommendations:
+                key = (
+                    -candidate["top1_success"], -candidate["top5_success"],
+                    candidate["mean_top1"], candidate["mean_best"], candidate["mean_rank"],
+                )
+                current = best_by_target.get(candidate["target"])
+                if current is None or key < current[0]:
+                    best_by_target[candidate["target"]] = (key, candidate)
+
+            lines.extend([
+                "",
+                "## Recommended protocol per target",
+                "",
+                "Recommendations prioritize Top-1 success, then Top-5 success, mean Top-1 RMSD, mean best RMSD, and best-pose rank. They validate pose recovery only; confirm enrichment with matched decoys before screening.",
+                "",
+                "| Target | Engine | Box | Water | Exhaust. | Ranking | Rescorer | Cases | Top-1 success | Top-5 success | Mean Top-1 RMSD | Mean best RMSD | Mean best-pose rank |",
+                "| --- | --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ])
+            for target in sorted(best_by_target, key=lambda value: str(value)):
+                item = best_by_target[target][1]
+                rescorer = item["rescore"] if item["ranking"] == "rescored" else "original score"
+                lines.append(
+                    f"| {target} | {item['engine']} | {item['box']} | {item['water']} | "
+                    f"{int(item['exhaustiveness'])} | {item['ranking']} | {rescorer} | "
+                    f"{item['cases']} | {item['top1_success']:.1%} | {item['top5_success']:.1%} | "
+                    f"{item['mean_top1']:.2f} | {item['mean_best']:.2f} | {item['mean_rank']:.2f} |"
                 )
         report_path.write_text("\n".join(lines) + "\n")
         return report_path
@@ -2604,6 +2701,50 @@ class RedockAnalysisApp(tk.Tk):
             self._render_results_from_path(results_path)
         self._set_status(f"Loaded results from {results_path.parent}")
 
+    def _browse_results_file(self) -> None:
+        """Let the user choose the exact campaign instead of guessing from Output."""
+        initial = Path(self.output_var.get()).expanduser()
+        initial_dir = initial if initial.is_dir() else initial.parent
+        selected = filedialog.askopenfilename(
+            title="Select docking results",
+            initialdir=str(initial_dir) if initial_dir.exists() else None,
+            filetypes=[
+                ("Docking results", ("*.json", "*.csv")),
+                ("JSON files", "*.json"),
+                ("CSV files", "*.csv"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not selected:
+            return
+        results_path = Path(selected)
+        valid_names = {
+            "redock_results.json", "redock_results.csv",
+            "protocol_development_results.csv",
+        }
+        if results_path.name not in valid_names:
+            messagebox.showerror(
+                "Unsupported results file",
+                "Select redock_results.json, redock_results.csv, or "
+                "protocol_development_results.csv.",
+            )
+            return
+        self.last_results_path = results_path
+        if results_path.name == "protocol_development_results.csv":
+            self._render_protocol_results(
+                results_path, results_path.with_name("protocol_development_summary.md")
+            )
+            result_type = "Protocol Development"
+        else:
+            # The standard renderer is JSON-backed; normalize a selected CSV.
+            render_path = (
+                results_path.with_name("redock_results.json")
+                if results_path.suffix.lower() == ".csv" else results_path
+            )
+            self._render_results_from_path(render_path)
+            result_type = "Screening"
+        self._set_status(f"Loaded {result_type} results from {results_path.parent}")
+
     def _open_pose_viewer_from_last(self) -> None:
         results_path = self._resolve_results_path(allow_csv=True)
         if not results_path or not results_path.exists():
@@ -2675,11 +2816,7 @@ class RedockAnalysisApp(tk.Tk):
         self._populate_protocol_report(
             self.results_summary_tab, Path(results_path), Path(report_path)
         )
-        tk.Label(
-            self.results_charts_tab,
-            text="Protocol comparisons are shown in the Summary table.",
-            fg="#555555",
-        ).pack(anchor="w", padx=10, pady=10)
+        self._populate_protocol_charts(self.results_charts_tab, Path(results_path))
         self.results_notebook.select(self.results_summary_tab)
 
     def _show_protocol_results(self, results_path: Path, report_path: Path) -> None:
@@ -2691,7 +2828,14 @@ class RedockAnalysisApp(tk.Tk):
 
         content = tk.Frame(dialog, padx=10, pady=10)
         content.pack(fill="both", expand=True)
-        self._populate_protocol_report(content, Path(results_path), Path(report_path))
+        notebook = ttk.Notebook(content)
+        notebook.pack(fill="both", expand=True)
+        summary_tab = tk.Frame(notebook, padx=8, pady=8)
+        charts_tab = tk.Frame(notebook, padx=8, pady=8)
+        notebook.add(summary_tab, text="Summary")
+        notebook.add(charts_tab, text="Charts")
+        self._populate_protocol_report(summary_tab, Path(results_path), Path(report_path))
+        self._populate_protocol_charts(charts_tab, Path(results_path))
 
         actions = tk.Frame(content)
         actions.pack(fill="x", pady=(8, 0))
@@ -2730,6 +2874,45 @@ class RedockAnalysisApp(tk.Tk):
         return prose, headers, rows
 
     @staticmethod
+    def _parse_protocol_markdown_sections(
+        report: str,
+    ) -> Tuple[List[str], List[Tuple[str, List[str], List[List[str]]]]]:
+        """Parse all Markdown tables so the GUI can place each in its own tab."""
+        prose: List[str] = []
+        tables: List[Tuple[str, List[str], List[List[str]]]] = []
+        section = "Protocol comparison"
+        headers: List[str] = []
+        rows: List[List[str]] = []
+
+        def _finish_table() -> None:
+            nonlocal headers, rows
+            if headers:
+                tables.append((section, headers, rows))
+                headers, rows = [], []
+
+        for raw_line in report.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("## "):
+                _finish_table()
+                section = line[3:].strip()
+                continue
+            if line.startswith("|") and line.endswith("|"):
+                cells = [cell.strip() for cell in line.strip("|").split("|")]
+                if not headers:
+                    headers = cells
+                elif not all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+                    rows.append(cells)
+                continue
+            if not headers:
+                cleaned = line.lstrip("# ")
+                if cleaned and cleaned not in prose:
+                    prose.append(cleaned)
+        _finish_table()
+        return prose, tables
+
+    @staticmethod
     def _populate_protocol_report(parent: tk.Widget, results_path: Path, report_path: Path) -> None:
         if report_path.exists():
             report = report_path.read_text()
@@ -2742,7 +2925,7 @@ class RedockAnalysisApp(tk.Tk):
             justify="left",
             fg="#555555",
         ).pack(fill="x", pady=(0, 6))
-        prose, headers, rows = RedockAnalysisApp._parse_protocol_markdown(report)
+        prose, tables = RedockAnalysisApp._parse_protocol_markdown_sections(report)
         for index, line in enumerate(prose):
             if index == 0:
                 tk.Label(
@@ -2753,38 +2936,41 @@ class RedockAnalysisApp(tk.Tk):
                     parent, text=line, anchor="w", justify="left", wraplength=1050
                 ).pack(fill="x", pady=(0, 3))
 
-        if not headers:
+        if not tables:
             tk.Label(parent, text=report, anchor="nw", justify="left").pack(
                 fill="both", expand=True
             )
             return
 
-        frame = tk.Frame(parent)
-        frame.pack(fill="both", expand=True, pady=(8, 0))
-        column_ids = [f"column_{index}" for index in range(len(headers))]
-        table = ttk.Treeview(frame, columns=column_ids, show="headings", height=max(6, len(rows)))
-        vertical = ttk.Scrollbar(frame, orient="vertical", command=table.yview)
-        horizontal = ttk.Scrollbar(frame, orient="horizontal", command=table.xview)
-        table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
-
-        numeric_headers = {"Exhaust.", "Mean best RMSD", "Failures", "Runtime (s)"}
-        for column_id, heading in zip(column_ids, headers):
-            table.heading(column_id, text=heading)
-            width = max(90, min(230, 8 * len(heading) + 24))
-            table.column(
-                column_id,
-                width=width,
-                minwidth=75,
-                anchor="e" if heading in numeric_headers else "center",
-                stretch=False,
+        notebook = ttk.Notebook(parent)
+        notebook.pack(fill="both", expand=True, pady=(8, 0))
+        numeric_headers = {
+            "Exhaust.", "Exhaustiveness", "Mean best RMSD", "Mean Top-1 RMSD",
+            "Mean best-pose rank", "Failures", "Runtime (s)", "Cases",
+        }
+        for table_index, (title, headers, rows) in enumerate(tables):
+            frame = tk.Frame(notebook)
+            notebook.add(frame, text=title[:32])
+            column_ids = [f"table_{table_index}_column_{index}" for index in range(len(headers))]
+            table = ttk.Treeview(
+                frame, columns=column_ids, show="headings", height=max(6, min(25, len(rows)))
             )
-        for row in rows:
-            padded = row + [""] * (len(headers) - len(row))
-            table.insert("", "end", values=padded[:len(headers)])
-
-        vertical.pack(side="right", fill="y")
-        horizontal.pack(side="bottom", fill="x")
-        table.pack(side="left", fill="both", expand=True)
+            vertical = ttk.Scrollbar(frame, orient="vertical", command=table.yview)
+            horizontal = ttk.Scrollbar(frame, orient="horizontal", command=table.xview)
+            table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+            for column_id, heading in zip(column_ids, headers):
+                table.heading(column_id, text=heading)
+                width = max(90, min(230, 8 * len(heading) + 24))
+                table.column(
+                    column_id, width=width, minwidth=75,
+                    anchor="e" if heading in numeric_headers else "center", stretch=False,
+                )
+            for row in rows:
+                padded = row + [""] * (len(headers) - len(row))
+                table.insert("", "end", values=padded[:len(headers)])
+            vertical.pack(side="right", fill="y")
+            horizontal.pack(side="bottom", fill="x")
+            table.pack(side="left", fill="both", expand=True)
 
     def _render_results_from_path(self, results_path: Path) -> None:
         summary_path = Path(results_path).with_name("redock_summary.json")
@@ -2804,6 +2990,81 @@ class RedockAnalysisApp(tk.Tk):
                 ]
 
         self._render_results(summary, rmsd_values)
+
+    @staticmethod
+    def _protocol_chart_data(frame: pd.DataFrame, threshold: float = 2.0) -> dict:
+        """Build chart series directly from completed protocol result rows."""
+        if frame.empty or "status" not in frame:
+            return {"best": [], "top1": [], "top5": [], "ranking_change": []}
+        complete = frame[frame["status"] == "complete"].copy()
+        for column in (
+            "best_rmsd", "top1_rmsd", "top5_rmsd",
+            "rescore_top1_rmsd", "rescore_top5_rmsd",
+        ):
+            if column not in complete:
+                complete[column] = np.nan
+            complete.loc[complete[column] >= 900, column] = np.nan
+        if "water_handling" not in complete:
+            complete["water_handling"] = "unknown"
+
+        def _rate(group: pd.DataFrame, column: str) -> float:
+            values = group[column].dropna()
+            return 100.0 * float((values < threshold).mean()) if not values.empty else 0.0
+
+        best, top1, top5 = [], [], []
+        for water, group in complete.groupby("water_handling", dropna=False):
+            label = str(water).replace("_", " ")
+            best.append((label, _rate(group, "best_rmsd")))
+            top1.extend([
+                (f"{label}\nbaseline", _rate(group, "top1_rmsd")),
+                (f"{label}\nrescored", _rate(group, "rescore_top1_rmsd")),
+            ])
+            top5.extend([
+                (f"{label}\nbaseline", _rate(group, "top5_rmsd")),
+                (f"{label}\nrescored", _rate(group, "rescore_top5_rmsd")),
+            ])
+
+        paired = complete[["top1_rmsd", "rescore_top1_rmsd"]].dropna()
+        differences = paired["rescore_top1_rmsd"] - paired["top1_rmsd"]
+        ranking_change = [
+            ("Improved", float((differences < -1e-6).sum())),
+            ("Unchanged", float((differences.abs() <= 1e-6).sum())),
+            ("Worse", float((differences > 1e-6).sum())),
+        ]
+        return {"best": best, "top1": top1, "top5": top5, "ranking_change": ranking_change}
+
+    def _populate_protocol_charts(self, parent: tk.Frame, results_path: Path) -> None:
+        """Render protocol charts from the selected CSV, not stale summary state."""
+        if not results_path.exists():
+            tk.Label(parent, text="Protocol results CSV not found.").pack(anchor="w", padx=10, pady=10)
+            return
+        try:
+            frame = pd.read_csv(results_path)
+        except Exception as exc:
+            tk.Label(parent, text=f"Could not load chart data: {exc}").pack(anchor="w", padx=10, pady=10)
+            return
+        data = self._protocol_chart_data(frame)
+        tk.Label(
+            parent,
+            text=f"Charts calculated from {len(frame)} rows in {results_path.name}",
+            anchor="w", fg="#555555",
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_columnconfigure(1, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_rowconfigure(2, weight=1)
+        charts = [
+            ("Best-pose recovery by water (%)", data["best"]),
+            ("Top-1 recovery: baseline vs rescored (%)", data["top1"]),
+            ("Top-5 recovery: baseline vs rescored (%)", data["top5"]),
+            ("Rescoring effect on Top-1 RMSD (cases)", data["ranking_change"]),
+        ]
+        for index, (title, values) in enumerate(charts):
+            canvas = tk.Canvas(parent, height=250, bg="white", highlightthickness=1)
+            canvas.grid(
+                row=1 + index // 2, column=index % 2, sticky="nsew", padx=10, pady=10
+            )
+            self._draw_bar_chart(canvas, title, values)
 
     def _render_results(self, summary: dict, rmsd_values: List[float]) -> None:
         self._clear_frame(self.results_summary_tab)
