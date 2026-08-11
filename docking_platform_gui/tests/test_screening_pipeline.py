@@ -158,6 +158,33 @@ def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):
     assert "| vina | 20x20x20 | none | retain_all | 16 |" in report
 
 
+def test_protocol_markdown_parser_extracts_renderable_table():
+    report = """# Protocol Development Summary
+
+- Unsupported covalent conditions skipped: 3
+
+Comparison explanation.
+
+| Engine | Water | Baseline / rescored rank |
+| --- | --- | ---: |
+| smina | remove_all | 4.67 / 2.00 |
+| rdock | selective | 10.50 / 12.50 |
+"""
+
+    prose, headers, rows = RedockAnalysisApp._parse_protocol_markdown(report)
+
+    assert prose == [
+        "Protocol Development Summary",
+        "- Unsupported covalent conditions skipped: 3",
+        "Comparison explanation.",
+    ]
+    assert headers == ["Engine", "Water", "Baseline / rescored rank"]
+    assert rows == [
+        ["smina", "remove_all", "4.67 / 2.00"],
+        ["rdock", "selective", "10.50 / 12.50"],
+    ]
+
+
 def test_protocol_development_uses_unique_control_actives_only():
     pairs = [
         {"pdb_id": "1ABC", "site_ligand": "LIG", "chain": "A", "control_label": 1},

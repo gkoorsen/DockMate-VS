@@ -2705,6 +2705,31 @@ class RedockAnalysisApp(tk.Tk):
         dialog.focus_force()
 
     @staticmethod
+    def _parse_protocol_markdown(report: str) -> Tuple[List[str], List[str], List[List[str]]]:
+        """Extract prose and the comparison table from a generated report."""
+        prose: List[str] = []
+        headers: List[str] = []
+        rows: List[List[str]] = []
+        table_started = False
+        for raw_line in report.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("|") and line.endswith("|"):
+                cells = [cell.strip() for cell in line.strip("|").split("|")]
+                if not headers:
+                    headers = cells
+                    table_started = True
+                    continue
+                if all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+                    continue
+                rows.append(cells)
+                continue
+            if not table_started:
+                prose.append(line.lstrip("# "))
+        return prose, headers, rows
+
+    @staticmethod
     def _populate_protocol_report(parent: tk.Widget, results_path: Path, report_path: Path) -> None:
         if report_path.exists():
             report = report_path.read_text()
@@ -2717,17 +2742,49 @@ class RedockAnalysisApp(tk.Tk):
             justify="left",
             fg="#555555",
         ).pack(fill="x", pady=(0, 6))
+        prose, headers, rows = RedockAnalysisApp._parse_protocol_markdown(report)
+        for index, line in enumerate(prose):
+            if index == 0:
+                tk.Label(
+                    parent, text=line, anchor="w", font=("TkDefaultFont", 13, "bold")
+                ).pack(fill="x", pady=(0, 5))
+            else:
+                tk.Label(
+                    parent, text=line, anchor="w", justify="left", wraplength=1050
+                ).pack(fill="x", pady=(0, 3))
+
+        if not headers:
+            tk.Label(parent, text=report, anchor="nw", justify="left").pack(
+                fill="both", expand=True
+            )
+            return
+
         frame = tk.Frame(parent)
-        frame.pack(fill="both", expand=True)
-        text_widget = tk.Text(frame, wrap="none", font=("Courier", 10))
-        vertical = ttk.Scrollbar(frame, orient="vertical", command=text_widget.yview)
-        horizontal = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
-        text_widget.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        frame.pack(fill="both", expand=True, pady=(8, 0))
+        column_ids = [f"column_{index}" for index in range(len(headers))]
+        table = ttk.Treeview(frame, columns=column_ids, show="headings", height=max(6, len(rows)))
+        vertical = ttk.Scrollbar(frame, orient="vertical", command=table.yview)
+        horizontal = ttk.Scrollbar(frame, orient="horizontal", command=table.xview)
+        table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+
+        numeric_headers = {"Exhaust.", "Mean best RMSD", "Failures", "Runtime (s)"}
+        for column_id, heading in zip(column_ids, headers):
+            table.heading(column_id, text=heading)
+            width = max(90, min(230, 8 * len(heading) + 24))
+            table.column(
+                column_id,
+                width=width,
+                minwidth=75,
+                anchor="e" if heading in numeric_headers else "center",
+                stretch=False,
+            )
+        for row in rows:
+            padded = row + [""] * (len(headers) - len(row))
+            table.insert("", "end", values=padded[:len(headers)])
+
         vertical.pack(side="right", fill="y")
         horizontal.pack(side="bottom", fill="x")
-        text_widget.pack(side="left", fill="both", expand=True)
-        text_widget.insert("1.0", report)
-        text_widget.configure(state="disabled")
+        table.pack(side="left", fill="both", expand=True)
 
     def _render_results_from_path(self, results_path: Path) -> None:
         summary_path = Path(results_path).with_name("redock_summary.json")
