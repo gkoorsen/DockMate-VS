@@ -407,7 +407,8 @@ class RedockAnalysisApp(tk.Tk):
         self._register_busy_widget(protocol_rescore)
         tk.Label(
             self.protocol_tab,
-            text="Comma-separated: none, vina, vinardo, ad4_scoring, dkoes_fast, dkoes_scoring",
+            text=("Comma-separated: none, vina, vinardo, ad4_scoring, dkoes_fast, dkoes_scoring. "
+                  "Every method is compared with the original docking ranking."),
             fg="#666666",
         ).grid(row=7, column=1, columnspan=5, sticky="w")
 
@@ -1526,21 +1527,39 @@ class RedockAnalysisApp(tk.Tk):
             if "rescore_error" not in complete:
                 complete["rescore_error"] = None
             for column in (
+                "top1_rmsd", "top5_rmsd", "top10_rmsd", "best_rmsd_rank",
+                "best_score", "score_rmsd_pearson", "score_rmsd_spearman",
                 "rescore_score", "rescore_top1_rmsd", "rescore_top5_rmsd",
                 "rescore_top10_rmsd", "rescore_best_rmsd_rank",
                 "rescore_score_rmsd_pearson", "rescore_score_rmsd_spearman",
             ):
                 if column not in complete:
                     complete[column] = np.nan
+            # Missing/unmappable RMSDs use 999.9 internally; never average the
+            # sentinel into protocol-quality statistics.
+            rmsd_columns = [
+                "best_rmsd", "top1_rmsd", "top5_rmsd", "top10_rmsd",
+                "rescore_top1_rmsd", "rescore_top5_rmsd", "rescore_top10_rmsd",
+            ]
+            for column in rmsd_columns:
+                complete.loc[complete[column] >= 900, column] = np.nan
             grouped = complete.groupby(
                 ["engine", "box_definition", "rescore_method", "water_handling", "exhaustiveness"],
                 dropna=False,
             ).agg(
-                cases=("best_rmsd", "count"),
+                cases=("status", "size"),
+                rmsd_cases=("best_rmsd", "count"),
                 success_rate=("success", "mean"),
                 mean_best_rmsd=("best_rmsd", "mean"),
                 median_best_rmsd=("best_rmsd", "median"),
                 mean_runtime_sec=("runtime_sec", "mean"),
+                mean_baseline_score=("best_score", "mean"),
+                mean_baseline_top1_rmsd=("top1_rmsd", "mean"),
+                mean_baseline_top5_rmsd=("top5_rmsd", "mean"),
+                mean_baseline_top10_rmsd=("top10_rmsd", "mean"),
+                mean_baseline_best_rmsd_rank=("best_rmsd_rank", "mean"),
+                mean_baseline_pearson=("score_rmsd_pearson", "mean"),
+                mean_baseline_spearman=("score_rmsd_spearman", "mean"),
                 rescore_failures=("rescore_error", lambda values: values.notna().sum()),
                 mean_rescore_score=("rescore_score", "mean"),
                 mean_rescore_top1_rmsd=("rescore_top1_rmsd", "mean"),
@@ -1551,8 +1570,10 @@ class RedockAnalysisApp(tk.Tk):
                 mean_rescore_spearman=("rescore_score_rmsd_spearman", "mean"),
             ).reset_index().sort_values(["success_rate", "mean_best_rmsd"], ascending=[False, True])
             lines.extend([
-                "| Engine | Box | Rescoring | Water | Exhaust. | Cases | Best-pose success | Mean best RMSD | Rescore Top-1 RMSD | Top-5 RMSD | Top-10 RMSD | Best-RMSD rank | Rescore score | Pearson | Spearman | Failures | Runtime (s) |",
-                "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "The baseline columns use the docking engine's original ranking. When Smina/Vina docks with Vina scoring, these are the Vina results; the rescored columns show the selected Smina scoring function on the same poses.",
+                "",
+                "| Engine | Box | Rescoring | Water | Exhaust. | Cases (RMSD) | Mean best RMSD | Baseline Top-1/5/10 | Rescored Top-1/5/10 | Baseline / rescored best-RMSD rank | Baseline / rescored score | Baseline / rescored Spearman | Failures | Runtime (s) |",
+                "| --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | ---: | ---: |",
             ])
             for _, item in grouped.iterrows():
                 def _value(name: str) -> str:
@@ -1561,12 +1582,13 @@ class RedockAnalysisApp(tk.Tk):
                 lines.append(
                     f"| {item.engine} | {item.box_definition} | {item.rescore_method} | "
                     f"{item.water_handling} | "
-                    f"{int(item.exhaustiveness)} | {int(item.cases)} | "
-                    f"{item.success_rate:.1%} | {item.mean_best_rmsd:.2f} | "
-                    f"{_value('mean_rescore_top1_rmsd')} | {_value('mean_rescore_top5_rmsd')} | "
-                    f"{_value('mean_rescore_top10_rmsd')} | "
-                    f"{_value('mean_rescore_best_rmsd_rank')} | {_value('mean_rescore_score')} | "
-                    f"{_value('mean_rescore_pearson')} | {_value('mean_rescore_spearman')} | "
+                    f"{int(item.exhaustiveness)} | {int(item.cases)} ({int(item.rmsd_cases)}) | "
+                    f"{_value('mean_best_rmsd')} | "
+                    f"{_value('mean_baseline_top1_rmsd')}/{_value('mean_baseline_top5_rmsd')}/{_value('mean_baseline_top10_rmsd')} | "
+                    f"{_value('mean_rescore_top1_rmsd')}/{_value('mean_rescore_top5_rmsd')}/{_value('mean_rescore_top10_rmsd')} | "
+                    f"{_value('mean_baseline_best_rmsd_rank')} / {_value('mean_rescore_best_rmsd_rank')} | "
+                    f"{_value('mean_baseline_score')} / {_value('mean_rescore_score')} | "
+                    f"{_value('mean_baseline_spearman')} / {_value('mean_rescore_spearman')} | "
                     f"{int(item.rescore_failures)} | "
                     f"{item.mean_runtime_sec:.1f} |"
                 )
@@ -1608,6 +1630,8 @@ class RedockAnalysisApp(tk.Tk):
                 )
                 self._set_status("Protocol sweep completed")
                 self.last_results_path = Path(results_path)
+                self._safe_call(self._render_protocol_results)(results_path, report_path)
+                self._safe_call(self._show_protocol_results)(results_path, report_path)
                 self._set_busy(False)
                 return
             elif msg_type == "preflight_failed":
@@ -2565,7 +2589,7 @@ class RedockAnalysisApp(tk.Tk):
         return None
 
     def _load_last_results(self) -> None:
-        results_path = self._resolve_results_path()
+        results_path = self._resolve_results_path(allow_csv=True)
         if not results_path or not results_path.exists():
             messagebox.showwarning(
                 "Results missing",
@@ -2573,7 +2597,11 @@ class RedockAnalysisApp(tk.Tk):
             )
             return
         self.last_results_path = results_path
-        self._render_results_from_path(results_path)
+        if results_path.name == "protocol_development_results.csv":
+            report_path = results_path.with_name("protocol_development_summary.md")
+            self._render_protocol_results(results_path, report_path)
+        else:
+            self._render_results_from_path(results_path)
         self._set_status(f"Loaded results from {results_path.parent}")
 
     def _open_pose_viewer_from_last(self) -> None:
@@ -2639,6 +2667,67 @@ class RedockAnalysisApp(tk.Tk):
 
         self._populate_summary_tab(summary_frame, summary)
         self._populate_charts_tab(charts_frame, summary, rmsd_values)
+
+    def _render_protocol_results(self, results_path: Path, report_path: Path) -> None:
+        """Render a protocol-development report in the main Results card."""
+        self._clear_frame(self.results_summary_tab)
+        self._clear_frame(self.results_charts_tab)
+        self._populate_protocol_report(
+            self.results_summary_tab, Path(results_path), Path(report_path)
+        )
+        tk.Label(
+            self.results_charts_tab,
+            text="Protocol comparisons are shown in the Summary table.",
+            fg="#555555",
+        ).pack(anchor="w", padx=10, pady=10)
+        self.results_notebook.select(self.results_summary_tab)
+
+    def _show_protocol_results(self, results_path: Path, report_path: Path) -> None:
+        """Open the completion summary window for a protocol-development run."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Protocol Development Results")
+        dialog.geometry("1100x720")
+        dialog.transient(self)
+
+        content = tk.Frame(dialog, padx=10, pady=10)
+        content.pack(fill="both", expand=True)
+        self._populate_protocol_report(content, Path(results_path), Path(report_path))
+
+        actions = tk.Frame(content)
+        actions.pack(fill="x", pady=(8, 0))
+        tk.Button(
+            actions,
+            text="Pose Viewer",
+            command=self._safe_call(lambda: self._show_pose_viewer(Path(results_path))),
+        ).pack(side="left")
+        tk.Button(actions, text="Close", command=dialog.destroy).pack(side="right")
+        dialog.lift()
+        dialog.focus_force()
+
+    @staticmethod
+    def _populate_protocol_report(parent: tk.Widget, results_path: Path, report_path: Path) -> None:
+        if report_path.exists():
+            report = report_path.read_text()
+        else:
+            report = f"Protocol summary was not found:\n{report_path}"
+        tk.Label(
+            parent,
+            text=f"Results: {results_path}",
+            anchor="w",
+            justify="left",
+            fg="#555555",
+        ).pack(fill="x", pady=(0, 6))
+        frame = tk.Frame(parent)
+        frame.pack(fill="both", expand=True)
+        text_widget = tk.Text(frame, wrap="none", font=("Courier", 10))
+        vertical = ttk.Scrollbar(frame, orient="vertical", command=text_widget.yview)
+        horizontal = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
+        text_widget.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        vertical.pack(side="right", fill="y")
+        horizontal.pack(side="bottom", fill="x")
+        text_widget.pack(side="left", fill="both", expand=True)
+        text_widget.insert("1.0", report)
+        text_widget.configure(state="disabled")
 
     def _render_results_from_path(self, results_path: Path) -> None:
         summary_path = Path(results_path).with_name("redock_summary.json")

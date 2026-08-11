@@ -246,6 +246,41 @@ def test_rescoring_returns_subprocess_error_instead_of_raising(monkeypatch, tmp_
     assert result == {"error": "Pose 1: unsupported scoring function"}
 
 
+def test_protocol_completion_renders_and_opens_results(monkeypatch, tmp_path):
+    app = object.__new__(RedockAnalysisApp)
+    results = tmp_path / "protocol_development_results.csv"
+    report = tmp_path / "protocol_development_summary.md"
+    results.write_text("status\ncomplete\n")
+    report.write_text("# Protocol Development Summary\n")
+    calls = []
+
+    class FakeProgress:
+        cancelled = False
+
+        def log(self, message):
+            calls.append(("log", message))
+
+        def destroy(self):
+            calls.append(("destroy",))
+
+    app.progress_dialog = FakeProgress()
+    app._queue = queue.Queue()
+    app._queue.put(("protocol_done", results, report))
+    app._safe_call = lambda function: function
+    app._render_protocol_results = lambda *args: calls.append(("render", *args))
+    app._show_protocol_results = lambda *args: calls.append(("show", *args))
+    app._set_status = lambda value: calls.append(("status", value))
+    app._set_busy = lambda value: calls.append(("busy", value))
+    monkeypatch.setattr(redock_module.messagebox, "showinfo", lambda *args: None)
+
+    app._poll_queue()
+
+    assert ("render", results, report) in calls
+    assert ("show", results, report) in calls
+    assert app.last_results_path == results
+    assert app.progress_dialog is None
+
+
 def _resume_manifest(tmp_path, scoring="vina"):
     return {
         "created_at": "ignored-for-compatibility",
