@@ -2618,6 +2618,21 @@ class RedockAnalysisApp(tk.Tk):
         temporary.write_text(json.dumps(payload, indent=2, default=cls._json_default))
         temporary.replace(path)
 
+    @staticmethod
+    def _write_text_atomic(path: Path, text: str) -> None:
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(text)
+        temporary.replace(path)
+
+    def _write_summary_files(self, results_path: Path, summary: dict) -> None:
+        """Keep the machine-readable and Markdown summaries in sync."""
+        summary_path = results_path.with_name("redock_summary.json")
+        self._write_json_atomic(summary_path, summary)
+        self._write_text_atomic(
+            results_path.with_name("redock_summary.md"),
+            self._summary_to_markdown(summary),
+        )
+
     def _write_progress(self, progress_path: Path, results: List[RedockResult]) -> None:
         payload = {"results": [asdict(r) for r in results]}
         self._write_json_atomic(progress_path, payload)
@@ -2647,11 +2662,7 @@ class RedockAnalysisApp(tk.Tk):
             df.to_csv(csv_path, index=False)
 
         summary = self._build_summary(results, threshold)
-        summary_path = json_path.with_name("redock_summary.json")
-        summary_path.write_text(json.dumps(summary, indent=2))
-
-        md_path = json_path.with_name("redock_summary.md")
-        md_path.write_text(self._summary_to_markdown(summary))
+        self._write_summary_files(json_path, summary)
 
     def _resolve_results_path(self, allow_csv: bool = False) -> Optional[Path]:
         if self.last_results_path and self.last_results_path.exists():
@@ -2759,11 +2770,10 @@ class RedockAnalysisApp(tk.Tk):
     def _show_results(self, results_path: Path) -> None:
         summary_path = Path(results_path).with_name("redock_summary.json")
         csv_path = Path(results_path).with_name("redock_results.csv")
-        if not summary_path.exists():
-            messagebox.showwarning("Results missing", "Summary file not found.")
-            return
-
         summary = self._summary_for_display(Path(results_path), summary_path)
+        if not summary:
+            messagebox.showwarning("Results missing", "Results could not be summarized.")
+            return
         rmsd_values = []
         if csv_path.exists():
             df = pd.read_csv(csv_path)
@@ -2988,11 +2998,10 @@ class RedockAnalysisApp(tk.Tk):
     def _render_results_from_path(self, results_path: Path) -> None:
         summary_path = Path(results_path).with_name("redock_summary.json")
         csv_path = Path(results_path).with_name("redock_results.csv")
-        if not summary_path.exists():
-            messagebox.showwarning("Results missing", "Summary file not found.")
-            return
-
         summary = self._summary_for_display(Path(results_path), summary_path)
+        if not summary:
+            messagebox.showwarning("Results missing", "Results could not be summarized.")
+            return
         rmsd_values = []
         if csv_path.exists():
             df = pd.read_csv(csv_path)
@@ -3005,8 +3014,13 @@ class RedockAnalysisApp(tk.Tk):
         self._render_results(summary, rmsd_values)
 
     def _summary_for_display(self, results_path: Path, summary_path: Path) -> dict:
-        """Rebuild display metrics so older completed runs use current reporting."""
-        saved_summary = json.loads(summary_path.read_text())
+        """Rebuild and persist metrics so older runs use current reporting."""
+        saved_summary = {}
+        if summary_path.exists():
+            try:
+                saved_summary = json.loads(summary_path.read_text())
+            except Exception as exc:
+                logger.warning("Could not read saved summary: {}", exc)
         json_path = (
             results_path.with_name("redock_results.json")
             if results_path.suffix.lower() == ".csv" else results_path
@@ -3018,9 +3032,14 @@ class RedockAnalysisApp(tk.Tk):
             results = [RedockResult(**item) for item in payload.get("results", [])]
             if not results:
                 return saved_summary
-            return self._build_summary(
+            rebuilt_summary = self._build_summary(
                 results, float(saved_summary.get("threshold", 2.0))
             )
+            try:
+                self._write_summary_files(json_path, rebuilt_summary)
+            except Exception as exc:
+                logger.warning("Could not update saved summary files: {}", exc)
+            return rebuilt_summary
         except Exception as exc:
             logger.warning("Could not rebuild summary for display: {}", exc)
             return saved_summary

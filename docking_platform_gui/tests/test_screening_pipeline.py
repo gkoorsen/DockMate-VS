@@ -565,6 +565,12 @@ def test_score_only_screening_summary_rebuilds_from_results_json(tmp_path: Path)
     assert summary["screening_score_count"] == 2
     assert summary["screening_unscored_count"] == 1
     assert summary["screening_score_methods"] == ["vinardo (Smina score-only)"]
+    saved_summary = json.loads(summary_path.read_text())
+    assert saved_summary["docking_completed"] == 2
+    assert saved_summary["docking_failed"] == 1
+    saved_markdown = (tmp_path / "redock_summary.md").read_text()
+    assert "## Screening score summary" in saved_markdown
+    assert "Scored samples: 2/3" in saved_markdown
     assert summary["per_structure_screening"] == [
         {
             "target_name": "Mpro",
@@ -580,6 +586,33 @@ def test_score_only_screening_summary_rebuilds_from_results_json(tmp_path: Path)
             "median_score": -7.0,
         }
     ]
+
+
+def test_score_only_screening_recreates_missing_summary_files(tmp_path: Path):
+    app = _app_without_tk()
+    results_path = tmp_path / "redock_results.json"
+    summary_path = tmp_path / "redock_summary.json"
+    results_path.write_text(
+        json.dumps(
+            {
+                "results": [
+                    asdict(
+                        _result(
+                            dock_name="screening_hit",
+                            best_score=-7.5,
+                            docking_completed=True,
+                        )
+                    )
+                ]
+            }
+        )
+    )
+
+    summary = app._summary_for_display(results_path, summary_path)
+
+    assert summary["docking_completed"] == 1
+    assert summary_path.exists()
+    assert (tmp_path / "redock_summary.md").exists()
 
 
 def test_score_only_screening_markdown_omits_pose_metrics_and_reports_hits():
