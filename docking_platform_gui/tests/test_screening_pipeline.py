@@ -1,5 +1,6 @@
 import json
 import queue
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -497,6 +498,157 @@ def test_summary_reports_macro_and_pooled_auc_per_target():
     markdown = _app_without_tk()._summary_to_markdown(summary)
     assert "Control Enrichment (per target)" in markdown
     assert "Pose Recovery (per target)" in markdown
+
+
+def test_score_only_screening_summary_rebuilds_from_results_json(tmp_path: Path):
+    app = _app_without_tk()
+    results_path = tmp_path / "redock_results.json"
+    summary_path = tmp_path / "redock_summary.json"
+    results = [
+        asdict(
+            _result(
+                pdb_id="1AAA",
+                ligand_resname="L1",
+                target_name="Mpro",
+                dock_name="hit_1",
+                best_score=-7.0,
+                rescore_method="smina_score_only:vinardo",
+                rescore_score=-8.0,
+                pose_count=10,
+                runtime_sec=10.0,
+                docking_completed=True,
+            )
+        ),
+        asdict(
+            _result(
+                pdb_id="1AAA",
+                ligand_resname="L1",
+                target_name="Mpro",
+                dock_name="hit_2",
+                best_score=-6.5,
+                rescore_method="smina_score_only:vinardo",
+                rescore_score=-6.0,
+                pose_count=12,
+                runtime_sec=20.0,
+                docking_completed=True,
+            )
+        ),
+        asdict(
+            _result(
+                pdb_id="1AAA",
+                ligand_resname="L1",
+                target_name="Mpro",
+                dock_name="failed_hit",
+                runtime_sec=0.0,
+                docking_completed=False,
+                error_message="Docking failed",
+            )
+        ),
+    ]
+    results_path.write_text(json.dumps({"results": results}))
+    summary_path.write_text(
+        json.dumps(
+            {
+                "threshold": 2.0,
+                "mean_runtime_sec": 0.0,
+                "success_rate_best": 0.0,
+            }
+        )
+    )
+
+    summary = app._summary_for_display(results_path, summary_path)
+
+    assert summary["docking_completed"] == 2
+    assert summary["docking_failed"] == 1
+    assert summary["mean_runtime_sec"] == pytest.approx(15.0)
+    assert summary["success_rate_best"] is None
+    assert summary["screening_score_count"] == 2
+    assert summary["screening_unscored_count"] == 1
+    assert summary["screening_score_methods"] == ["vinardo (Smina score-only)"]
+    assert summary["per_structure_screening"] == [
+        {
+            "target_name": "Mpro",
+            "pdb_id": "1AAA",
+            "ligand": "L1",
+            "cases": 3,
+            "completed": 2,
+            "completion_rate": pytest.approx(66.6666666667),
+            "scored": 2,
+            "score_source": "vinardo (Smina score-only)",
+            "best_compound": "hit_1",
+            "best_score": -8.0,
+            "median_score": -7.0,
+        }
+    ]
+
+
+def test_score_only_screening_markdown_omits_pose_metrics_and_reports_hits():
+    app = _app_without_tk()
+    results = [
+        _result(
+            pdb_id="1AAA",
+            ligand_resname="L1",
+            target_name="Mpro",
+            dock_name="hit_1",
+            best_score=-7.0,
+            rescore_method="smina_score_only:vinardo",
+            rescore_score=-8.0,
+            pose_count=10,
+            runtime_sec=10.0,
+            docking_completed=True,
+        ),
+        _result(
+            pdb_id="1AAA",
+            ligand_resname="L1",
+            target_name="Mpro",
+            dock_name="failed_hit",
+            runtime_sec=0.0,
+            docking_completed=False,
+            error_message="Docking failed",
+        ),
+    ]
+
+    summary = app._build_summary(results, threshold=2.0)
+    markdown = app._summary_to_markdown(summary)
+
+    assert "RMSD and pose-recovery metrics are omitted" in markdown
+    assert "## Screening score summary" in markdown
+    assert "## Top-ranked compounds per structure" in markdown
+    assert "## Failed screening cases" in markdown
+    assert "Success rate (best pose)" not in markdown
+    assert "Mean best RMSD" not in markdown
+    assert "N/A" not in markdown
+
+
+def test_screening_chart_data_uses_per_structure_completion_and_score_coverage():
+    summary = {
+        "per_structure_screening": [
+            {
+                "pdb_id": "1AAA",
+                "ligand": "L1",
+                "cases": 4,
+                "completed": 3,
+                "completion_rate": 75.0,
+                "scored": 2,
+            },
+            {
+                "pdb_id": "2BBB",
+                "ligand": "L2",
+                "cases": 2,
+                "completed": 2,
+                "completion_rate": 100.0,
+                "scored": 2,
+            },
+        ],
+        "mean_pose_count": 17.5,
+    }
+
+    data = RedockAnalysisApp._screening_chart_data(summary)
+
+    assert data["completion"] == [("1AAA\nL1", 75.0), ("2BBB\nL2", 100.0)]
+    assert data["score_coverage"] == [("1AAA\nL1", 50.0), ("2BBB\nL2", 100.0)]
+    assert data["failures"] == [("1AAA\nL1", 1.0), ("2BBB\nL2", 0.0)]
+    assert data["pose_counts"] == [("Mean poses", 17.5)]
 
 
 def test_strong_auc_passes_enrichment_without_requiring_active_rank_one():

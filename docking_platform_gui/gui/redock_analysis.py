@@ -2763,7 +2763,7 @@ class RedockAnalysisApp(tk.Tk):
             messagebox.showwarning("Results missing", "Summary file not found.")
             return
 
-        summary = json.loads(summary_path.read_text())
+        summary = self._summary_for_display(Path(results_path), summary_path)
         rmsd_values = []
         if csv_path.exists():
             df = pd.read_csv(csv_path)
@@ -2918,13 +2918,23 @@ class RedockAnalysisApp(tk.Tk):
             report = report_path.read_text()
         else:
             report = f"Protocol summary was not found:\n{report_path}"
-        tk.Label(
-            parent,
-            text=f"Results: {results_path}",
-            anchor="w",
-            justify="left",
-            fg="#555555",
-        ).pack(fill="x", pady=(0, 6))
+        RedockAnalysisApp._populate_markdown_report(
+            parent, report, source_text=f"Results: {results_path}"
+        )
+
+    @staticmethod
+    def _populate_markdown_report(
+        parent: tk.Widget, report: str, source_text: Optional[str] = None
+    ) -> None:
+        """Render generated Markdown as labels and sortable-looking tables."""
+        if source_text:
+            tk.Label(
+                parent,
+                text=source_text,
+                anchor="w",
+                justify="left",
+                fg="#555555",
+            ).pack(fill="x", pady=(0, 6))
         prose, tables = RedockAnalysisApp._parse_protocol_markdown_sections(report)
         for index, line in enumerate(prose):
             if index == 0:
@@ -2932,14 +2942,17 @@ class RedockAnalysisApp(tk.Tk):
                     parent, text=line, anchor="w", font=("TkDefaultFont", 13, "bold")
                 ).pack(fill="x", pady=(0, 5))
             else:
+                is_bullet = line.startswith("- ")
+                rendered = line[2:].strip() if is_bullet else line
                 tk.Label(
-                    parent, text=line, anchor="w", justify="left", wraplength=1050
-                ).pack(fill="x", pady=(0, 3))
+                    parent, text=rendered, anchor="w", justify="left", wraplength=1050
+                ).pack(fill="x", padx=(14 if is_bullet else 0, 0), pady=(0, 3))
 
         if not tables:
-            tk.Label(parent, text=report, anchor="nw", justify="left").pack(
-                fill="both", expand=True
-            )
+            if not prose:
+                tk.Label(parent, text="No summary data available.", anchor="nw").pack(
+                    fill="both", expand=True
+                )
             return
 
         notebook = ttk.Notebook(parent)
@@ -2979,7 +2992,7 @@ class RedockAnalysisApp(tk.Tk):
             messagebox.showwarning("Results missing", "Summary file not found.")
             return
 
-        summary = json.loads(summary_path.read_text())
+        summary = self._summary_for_display(Path(results_path), summary_path)
         rmsd_values = []
         if csv_path.exists():
             df = pd.read_csv(csv_path)
@@ -2990,6 +3003,27 @@ class RedockAnalysisApp(tk.Tk):
                 ]
 
         self._render_results(summary, rmsd_values)
+
+    def _summary_for_display(self, results_path: Path, summary_path: Path) -> dict:
+        """Rebuild display metrics so older completed runs use current reporting."""
+        saved_summary = json.loads(summary_path.read_text())
+        json_path = (
+            results_path.with_name("redock_results.json")
+            if results_path.suffix.lower() == ".csv" else results_path
+        )
+        if not json_path.exists():
+            return saved_summary
+        try:
+            payload = json.loads(json_path.read_text())
+            results = [RedockResult(**item) for item in payload.get("results", [])]
+            if not results:
+                return saved_summary
+            return self._build_summary(
+                results, float(saved_summary.get("threshold", 2.0))
+            )
+        except Exception as exc:
+            logger.warning("Could not rebuild summary for display: {}", exc)
+            return saved_summary
 
     @staticmethod
     def _protocol_chart_data(frame: pd.DataFrame, threshold: float = 2.0) -> dict:
@@ -3087,60 +3121,96 @@ class RedockAnalysisApp(tk.Tk):
             child.destroy()
 
     def _populate_summary_tab(self, parent: tk.Frame, summary: dict) -> None:
-        parent.grid_columnconfigure(0, weight=1)
-        stats_text = tk.Text(parent, height=12, wrap="word")
-        stats_text.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
-        stats_text.insert("1.0", self._summary_to_markdown(summary))
-        stats_text.config(state="disabled")
+        self._populate_markdown_report(parent, self._summary_to_markdown(summary))
 
-        by_protocol = summary.get("by_protocol", {})
-        by_engine = summary.get("by_engine", {})
-        attempts = summary.get("attempts_by_protocol", {})
-
-        table_frame = tk.Frame(parent)
-        table_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
-        table_frame.grid_columnconfigure(0, weight=1)
-        table_frame.grid_columnconfigure(1, weight=1)
-        table_frame.grid_rowconfigure(1, weight=1)
-
-        tk.Label(table_frame, text="By Protocol").grid(row=0, column=0, sticky="w")
-        tk.Label(table_frame, text="By Engine").grid(row=0, column=1, sticky="w")
-
-        protocol_table = self._build_table(
-            table_frame,
-            ["Protocol", "Count", "Success", "Mean RMSD"],
-            [
-                (k, v.get("count"), v.get("success"), self._fmt(v.get("mean_rmsd")))
-                for k, v in by_protocol.items()
-            ]
-        )
-        protocol_table.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
-
-        engine_table = self._build_table(
-            table_frame,
-            ["Engine", "Count", "Success", "Mean RMSD"],
-            [
-                (k, v.get("count"), v.get("success"), self._fmt(v.get("mean_rmsd")))
-                for k, v in by_engine.items()
-            ]
-        )
-        engine_table.grid(row=1, column=1, sticky="nsew")
-
-        if attempts:
-            attempts_frame = tk.Frame(parent)
-            attempts_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
-            tk.Label(attempts_frame, text="Protocol Attempts").grid(row=0, column=0, sticky="w")
-            attempts_table = self._build_table(
-                attempts_frame,
-                ["Protocol", "Attempts", "Success", "Mean RMSD"],
-                [
-                    (k, v.get("attempts"), v.get("success"), self._fmt(v.get("mean_rmsd")))
-                    for k, v in attempts.items()
-                ]
+    @staticmethod
+    def _result_is_completed(result: RedockResult) -> bool:
+        output_exists = bool(result.output_file and Path(result.output_file).exists())
+        return bool(
+            result.docking_completed is True
+            or (
+                result.docking_completed is None
+                and output_exists
+                and not result.error_message
             )
-            attempts_table.grid(row=1, column=0, sticky="nsew")
+        )
+
+    @staticmethod
+    def _result_is_failed(result: RedockResult) -> bool:
+        output_exists = bool(result.output_file and Path(result.output_file).exists())
+        return bool(
+            result.docking_completed is False
+            or (
+                result.docking_completed is None
+                and not output_exists
+            )
+        )
+
+    @staticmethod
+    def _screening_chart_data(summary: dict) -> dict:
+        rows = summary.get("per_structure_screening") or []
+        completion = [
+            (f"{row['pdb_id']}\n{row['ligand']}", float(row["completion_rate"]))
+            for row in rows
+        ]
+        score_coverage = [
+            (
+                f"{row['pdb_id']}\n{row['ligand']}",
+                100.0 * float(row["scored"]) / float(row["cases"])
+                if row.get("cases") else 0.0,
+            )
+            for row in rows
+        ]
+        failures = [
+            (f"{row['pdb_id']}\n{row['ligand']}", float(row["cases"] - row["completed"]))
+            for row in rows
+        ]
+        pose_counts = [
+            ("Mean poses", float(summary["mean_pose_count"]))
+        ] if summary.get("mean_pose_count") is not None else []
+        return {
+            "completion": completion,
+            "score_coverage": score_coverage,
+            "failures": failures,
+            "pose_counts": pose_counts,
+        }
 
     def _populate_charts_tab(self, parent: tk.Frame, summary: dict, rmsd_values: List[float]) -> None:
+        is_score_only_screening = bool(
+            summary.get("n_samples")
+            and summary.get("screening_score_count") is not None
+            and summary.get("mean_best_rmsd") is None
+        )
+        if is_score_only_screening:
+            chart_data = self._screening_chart_data(summary)
+            parent.grid_rowconfigure(0, weight=0)
+            parent.grid_rowconfigure(1, weight=1)
+            parent.grid_rowconfigure(2, weight=1)
+            parent.grid_columnconfigure(0, weight=1)
+            parent.grid_columnconfigure(1, weight=1)
+
+            tk.Label(
+                parent,
+                text="Charts reflect screening completion and scoring coverage by receptor structure.",
+                anchor="w",
+                justify="left",
+                fg="#555555",
+            ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))
+
+            screening_charts = [
+                ("Completion rate by structure (%)", chart_data["completion"]),
+                ("Scored cases by structure (%)", chart_data["score_coverage"]),
+                ("Failed cases by structure", chart_data["failures"]),
+                ("Overall mean saved pose count", chart_data["pose_counts"]),
+            ]
+            for index, (title, values) in enumerate(screening_charts):
+                canvas = tk.Canvas(parent, height=250, bg="white")
+                canvas.grid(
+                    row=1 + index // 2, column=index % 2, sticky="nsew", padx=10, pady=10
+                )
+                self._draw_bar_chart(canvas, title, values)
+            return
+
         parent.grid_rowconfigure(1, weight=1)
         parent.grid_rowconfigure(2, weight=0)
         parent.grid_columnconfigure(0, weight=1)
@@ -5454,6 +5524,28 @@ class RedockAnalysisApp(tk.Tk):
         return None
 
     @staticmethod
+    def _selected_score_details(
+        result: "RedockResult",
+    ) -> Optional[Tuple[float, float, str, str]]:
+        """Return normalized rank, displayed score, source, and direction."""
+        if result.rescore_cnn_affinity is not None:
+            value = float(result.rescore_cnn_affinity)
+            return value, value, "GNINA CNN affinity", "higher"
+        if result.rescore_cnn_score is not None:
+            value = float(result.rescore_cnn_score)
+            return value, value, "GNINA CNN score", "higher"
+        if result.rescore_score is not None:
+            value = float(result.rescore_score)
+            method = str(result.rescore_method or "Smina rescore")
+            if method.startswith("smina_score_only:"):
+                method = f"{method.split(':', 1)[1]} (Smina score-only)"
+            return -value, value, method, "lower"
+        if result.best_score is not None:
+            value = float(result.best_score)
+            return -value, value, f"{result.engine or 'Docking'} score", "lower"
+        return None
+
+    @staticmethod
     def _property_matched(active: RedockResult, decoy: RedockResult) -> Optional[bool]:
         required = (
             active.molecular_weight, decoy.molecular_weight,
@@ -5862,31 +5954,142 @@ class RedockAnalysisApp(tk.Tk):
         # Calculate protocol/engine breakdown (only for actives with valid RMSD)
         # Older redock results predate the explicit completion field. A valid
         # saved output is sufficient to classify those historical cases.
-        completed = sum(
-            r.docking_completed is True
-            or (
-                r.docking_completed is None
-                and bool(r.output_file)
-                and Path(r.output_file).exists()
-                and not r.error_message
-            )
-            for r in results
-        )
-        failed = sum(
-            r.docking_completed is False
-            or (
-                r.docking_completed is None
-                and (not r.output_file or not Path(r.output_file).exists())
-            )
-            for r in results
-        )
+        completed = sum(self._result_is_completed(r) for r in results)
+        failed = sum(self._result_is_failed(r) for r in results)
         summary["docking_completed"] = completed
         summary["docking_failed"] = failed
+
+        completed_results = [
+            result for result in results
+            if self._result_is_completed(result)
+        ]
+        runtimes = [
+            float(result.runtime_sec) for result in completed_results
+            if result.runtime_sec is not None
+            and np.isfinite(result.runtime_sec)
+            and result.runtime_sec > 0
+        ]
+        summary["mean_runtime_sec"] = float(np.mean(runtimes)) if runtimes else None
+        summary["median_runtime_sec"] = float(np.median(runtimes)) if runtimes else None
+
+        rescore_results = [
+            result for result in results
+            if result.rescore_method
+            or result.rescore_score is not None
+            or result.rescore_cnn_score is not None
+            or result.rescore_cnn_affinity is not None
+            or result.rescore_error
+        ]
+        summary["rescore_count"] = sum(
+            result.rescore_score is not None
+            or result.rescore_cnn_score is not None
+            or result.rescore_cnn_affinity is not None
+            for result in rescore_results
+        )
+        summary["rescore_failures"] = sum(
+            bool(result.rescore_error) for result in rescore_results
+        )
+        summary["rescore_methods"] = sorted({
+            str(result.rescore_method) for result in rescore_results
+            if result.rescore_method
+        })
+
+        screening_results = [
+            result for result in results
+            if result.mode == "screening" and result.control_label is None
+        ]
+        screening_scored = []
+        for result in screening_results:
+            score_details = self._selected_score_details(result)
+            if score_details is not None:
+                screening_scored.append((result, score_details))
+        summary["screening_score_count"] = len(screening_scored)
+        summary["screening_unscored_count"] = len(screening_results) - len(screening_scored)
+        summary["screening_score_methods"] = sorted({
+            details[2] for _, details in screening_scored
+        })
+        score_directions = {details[3] for _, details in screening_scored}
+        summary["screening_score_direction"] = (
+            next(iter(score_directions)) if len(score_directions) == 1 else "mixed"
+        ) if score_directions else None
+
+        structure_groups: Dict[Tuple[str, str], List[RedockResult]] = {}
+        for result in screening_results:
+            structure_groups.setdefault(
+                (result.pdb_id, result.ligand_resname), []
+            ).append(result)
+
+        screening_structure_rows = []
+        screening_top_hits = []
+        for (pdb_id, ligand), structure_results in sorted(structure_groups.items()):
+            structure_scored = []
+            for result in structure_results:
+                details = self._selected_score_details(result)
+                if details is not None:
+                    structure_scored.append((result, details))
+            structure_scored.sort(key=lambda item: item[1][0], reverse=True)
+            structure_completed = sum(
+                self._result_is_completed(result) for result in structure_results
+            )
+            methods = sorted({details[2] for _, details in structure_scored})
+            display_values = [details[1] for _, details in structure_scored]
+            best_result = structure_scored[0] if structure_scored else None
+            target_name = next(
+                (result.target_name for result in structure_results if result.target_name),
+                pdb_id,
+            )
+            screening_structure_rows.append({
+                "target_name": target_name,
+                "pdb_id": pdb_id,
+                "ligand": ligand,
+                "cases": len(structure_results),
+                "completed": structure_completed,
+                "completion_rate": (
+                    100.0 * structure_completed / len(structure_results)
+                    if structure_results else 0.0
+                ),
+                "scored": len(structure_scored),
+                "score_source": ", ".join(methods) if methods else None,
+                "best_compound": (
+                    best_result[0].dock_name or best_result[0].ligand_resname
+                    if best_result else None
+                ),
+                "best_score": best_result[1][1] if best_result else None,
+                "median_score": (
+                    float(np.median(display_values)) if display_values else None
+                ),
+            })
+            for rank, (result, details) in enumerate(structure_scored[:5], 1):
+                screening_top_hits.append({
+                    "target_name": target_name,
+                    "pdb_id": pdb_id,
+                    "ligand": ligand,
+                    "rank": rank,
+                    "compound": result.dock_name or result.ligand_resname,
+                    "score": details[1],
+                    "score_source": details[2],
+                })
+        summary["per_structure_screening"] = screening_structure_rows
+        summary["screening_top_hits"] = screening_top_hits
+        summary["screening_failures"] = [
+            {
+                "pdb_id": result.pdb_id,
+                "ligand": result.ligand_resname,
+                "compound": result.dock_name or result.ligand_resname,
+                "error": result.error_message or "No docked output was produced",
+            }
+            for result in screening_results
+            if self._result_is_failed(result)
+        ]
 
         actives = [
             r for r in results 
             if r.best_rmsd is not None and r.best_rmsd < 900
         ]
+        if not actives:
+            # Unknown screening compounds have no experimental reference pose.
+            # A zero here looks like failed pose recovery, but RMSD is undefined.
+            summary["success_rate_best"] = None
         
         by_protocol = {}
         for result in actives:
@@ -5931,28 +6134,57 @@ class RedockAnalysisApp(tk.Tk):
             f"- Total cases: {summary.get('total_cases')}",
             f"- Docking completed: {summary.get('docking_completed', 0)}",
             f"- Docking failed: {summary.get('docking_failed', 0)}",
-            f"- Control actives: {summary.get('n_actives', 0)}",
-            f"- Control decoys: {summary.get('n_decoys', 0)}",
             f"- Screening samples: {summary.get('n_samples', 0)}",
-            f"- RMSD threshold: {summary.get('threshold')}",
-            f"- Success rate (best pose): {self._fmt(summary.get('success_rate_best'))}%",
-            f"- Success rate (Top-1): {self._fmt(summary.get('success_rate_top1'))}%",
-            f"- Success rate (Top-5): {self._fmt(summary.get('success_rate_top5'))}%",
-            f"- Success rate (Top-10): {self._fmt(summary.get('success_rate_top10'))}%",
-            f"- Mean best RMSD: {self._fmt(summary.get('mean_best_rmsd'))}",
-            f"- Median best RMSD: {self._fmt(summary.get('median_best_rmsd'))}",
-            f"- Mean Top-1 RMSD: {self._fmt(summary.get('mean_top1_rmsd'))}",
-            f"- Median Top-1 RMSD: {self._fmt(summary.get('median_top1_rmsd'))}",
-            f"- Mean RMSD (best score pose): {self._fmt(summary.get('mean_rmsd_best_score'))}",
-            f"- Mean near-native fraction: {self._fmt(summary.get('mean_near_native_fraction'))}",
-            f"- Mean pose count: {self._fmt(summary.get('mean_pose_count'))}",
-            f"- Mean score-RMSD Pearson: {self._fmt(summary.get('mean_score_rmsd_pearson'))}",
-            f"- Mean score-RMSD Spearman: {self._fmt(summary.get('mean_score_rmsd_spearman'))}",
-            f"- Mean runtime (s): {self._fmt(summary.get('mean_runtime_sec'))}",
-            f"- Median runtime (s): {self._fmt(summary.get('median_runtime_sec'))}",
         ]
+        if summary.get("n_actives") or summary.get("n_decoys"):
+            lines.extend([
+                f"- Control actives: {summary.get('n_actives', 0)}",
+                f"- Control decoys: {summary.get('n_decoys', 0)}",
+            ])
+        if summary.get("mean_runtime_sec") is not None:
+            lines.append(f"- Mean runtime (s): {self._fmt(summary.get('mean_runtime_sec'))}")
+        if summary.get("median_runtime_sec") is not None:
+            lines.append(f"- Median runtime (s): {self._fmt(summary.get('median_runtime_sec'))}")
 
         target_pose_rows = summary.get("per_target_pose_recovery") or []
+        has_pose_recovery = (
+            summary.get("mean_best_rmsd") is not None or bool(target_pose_rows)
+        )
+        if has_pose_recovery:
+            lines.extend([
+                "",
+                "## Pose Recovery",
+                "",
+                f"- RMSD threshold: {summary.get('threshold')}",
+                f"- Success rate (best pose): "
+                f"{self._fmt(summary.get('success_rate_best'))}%",
+                f"- Success rate (Top-1): "
+                f"{self._fmt(summary.get('success_rate_top1'))}%",
+                f"- Success rate (Top-5): "
+                f"{self._fmt(summary.get('success_rate_top5'))}%",
+                f"- Success rate (Top-10): "
+                f"{self._fmt(summary.get('success_rate_top10'))}%",
+                f"- Mean best RMSD: {self._fmt(summary.get('mean_best_rmsd'))}",
+                f"- Median best RMSD: {self._fmt(summary.get('median_best_rmsd'))}",
+                f"- Mean Top-1 RMSD: {self._fmt(summary.get('mean_top1_rmsd'))}",
+                f"- Median Top-1 RMSD: {self._fmt(summary.get('median_top1_rmsd'))}",
+                f"- Mean RMSD (best score pose): "
+                f"{self._fmt(summary.get('mean_rmsd_best_score'))}",
+                f"- Mean near-native fraction: "
+                f"{self._fmt(summary.get('mean_near_native_fraction'))}",
+                f"- Mean pose count: {self._fmt(summary.get('mean_pose_count'))}",
+                f"- Mean score-RMSD Pearson: "
+                f"{self._fmt(summary.get('mean_score_rmsd_pearson'))}",
+                f"- Mean score-RMSD Spearman: "
+                f"{self._fmt(summary.get('mean_score_rmsd_spearman'))}",
+            ])
+        elif summary.get("n_samples"):
+            lines.extend([
+                "",
+                "RMSD and pose-recovery metrics are omitted because unknown screening "
+                "compounds do not have experimental reference poses.",
+            ])
+
         if target_pose_rows:
             lines.extend([
                 "",
@@ -5971,6 +6203,84 @@ class RedockAnalysisApp(tk.Tk):
                     f"{self._fmt(row['success_rate_top10'])}% | "
                     f"{self._fmt(row['mean_best_rmsd'])} | "
                     f"{self._fmt(row['mean_top1_rmsd'])} |"
+                )
+
+        screening_rows = summary.get("per_structure_screening") or []
+        if summary.get("n_samples"):
+            score_methods = summary.get("screening_score_methods") or []
+            direction = summary.get("screening_score_direction")
+            direction_text = {
+                "lower": "Lower scores rank better.",
+                "higher": "Higher scores rank better.",
+                "mixed": "Score direction varies by method; ranks are normalized internally.",
+            }.get(direction, "")
+            lines.extend([
+                "",
+                "## Screening score summary",
+                "",
+                f"- Scored samples: {summary.get('screening_score_count', 0)}/"
+                f"{summary.get('n_samples', 0)}",
+                f"- Samples without a score: {summary.get('screening_unscored_count', 0)}",
+            ])
+            if score_methods:
+                lines.append(f"- Ranking source: {', '.join(score_methods)}")
+            if direction_text:
+                lines.append(f"- {direction_text}")
+            if summary.get("mean_pose_count") is not None:
+                lines.append(
+                    f"- Mean saved pose count: {self._fmt(summary.get('mean_pose_count'))}"
+                )
+            if screening_rows:
+                lines.extend([
+                    "",
+                    "Raw scores should be compared within a receptor structure, not pooled "
+                    "across different structures.",
+                    "",
+                    "| Target | PDB | Ligand | Cases | Completed | Completion | Scored | "
+                    "Score source | Best compound | Best score | Median score |",
+                    "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: |",
+                ])
+                for row in screening_rows:
+                    lines.append(
+                        f"| {row['target_name']} | {row['pdb_id']} | {row['ligand']} | "
+                        f"{row['cases']} | {row['completed']} | "
+                        f"{self._fmt(row['completion_rate'])}% | {row['scored']} | "
+                        f"{row.get('score_source') or '-'} | "
+                        f"{row.get('best_compound') or '-'} | "
+                        f"{self._fmt_score(row.get('best_score'))} | "
+                        f"{self._fmt_score(row.get('median_score'))} |"
+                    )
+
+        screening_top_hits = summary.get("screening_top_hits") or []
+        if screening_top_hits:
+            lines.extend([
+                "",
+                "## Top-ranked compounds per structure",
+                "",
+                "| Target | PDB | Ligand | Rank | Compound | Score | Score source |",
+                "| --- | --- | --- | ---: | --- | ---: | --- |",
+            ])
+            for row in screening_top_hits:
+                lines.append(
+                    f"| {row['target_name']} | {row['pdb_id']} | {row['ligand']} | "
+                    f"{row['rank']} | {row['compound']} | "
+                    f"{self._fmt_score(row['score'])} | {row['score_source']} |"
+                )
+
+        screening_failures = summary.get("screening_failures") or []
+        if screening_failures:
+            lines.extend([
+                "",
+                "## Failed screening cases",
+                "",
+                "| PDB | Ligand | Compound | Error |",
+                "| --- | --- | --- | --- |",
+            ])
+            for row in screening_failures:
+                error = str(row["error"]).replace("|", "/")
+                lines.append(
+                    f"| {row['pdb_id']} | {row['ligand']} | "
+                    f"{row['compound']} | {error} |"
                 )
 
         if summary.get("rescore_count"):
@@ -6105,28 +6415,32 @@ class RedockAnalysisApp(tk.Tk):
                 f"- Score-charge Spearman: {self._fmt(summary.get('score_charge_spearman'))}"
             ])
 
-        lines.extend([
-            "",
-            "## By Protocol",
-            "",
-            "| Protocol | Count | Success | Mean RMSD |",
-            "| --- | ---: | ---: | ---: |"
-        ])
-        for proto, stats in summary.get("by_protocol", {}).items():
-            lines.append(
-                f"| {proto} | {stats['count']} | {stats['success']} | {self._fmt(stats.get('mean_rmsd'))} |"
-            )
-        lines.extend([
-            "",
-            "## By Engine",
-            "",
-            "| Engine | Count | Success | Mean RMSD |",
-            "| --- | ---: | ---: | ---: |"
-        ])
-        for eng, stats in summary.get("by_engine", {}).items():
-            lines.append(
-                f"| {eng} | {stats['count']} | {stats['success']} | {self._fmt(stats.get('mean_rmsd'))} |"
-            )
+        if summary.get("by_protocol"):
+            lines.extend([
+                "",
+                "## By Protocol",
+                "",
+                "| Protocol | Count | Success | Mean RMSD |",
+                "| --- | ---: | ---: | ---: |"
+            ])
+            for proto, stats in summary.get("by_protocol", {}).items():
+                lines.append(
+                    f"| {proto} | {stats['count']} | {stats['success']} | "
+                    f"{self._fmt(stats.get('mean_rmsd'))} |"
+                )
+        if summary.get("by_engine"):
+            lines.extend([
+                "",
+                "## By Engine",
+                "",
+                "| Engine | Count | Success | Mean RMSD |",
+                "| --- | ---: | ---: | ---: |"
+            ])
+            for eng, stats in summary.get("by_engine", {}).items():
+                lines.append(
+                    f"| {eng} | {stats['count']} | {stats['success']} | "
+                    f"{self._fmt(stats.get('mean_rmsd'))} |"
+                )
 
         if summary.get("attempts_by_protocol"):
             lines.extend([
@@ -6147,6 +6461,10 @@ class RedockAnalysisApp(tk.Tk):
         if value is None:
             return "N/A"
         return f"{value:.2f}"
+
+    @staticmethod
+    def _fmt_score(value: Optional[float]) -> str:
+        return "-" if value is None else f"{value:.3f}"
 
     def _safe_call(self, func):
         def _wrapper(*args, **kwargs):
