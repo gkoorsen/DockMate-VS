@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 ligand_cache/
+
+# Local SoftwareX manuscript and submission preparation
+/manuscript/

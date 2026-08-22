@@ -105,7 +105,7 @@ def test_rescored_pose_metrics_follow_rescored_ranking(monkeypatch, tmp_path: Pa
     metrics = app._compute_rescored_pose_metrics(
         tmp_path / "reference.pdb", tmp_path / "poses.pdbqt",
         scores=[-7.0, -9.0, -8.0], threshold=2.0,
-        control_label=1, is_self_dock=True,
+        has_reference_pose=True,
     )
 
     assert metrics["rescore_score"] == -9.0
@@ -157,8 +157,74 @@ def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):
     assert "| Engine | Box | Rescoring | Water |" in report
     assert "| smina | margin:4 | none | remove_all | 8 |" in report
     assert "| vina | 20x20x20 | none | retain_all | 16 |" in report
-    assert "## Overall pose recovery" in report
+    assert "## Pose recovery across conditions" in report
     assert "## Recommended protocol per target" in report
+
+
+def test_protocol_conditions_do_not_repeat_rdock_for_exhaustiveness():
+    actives = [{"pdb_id": "1ABC", "site_ligand": "LIG"}]
+    sweep = {
+        "engines": ["smina", "rdock"],
+        "box_definitions": [{"label": "margin:4"}],
+        "water_modes": ["remove_all"],
+        "exhaustiveness": [8, 16, 32],
+        "seeds": [11, 42],
+        "rescore_methods": ["none", "vinardo"],
+    }
+
+    conditions = RedockAnalysisApp._expand_protocol_conditions(actives, sweep)
+    smina = [condition for condition in conditions if condition[1] == "smina"]
+    rdock = [condition for condition in conditions if condition[1] == "rdock"]
+
+    assert len(smina) == 12
+    assert len(rdock) == 4
+    assert {condition[5] for condition in rdock} == {None}
+
+
+def test_protocol_report_collapses_legacy_rdock_exhaustiveness_rows(tmp_path: Path):
+    rows = [
+        {
+            "status": "complete", "pdb_id": "1ABC", "ligand_resname": "LIG",
+            "engine": "rdock", "box_definition": "margin:4",
+            "rescore_method": "none", "water_handling": "remove_all",
+            "exhaustiveness": exhaustiveness, "seed": 42,
+            "best_rmsd": 1.8, "success": True, "runtime_sec": 10.0,
+        }
+        for exhaustiveness in (8, 16, 32)
+    ]
+
+    report = RedockAnalysisApp._write_protocol_report(rows, tmp_path).read_text()
+
+    assert "- Unique crystal complexes evaluated: 1" in report
+    assert "- Completed protocol-ranking conditions: 1" in report
+    assert report.count("| rdock | margin:4 | none | remove_all | N/A |") == 1
+    assert "| Conditions (with RMSD) |" in report
+
+
+def test_protocol_recommendation_prefers_native_pose_rank_over_failed_top1_delta(
+    tmp_path: Path,
+):
+    common = {
+        "status": "complete", "pdb_id": "1XP1", "ligand_resname": "AIH",
+        "target_name": "ESR1", "engine": "vina", "box_definition": "margin:6",
+        "rescore_method": "none", "exhaustiveness": 8, "seed": 42,
+        "success": True, "runtime_sec": 10.0, "top5_rmsd": 1.9,
+    }
+    rows = [
+        {
+            **common, "water_handling": "remove_all", "best_rmsd": 1.87,
+            "top1_rmsd": 4.851, "best_rmsd_rank": 5,
+        },
+        {
+            **common, "water_handling": "retain_all", "best_rmsd": 1.88,
+            "top1_rmsd": 4.859, "best_rmsd_rank": 2,
+        },
+    ]
+
+    report = RedockAnalysisApp._write_protocol_report(rows, tmp_path).read_text()
+    recommendation = report.split("## Recommended protocol per target", 1)[1]
+
+    assert "| ESR1 | vina | margin:6 | retain_all | 8 | baseline |" in recommendation
 
 
 def test_protocol_markdown_parser_extracts_renderable_table():
@@ -288,7 +354,39 @@ def test_campaign_inputs_are_prefetched_before_offline_phase(monkeypatch, tmp_pa
     assert downloads == ["1ABC", "2DEF"]
     assert pairs[0]["smiles"] == "CCO"
     assert pairs[0]["chain"] == "A"
+    assert pairs[0]["is_reference_ligand"] is True
+    assert pairs[1]["is_reference_ligand"] is False
+    assert pairs[2]["is_reference_ligand"] is False
     assert app._network_phase_complete is True
+
+
+def test_activity_label_does_not_enable_reference_pose_metrics(monkeypatch, tmp_path):
+    app = _app_without_tk()
+    docked = tmp_path / "poses.pdbqt"
+    docked.write_text("MODEL 1\nENDMDL\n")
+    pose = Chem.MolFromSmiles("CC")
+    monkeypatch.setattr(app, "_load_poses_and_scores", lambda _path: ([pose], [-8.0]))
+    monkeypatch.setattr(
+        app, "_load_reference_mol",
+        lambda _path: pytest.fail("A score-only assay active must not load an RMSD reference"),
+    )
+
+    metrics = app._compute_pose_metrics(
+        crystal_ligand_pdb=tmp_path / "native.pdb",
+        docked_file=docked,
+        threshold=2.0,
+        has_reference_pose=False,
+    )
+
+    assert metrics == {"pose_count": 1, "best_score": -8.0}
+
+
+def test_reference_identity_is_exact_not_analogue_similarity():
+    app = _app_without_tk()
+
+    assert app._same_ligand_smiles("c1ccccc1", "c1ccccc1") is True
+    assert app._same_ligand_smiles("Cc1ccccc1", "c1ccccc1") is False
+    assert app._same_ligand_smiles(None, "c1ccccc1") is None
 
 
 def test_covalent_site_ligand_link_is_detected(tmp_path):

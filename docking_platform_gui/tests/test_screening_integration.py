@@ -446,6 +446,7 @@ def test_worker_skips_compatible_completed_case(monkeypatch, tmp_path):
             "dock_name": "sample",
             "control_label": None,
             "case_id": "1ABC_LIG_sample",
+            "reference_pose_policy": "molecular_identity_v1",
         }],
     }
     app._write_json_atomic(tmp_path / "run_manifest.json", manifest)

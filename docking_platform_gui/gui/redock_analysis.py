@@ -1246,14 +1246,33 @@ class RedockAnalysisApp(tk.Tk):
             "seeds": self._parse_positive_int_list(self.protocol_seeds_var.get(), "Seeds"),
         }
 
+    @staticmethod
+    def _expand_protocol_conditions(
+        actives: List[Dict[str, str]], sweep: dict
+    ) -> List[tuple]:
+        """Expand meaningful sweep conditions without rDock-only duplicates."""
+        conditions = []
+        for pair in actives:
+            for engine in sweep["engines"]:
+                # Exhaustiveness is a Vina/Smina parameter. rDock sampling is
+                # controlled independently by rdock_runs, so sweep it once.
+                exhaustiveness_values = (
+                    [None] if engine == "rdock" else sweep["exhaustiveness"]
+                )
+                for box in sweep["box_definitions"]:
+                    for water in sweep["water_modes"]:
+                        for exhaustiveness in exhaustiveness_values:
+                            for seed in sweep["seeds"]:
+                                for rescore_method in sweep["rescore_methods"]:
+                                    conditions.append((
+                                        pair, engine, box, rescore_method, water,
+                                        exhaustiveness, seed,
+                                    ))
+        return conditions
+
     def _begin_protocol_run(self, actives: List[Dict[str, str]], config: dict) -> None:
         sweep = config["protocol_sweep"]
-        total = (
-            len(actives) * len(sweep["water_modes"]) * len(sweep["engines"])
-            * len(sweep["box_definitions"])
-            * len(sweep["rescore_methods"])
-            * len(sweep["exhaustiveness"]) * len(sweep["seeds"])
-        )
+        total = len(self._expand_protocol_conditions(actives, sweep))
         self.progress_dialog = ProgressDialog(self, total_ligands=total)
         self._queue = queue.Queue()
         self._worker = threading.Thread(
@@ -1274,12 +1293,20 @@ class RedockAnalysisApp(tk.Tk):
         default_box = sweep["box_definitions"][0]["label"]
 
         def condition_identity(row: dict) -> Tuple[str, str, str, str, str, str, int, int]:
+            engine = str(row.get("engine", config["single"].get("engine", "")))
+            raw_exhaustiveness = row.get("exhaustiveness", -1)
+            try:
+                exhaustiveness = int(float(raw_exhaustiveness))
+            except (TypeError, ValueError):
+                exhaustiveness = -1
+            if engine == "rdock":
+                exhaustiveness = -1
             return (
                 str(row.get("pdb_id", "")), str(row.get("ligand_resname", row.get("site_ligand", ""))),
-                str(row.get("engine", config["single"].get("engine", ""))),
+                engine,
                 str(row.get("box_definition", default_box)),
                 str(row.get("rescore_method") or "none"),
-                str(row.get("water_handling", "")), int(row.get("exhaustiveness", -1)),
+                str(row.get("water_handling", "")), exhaustiveness,
                 int(row.get("seed", -1)),
             )
 
@@ -1299,30 +1326,17 @@ class RedockAnalysisApp(tk.Tk):
             condition_key(row) for row in rows
             if row.get("status") in ("complete", "unsupported")
         }
-        conditions = [
-            (pair, engine, box, rescore_method, water, exhaustiveness, seed)
-            for pair in actives
-            for engine in sweep["engines"]
-            for box in sweep["box_definitions"]
-            for water in sweep["water_modes"]
-            for exhaustiveness in sweep["exhaustiveness"]
-            for seed in sweep["seeds"]
-            for rescore_method in sweep["rescore_methods"]
-        ]
+        conditions = self._expand_protocol_conditions(actives, sweep)
         pending_actives = []
         for pair in actives:
             has_pending_condition = any(
                 (pair["pdb_id"], pair["site_ligand"], engine, box["label"], rescore_method,
-                 water, exhaustiveness, seed,
+                 water, -1 if engine == "rdock" else exhaustiveness, seed,
                  "crystal_or_center_v2" if engine == "rdock" else "not_applicable",
                  "all_poses_v2" if rescore_method != "none" else "baseline_v2")
                 not in completed
-                for engine in sweep["engines"]
-                for box in sweep["box_definitions"]
-                for rescore_method in sweep["rescore_methods"]
-                for water in sweep["water_modes"]
-                for exhaustiveness in sweep["exhaustiveness"]
-                for seed in sweep["seeds"]
+                for candidate_pair, engine, box, rescore_method, water, exhaustiveness, seed
+                in self._expand_protocol_conditions([pair], sweep)
             )
             if has_pending_condition:
                 pending_actives.append(pair)
@@ -1355,14 +1369,16 @@ class RedockAnalysisApp(tk.Tk):
             site_ligand = pair["site_ligand"]
             key = (
                 pdb_id, site_ligand, engine_name, box["label"], rescore_method,
-                water, exhaustiveness, seed,
+                water, -1 if engine_name == "rdock" else exhaustiveness, seed,
                 "crystal_or_center_v2" if engine_name == "rdock" else "not_applicable",
                 "all_poses_v2" if rescore_method != "none" else "baseline_v2",
             )
             label = (
                 f"{pdb_id} {site_ligand}: {engine_name}, {box['label']}, "
                 f"rescore={rescore_method}, "
-                f"{water}, e{exhaustiveness}, seed {seed}"
+                f"{water}, "
+                f"{'rDock runs=' + str(config['single'].get('rdock_runs', 20)) if engine_name == 'rdock' else 'e' + str(exhaustiveness)}, "
+                f"seed {seed}"
             )
             self._queue.put(("progress", index - 1, len(conditions), label))
             if key in completed:
@@ -1409,17 +1425,19 @@ class RedockAnalysisApp(tk.Tk):
                     ),
                     "size_override": box["size_override"],
                     "water_handling": water,
-                    "exhaustiveness": exhaustiveness,
                     "seed": seed,
                     "variant_select_by": "rmsd",
                 })
+                if exhaustiveness is not None:
+                    single_cfg["exhaustiveness"] = exhaustiveness
                 case_id = self._safe_case_id(
                     f"{pdb_id}_{site_ligand}_{engine_name}_{box['label']}_"
-                    f"{water}_e{exhaustiveness}_s{seed}"
+                    f"{water}_"
+                    f"{'runs' + str(single_cfg.get('rdock_runs', 20)) if engine_name == 'rdock' else 'e' + str(exhaustiveness)}_s{seed}"
                 )
                 docking_key = (
                     pdb_id, site_ligand, engine_name, box["label"], water,
-                    exhaustiveness, seed,
+                    -1 if engine_name == "rdock" else exhaustiveness, seed,
                 )
                 if docking_key in docking_cache:
                     result = copy.deepcopy(docking_cache[docking_key])
@@ -1471,8 +1489,7 @@ class RedockAnalysisApp(tk.Tk):
                                     docked_file=Path(result.output_file),
                                     scores=rescored["scores"],
                                     threshold=config["threshold"],
-                                    control_label=1,
-                                    is_self_dock=True,
+                                    has_reference_pose=True,
                                 )
                                 for field, value in rescored_metrics.items():
                                     setattr(result, field, value)
@@ -1545,6 +1562,30 @@ class RedockAnalysisApp(tk.Tk):
             ]
             for column in rmsd_columns:
                 complete.loc[complete[column] >= 900, column] = np.nan
+
+            # Older runs expanded rDock once for every Vina exhaustiveness
+            # value even though rDock ignores that parameter. Normalize and
+            # collapse those legacy duplicates before calculating statistics.
+            complete.loc[complete["engine"] == "rdock", "exhaustiveness"] = np.nan
+            legacy_identity = [
+                column for column in (
+                    "pdb_id", "ligand_resname", "ligand_chain", "target_name", "engine",
+                    "box_definition", "rescore_method", "water_handling", "seed",
+                    "exhaustiveness",
+                )
+                if column in complete.columns
+            ]
+            if legacy_identity:
+                complete = complete.drop_duplicates(subset=legacy_identity, keep="last")
+
+            complex_identity = [
+                column for column in ("pdb_id", "ligand_resname", "ligand_chain")
+                if column in complete.columns
+            ]
+            unique_complexes = (
+                complete[complex_identity].drop_duplicates().shape[0]
+                if complex_identity else 0
+            )
             grouped = complete.groupby(
                 ["engine", "box_definition", "rescore_method", "water_handling", "exhaustiveness"],
                 dropna=False,
@@ -1572,19 +1613,28 @@ class RedockAnalysisApp(tk.Tk):
                 mean_rescore_spearman=("rescore_score_rmsd_spearman", "mean"),
             ).reset_index().sort_values(["success_rate", "mean_best_rmsd"], ascending=[False, True])
             lines.extend([
+                f"- Unique crystal complexes evaluated: {unique_complexes}",
+                f"- Completed protocol-ranking conditions: {len(complete)}",
+                "",
+                "A protocol condition is one parameter/ranking combination evaluated against a crystal complex. Multiple conditions for the same complex are not independent validation cases.",
+                "",
                 "The baseline columns use the docking engine's original ranking. When Smina/Vina docks with Vina scoring, these are the Vina results; the rescored columns show the selected Smina scoring function on the same poses.",
                 "",
-                "| Engine | Box | Rescoring | Water | Exhaust. | Cases (RMSD) | Mean best RMSD | Baseline Top-1/5/10 | Rescored Top-1/5/10 | Baseline / rescored best-RMSD rank | Baseline / rescored score | Baseline / rescored Spearman | Failures | Runtime (s) |",
+                "| Engine | Box | Rescoring | Water | Exhaust. | Conditions (with RMSD) | Mean best RMSD | Baseline Top-1/5/10 | Rescored Top-1/5/10 | Baseline / rescored best-RMSD rank | Baseline / rescored score | Baseline / rescored Spearman | Failures | Runtime (s) |",
                 "| --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | ---: | ---: |",
             ])
             for _, item in grouped.iterrows():
                 def _value(name: str) -> str:
                     value = getattr(item, name)
                     return "N/A" if pd.isna(value) else f"{value:.2f}"
+                exhaustiveness_label = (
+                    "N/A" if pd.isna(item.exhaustiveness)
+                    else str(int(item.exhaustiveness))
+                )
                 lines.append(
                     f"| {item.engine} | {item.box_definition} | {item.rescore_method} | "
                     f"{item.water_handling} | "
-                    f"{int(item.exhaustiveness)} | {int(item.cases)} ({int(item.rmsd_cases)}) | "
+                    f"{exhaustiveness_label} | {int(item.cases)} ({int(item.rmsd_cases)}) | "
                     f"{_value('mean_best_rmsd')} | "
                     f"{_value('mean_baseline_top1_rmsd')}/{_value('mean_baseline_top5_rmsd')}/{_value('mean_baseline_top10_rmsd')} | "
                     f"{_value('mean_rescore_top1_rmsd')}/{_value('mean_rescore_top5_rmsd')}/{_value('mean_rescore_top10_rmsd')} | "
@@ -1597,11 +1647,11 @@ class RedockAnalysisApp(tk.Tk):
 
             lines.extend([
                 "",
-                "## Overall pose recovery",
+                "## Pose recovery across conditions",
                 "",
                 f"Success rates use an RMSD threshold of {threshold:g} A.",
                 "",
-                "| Water | Rescoring | Cases | Best-pose success | Baseline Top-1 | Rescored Top-1 | Baseline Top-5 | Rescored Top-5 |",
+                "| Water | Rescoring | Conditions | Best-pose success | Baseline Top-1 | Rescored Top-1 | Baseline Top-5 | Rescored Top-5 |",
                 "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
             ])
             for (water, method), group in complete.groupby(
@@ -1665,7 +1715,7 @@ class RedockAnalysisApp(tk.Tk):
             for candidate in recommendations:
                 key = (
                     -candidate["top1_success"], -candidate["top5_success"],
-                    candidate["mean_top1"], candidate["mean_best"], candidate["mean_rank"],
+                    candidate["mean_rank"], candidate["mean_best"], candidate["mean_top1"],
                 )
                 current = best_by_target.get(candidate["target"])
                 if current is None or key < current[0]:
@@ -1675,17 +1725,21 @@ class RedockAnalysisApp(tk.Tk):
                 "",
                 "## Recommended protocol per target",
                 "",
-                "Recommendations prioritize Top-1 success, then Top-5 success, mean Top-1 RMSD, mean best RMSD, and best-pose rank. They validate pose recovery only; confirm enrichment with matched decoys before screening.",
+                "Recommendations prioritize Top-1 success, Top-5 success, best-pose rank, mean best RMSD, and then mean Top-1 RMSD. This prevents tiny differences between failed Top-1 poses from outranking a protocol that places the native-like pose earlier. Recommendations validate pose recovery only; confirm enrichment with matched decoys before screening.",
                 "",
-                "| Target | Engine | Box | Water | Exhaust. | Ranking | Rescorer | Cases | Top-1 success | Top-5 success | Mean Top-1 RMSD | Mean best RMSD | Mean best-pose rank |",
+                "| Target | Engine | Box | Water | Exhaust. | Ranking | Rescorer | Conditions | Top-1 success | Top-5 success | Mean Top-1 RMSD | Mean best RMSD | Mean best-pose rank |",
                 "| --- | --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
             ])
             for target in sorted(best_by_target, key=lambda value: str(value)):
                 item = best_by_target[target][1]
                 rescorer = item["rescore"] if item["ranking"] == "rescored" else "original score"
+                exhaustiveness_label = (
+                    "N/A" if pd.isna(item["exhaustiveness"])
+                    else str(int(item["exhaustiveness"]))
+                )
                 lines.append(
                     f"| {target} | {item['engine']} | {item['box']} | {item['water']} | "
-                    f"{int(item['exhaustiveness'])} | {item['ranking']} | {rescorer} | "
+                    f"{exhaustiveness_label} | {item['ranking']} | {rescorer} | "
                     f"{item['cases']} | {item['top1_success']:.1%} | {item['top5_success']:.1%} | "
                     f"{item['mean_top1']:.2f} | {item['mean_best']:.2f} | {item['mean_rank']:.2f} |"
                 )
@@ -1966,6 +2020,7 @@ class RedockAnalysisApp(tk.Tk):
                     "dock_name": p.get("dock_name"),
                     "control_label": p.get("control_label"),
                     "case_id": p.get("case_id"),
+                    "reference_pose_policy": "molecular_identity_v1",
                     **({"target_name": p.get("target_name")} if p.get("target_name") else {}),
                 }
                 for p in pairs
@@ -2068,6 +2123,10 @@ class RedockAnalysisApp(tk.Tk):
                     )
                 ligand_charge = self._get_ligand_charge(smiles)
                 ligand_properties = self._get_ligand_properties(smiles)
+                is_reference_case = (
+                    config["mode"] != "screening"
+                    or item.get("is_reference_ligand") is True
+                )
 
                 if config["mode"] == "adaptive":
                     if site_mode != "cocrystal":
@@ -2123,7 +2182,8 @@ class RedockAnalysisApp(tk.Tk):
                         pocket_center=pocket_center,
                         site_residues=site_residues,
                         run_mode=config["mode"],
-                        control_label=control_label
+                        control_label=control_label,
+                        is_reference_ligand=is_reference_case,
                     )
                 result.control_label = control_label
                 result.target_name = target_name
@@ -2155,8 +2215,7 @@ class RedockAnalysisApp(tk.Tk):
                                     docked_file=out_path,
                                     scores=rescore["scores"],
                                     threshold=config["threshold"],
-                                    control_label=control_label,
-                                    is_self_dock=config["mode"] != "screening",
+                                    has_reference_pose=is_reference_case,
                                 )
                                 for field, value in rescored_metrics.items():
                                     setattr(result, field, value)
@@ -2249,10 +2308,9 @@ class RedockAnalysisApp(tk.Tk):
             crystal_ligand_pdb=case_dir / "crystal_ligand.pdb",
             docked_file=best_result.output_file,
             threshold=threshold,
-            control_label=control_label,
             # The adaptive path rejects any labelled row upstream, so reaching
             # here means this IS the structure's own crystal ligand.
-            is_self_dock=True
+            has_reference_pose=True,
         )
         engine = "rdock" if best_result.output_file.suffix in (".sd", ".sdf") else "smina"
         protocol_attempts = [
@@ -2317,7 +2375,8 @@ class RedockAnalysisApp(tk.Tk):
         pocket_center: Optional[Tuple[float, float, float]] = None,
         site_residues: Optional[str] = None,
         run_mode: str = "single",
-        control_label: Optional[int] = None
+        control_label: Optional[int] = None,
+        is_reference_ligand: Optional[bool] = None,
     ) -> RedockResult:
         if site_mode == "cocrystal" and self._has_covalent_ligand_link(
             pdb_file, ligand_resname or ligand_name, ligand_chain
@@ -2474,12 +2533,10 @@ class RedockAnalysisApp(tk.Tk):
                     crystal_ligand_pdb=crystal_ligand_pdb,
                     docked_file=output_file,
                     threshold=threshold,
-                    control_label=control_label,
-                    has_reference_pose=crystal_ligand_pdb is not None,
-                    # run_mode "single" is a redock: the row is the crystal
-                    # ligand. "screening" rows are novel compounds, so only a
-                    # control_label of 1 qualifies there.
-                    is_self_dock=(run_mode != "screening")
+                    has_reference_pose=(
+                        crystal_ligand_pdb.exists()
+                        and (run_mode != "screening" or is_reference_ligand is True)
+                    ),
                 )
                 rmsd = metrics.get("best_rmsd", 999.9) if metrics else 999.9
                 best_score = metrics.get("best_score")
@@ -2969,7 +3026,8 @@ class RedockAnalysisApp(tk.Tk):
         notebook.pack(fill="both", expand=True, pady=(8, 0))
         numeric_headers = {
             "Exhaust.", "Exhaustiveness", "Mean best RMSD", "Mean Top-1 RMSD",
-            "Mean best-pose rank", "Failures", "Runtime (s)", "Cases",
+            "Mean best-pose rank", "Failures", "Runtime (s)", "Cases", "Conditions",
+            "Conditions (with RMSD)",
         }
         for table_index, (title, headers, rows) in enumerate(tables):
             frame = tk.Frame(notebook)
@@ -3409,6 +3467,7 @@ class RedockAnalysisApp(tk.Tk):
                     raise ValueError(
                         f"No SMILES was supplied for an apo/predicted-site case at {pdb_id}."
                     )
+                pair["is_reference_ligand"] = False
                 continue
             chain = pair.get("chain") or self._detect_ligand_chain(
                 pdb_files[pdb_id], site_ligand
@@ -3431,6 +3490,9 @@ class RedockAnalysisApp(tk.Tk):
                         "Provide it in the template before running offline."
                     )
                 pair["smiles"] = smiles
+            pair["is_reference_ligand"] = self._same_ligand_smiles(
+                str(pair["smiles"]), resolved_crystal_ligands[ligand_key]
+            )
 
         self._network_phase_complete = True
         self._queue.put((
@@ -3470,22 +3532,32 @@ class RedockAnalysisApp(tk.Tk):
             crystal_smiles = self._get_ligand_smiles(
                 pdb_path, ligand_resname, ligand_chain, output_dir
             )
-            if not crystal_smiles:
-                return None
-            from rdkit import Chem
-            docked_mol = Chem.MolFromSmiles(smiles)
-            crystal_mol = Chem.MolFromSmiles(crystal_smiles)
-            if docked_mol is None or crystal_mol is None:
-                return None
-            if Chem.MolToSmiles(docked_mol) == Chem.MolToSmiles(crystal_mol):
-                return True
-            # Fall back to the project's own similarity test so that tautomers
-            # and protonation variants of the crystal ligand still count as the
-            # reference rather than being rejected as novel compounds.
-            from docking_platform_gui.utils.rmsd_safe import are_same_molecule
-            return bool(are_same_molecule(crystal_mol, docked_mol))
+            return self._same_ligand_smiles(smiles, crystal_smiles)
         except Exception as exc:
             logger.warning("Reference-ligand check failed for %s: %s", ligand_resname, exc)
+            return None
+
+    @staticmethod
+    def _same_ligand_smiles(smiles: Optional[str], crystal_smiles: Optional[str]) -> Optional[bool]:
+        """Compare molecular identity without conflating it with an activity label."""
+        if not smiles or not crystal_smiles:
+            return None
+        docked_mol = Chem.MolFromSmiles(smiles)
+        crystal_mol = Chem.MolFromSmiles(crystal_smiles)
+        if docked_mol is None or crystal_mol is None:
+            return None
+        try:
+            from rdkit.Chem.MolStandardize import rdMolStandardize
+
+            def identity_key(molecule: Chem.Mol) -> str:
+                parent = rdMolStandardize.FragmentParent(Chem.Mol(molecule))
+                parent = rdMolStandardize.Uncharger().uncharge(parent)
+                parent = rdMolStandardize.TautomerEnumerator().Canonicalize(parent)
+                return Chem.MolToSmiles(parent, canonical=True, isomericSmiles=True)
+
+            return identity_key(docked_mol) == identity_key(crystal_mol)
+        except Exception as exc:
+            logger.warning("Ligand identity standardization failed: %s", exc)
             return None
 
     def _get_ligand_smiles(
@@ -4007,26 +4079,23 @@ class RedockAnalysisApp(tk.Tk):
         crystal_ligand_pdb: Path,
         docked_file: Path,
         threshold: float,
-        control_label: Optional[int] = None,
         has_reference_pose: bool = True,
-        is_self_dock: bool = False
     ) -> dict:
         """Pose-level metrics for one docked case.
 
-        RMSD is only defined when the docked molecule IS the reference molecule
-        — i.e. redocking a crystal ligand (control_label == 1). Decoys and
-        screening compounds are different molecules with no known pose, so any
+        RMSD is only defined when the docked molecule IS the reference molecule.
+        Decoys and most screening actives are different molecules with no known pose, so any
         "RMSD" for them is meaningless. It is not merely unknown: computing it
         anyway previously let the MCS fallback match a fragment of a small
         compound onto a large crystal ligand and report sub-angstrom agreement
         (an 11-atom compound scored 0.06 A against 68-atom imatinib), which then
         propagated into the summary's success rate and mean RMSD.
 
-        Passing control_label lets this return score-only metrics for
-        non-actives. has_reference_pose=False forces the same behaviour when the
-        caller knows no reference exists regardless of label. is_self_dock=True
-        marks a redock run, where the docked molecule is the crystal ligand by
-        construction and no control label is present.
+        Activity labels are deliberately not accepted here: they classify
+        compounds for enrichment but do not establish a reference pose.
+        has_reference_pose=False returns score-only metrics. Redock callers set
+        it because identity is guaranteed by construction; screening callers
+        set it only after a molecular-identity check.
         """
         if not docked_file.exists():
             return {}
@@ -4042,17 +4111,7 @@ class RedockAnalysisApp(tk.Tk):
             if valid_scores:
                 best_score = min(valid_scores)
 
-        # RMSD is only meaningful for a true self-docking case.
-        #
-        # Two ways a case qualifies:
-        #   * is_self_dock=True  — a redock run, where every row IS the crystal
-        #     ligand by construction (the adaptive path refuses labelled rows
-        #     outright, so control_label is always None there).
-        #   * control_label == 1 — a screening run's positive control.
-        # Keying on the label alone would have suppressed RMSD for every plain
-        # redock case, which is the one place RMSD is the whole point.
-        rmsd_is_defined = has_reference_pose and (is_self_dock or control_label == 1)
-        if not rmsd_is_defined:
+        if not has_reference_pose:
             return {
                 "pose_count": pose_count,
                 "best_score": best_score
@@ -4131,8 +4190,7 @@ class RedockAnalysisApp(tk.Tk):
         docked_file: Path,
         scores: List[float],
         threshold: float,
-        control_label: Optional[int],
-        is_self_dock: bool,
+        has_reference_pose: bool,
     ) -> dict:
         """Calculate pose-recovery metrics after ranking poses by rescored values."""
         poses, _ = self._load_poses_and_scores(docked_file)
@@ -4144,7 +4202,7 @@ class RedockAnalysisApp(tk.Tk):
             "rescore_score": min(scores),
             "rescore_pose_count": count,
         }
-        if not (is_self_dock or control_label == 1):
+        if not has_reference_pose:
             return metrics
         reference = self._load_reference_mol(crystal_ligand_pdb)
         if reference is None:
