@@ -479,6 +479,30 @@ def test_enrichment_requires_both_classes():
     assert app._compute_enrichment_metrics([(1.0, 0)]) is None
 
 
+def test_enrichment_reports_tie_independent_average_precision():
+    metrics = _app_without_tk()._compute_enrichment_metrics(
+        [(2.0, 1), (2.0, 0), (1.0, 1), (0.0, 0)]
+    )
+
+    assert metrics is not None
+    assert metrics["average_precision"] == pytest.approx(7.0 / 12.0)
+    assert metrics["active_prevalence"] == pytest.approx(0.5)
+
+
+def test_enrichment_factor_averages_a_tie_split_by_the_cutoff():
+    metrics = _app_without_tk()._tie_aware_enrichment_factor(
+        [(3.0, 1), (3.0, 0)] + [(2.0, 0)] * 8,
+        percent=1.0,
+    )
+
+    assert metrics is not None
+    assert metrics["selected"] == 1
+    assert metrics["cutoff_tie_size"] == 2
+    assert metrics["enrichment_factor"] == pytest.approx(5.0)
+    assert metrics["enrichment_factor_min"] == pytest.approx(0.0)
+    assert metrics["enrichment_factor_max"] == pytest.approx(10.0)
+
+
 def _result(**overrides) -> RedockResult:
     values = {
         "pdb_id": "1ABC",
@@ -596,6 +620,53 @@ def test_summary_reports_macro_and_pooled_auc_per_target():
     markdown = _app_without_tk()._summary_to_markdown(summary)
     assert "Control Enrichment (per target)" in markdown
     assert "Pose Recovery (per target)" in markdown
+
+
+def test_multi_active_assay_benchmark_is_not_treated_as_matched_decoys():
+    results = [
+        _result(
+            pdb_id="1XP1", ligand_resname="AIH", target_name="ESR1",
+            dock_name="active_1", control_label=1, best_score=-10.0,
+            molecular_weight=500.0, logp=5.0, tpsa=20.0,
+            rotatable_bonds=1, ligand_charge=0,
+        ),
+        _result(
+            pdb_id="1XP1", ligand_resname="AIH", target_name="ESR1",
+            dock_name="active_2", control_label=1, best_score=-8.0,
+            molecular_weight=450.0, logp=4.0, tpsa=30.0,
+            rotatable_bonds=2, ligand_charge=0,
+        ),
+        _result(
+            pdb_id="1XP1", ligand_resname="AIH", target_name="ESR1",
+            dock_name="inactive_1", control_label=0, best_score=-9.0,
+            molecular_weight=150.0, logp=0.0, tpsa=100.0,
+            rotatable_bonds=8, ligand_charge=1,
+        ),
+        _result(
+            pdb_id="1XP1", ligand_resname="AIH", target_name="ESR1",
+            dock_name="inactive_2", control_label=0, best_score=-7.0,
+            molecular_weight=160.0, logp=0.0, tpsa=100.0,
+            rotatable_bonds=8, ligand_charge=1,
+        ),
+    ]
+
+    app = _app_without_tk()
+    summary = app._build_summary(results, threshold=2.0)
+    markdown = app._summary_to_markdown(summary)
+
+    assert summary["enrichment_dataset_type"] == "assay_benchmark"
+    assert summary["negative_class_label"] == "inactives"
+    assert summary["screening_validation"] == "benchmark_result"
+    assert summary["control_property_match_passed"] is None
+    assert summary["control_property_diagnostics"] == []
+    assert summary["per_structure_enrichment"][0]["best_active"] == "active_1"
+    assert "Assay actives: 2" in markdown
+    assert "Assay inactives: 2" in markdown
+    assert "BENCHMARK RESULT" in markdown
+    assert "Best assay active ranks first" in markdown
+    assert "Best inactive" in markdown
+    assert "INVALID DECOY MATCHING" not in markdown
+    assert "Crystal ligand ranks first" not in markdown
 
 
 def test_score_only_screening_summary_rebuilds_from_results_json(tmp_path: Path):

@@ -5535,6 +5535,7 @@ class RedockAnalysisApp(tk.Tk):
         fpr = [0.0]
         tp = 0
         fp = 0
+        average_precision = 0.0
         index = 0
         while index < len(ranked):
             score = ranked[index][0]
@@ -5544,10 +5545,12 @@ class RedockAnalysisApp(tk.Tk):
                 index += 1
             # Advance tied observations together. Ordering equal scores one by
             # one makes AUC depend on spreadsheet order rather than ranking.
+            previous_tp = tp
             tp += sum(label == 1 for label in tied_labels)
             fp += sum(label == 0 for label in tied_labels)
             tpr.append(tp / pos)
             fpr.append(fp / neg)
+            average_precision += ((tp - previous_tp) / pos) * (tp / (tp + fp))
 
         # np.trapz was removed in NumPy 2.0 (renamed to np.trapezoid).
         # This environment runs NumPy 2.5, where the old name raises
@@ -5567,8 +5570,53 @@ class RedockAnalysisApp(tk.Tk):
         return {
             "roc_auc": roc_auc,
             "log_auc": log_auc,
+            "average_precision": float(average_precision),
+            "active_prevalence": float(pos / (pos + neg)),
             "actives": pos,
             "decoys": neg
+        }
+
+    @staticmethod
+    def _tie_aware_enrichment_factor(
+        score_labels: List[Tuple[float, int]],
+        percent: float,
+    ) -> Optional[dict]:
+        """Return expected EF and its range when the cutoff splits a score tie."""
+        if not score_labels:
+            return None
+        n_total = len(score_labels)
+        n_actives = sum(label == 1 for _, label in score_labels)
+        if n_actives == 0:
+            return None
+
+        ranked = sorted(score_labels, key=lambda item: item[0], reverse=True)
+        n_select = max(1, int(math.ceil(n_total * percent / 100.0)))
+        cutoff_score = ranked[n_select - 1][0]
+        strict_labels = [label for score, label in ranked if score > cutoff_score]
+        tied_labels = [label for score, label in ranked if score == cutoff_score]
+        slots = n_select - len(strict_labels)
+        strict_actives = sum(label == 1 for label in strict_labels)
+        tied_actives = sum(label == 1 for label in tied_labels)
+        tied_inactives = len(tied_labels) - tied_actives
+
+        expected_actives = strict_actives + slots * tied_actives / len(tied_labels)
+        minimum_actives = strict_actives + max(0, slots - tied_inactives)
+        maximum_actives = strict_actives + min(slots, tied_actives)
+        baseline_rate = n_actives / n_total
+
+        def _ef(active_count: float) -> float:
+            return float((active_count / n_select) / baseline_rate)
+
+        return {
+            "percent": float(percent),
+            "selected": n_select,
+            "cutoff_rank_score": float(cutoff_score),
+            "cutoff_tie_size": len(tied_labels),
+            "cutoff_slots": slots,
+            "expected_actives": float(expected_actives),
+            "enrichment_factor": _ef(expected_actives),
+            "enrichment_factor_min": _ef(minimum_actives),
+            "enrichment_factor_max": _ef(maximum_actives),
         }
 
     def _score_charge_corr(
@@ -5884,6 +5932,19 @@ class RedockAnalysisApp(tk.Tk):
                 (rank_score, int(result.control_label), result.dock_name or result.ligand_resname)
             )
 
+        # A matched-control run has one reference ligand per receptor structure.
+        # Assay benchmarks such as LIT-PCBA have many independently labelled
+        # actives and inactives at the same structure and require different
+        # terminology and diagnostics.
+        assay_benchmark = any(
+            len({name for _, label, name in details if label == 1}) > 1
+            for details in per_structure_details.values()
+        )
+        summary["enrichment_dataset_type"] = (
+            "assay_benchmark" if assay_benchmark else "matched_controls"
+        )
+        summary["negative_class_label"] = "inactives" if assay_benchmark else "decoys"
+
         struct_rows = []
         for (pdb_id, resname), sl in sorted(per_structure.items()):
             m = self._compute_enrichment_metrics(sl)
@@ -5894,6 +5955,11 @@ class RedockAnalysisApp(tk.Tk):
             decoys = [s for s, lab in sl if lab == 0]
             top_active = max(actives) if actives else None
             details = per_structure_details[(pdb_id, resname)]
+            best_active = max(
+                ((score, name) for score, label, name in details if label == 1),
+                default=(None, None),
+                key=lambda item: item[0] if item[0] is not None else float("-inf")
+            )
             best_decoy = max(
                 ((score, name) for score, label, name in details if label == 0),
                 default=(None, None),
@@ -5911,6 +5977,7 @@ class RedockAnalysisApp(tk.Tk):
                 "actives": m["actives"],
                 "decoys": m["decoys"],
                 "active_rank": active_rank,
+                "best_active": best_active[1],
                 "active_score": -top_active if top_active is not None else None,
                 "best_decoy": best_decoy[1],
                 "best_decoy_score": -best_decoy[0] if best_decoy[0] is not None else None,
@@ -5966,37 +6033,53 @@ class RedockAnalysisApp(tk.Tk):
                     ),
                 })
             summary["per_target_enrichment"] = target_rows
-            property_checks = []
-            for key in sorted(per_structure):
-                structure_results = [
-                    r for r in results
-                    if (r.pdb_id, r.ligand_resname) == key and r.control_label in (0, 1)
-                ]
-                active_results = [r for r in structure_results if r.control_label == 1]
-                if not active_results:
-                    continue
-                active = active_results[0]
-                for decoy in (r for r in structure_results if r.control_label == 0):
-                    matched = self._property_matched(active, decoy)
-                    property_checks.append({
-                        "pdb_id": key[0],
-                        "ligand": key[1],
-                        "decoy": decoy.dock_name,
-                        "property_matched": matched,
-                    })
-            known_checks = [c for c in property_checks if c["property_matched"] is not None]
-            summary["control_property_diagnostics"] = property_checks
-            summary["control_property_match_passed"] = (
-                all(c["property_matched"] for c in known_checks) if known_checks else None
-            )
-            if summary["control_property_match_passed"] is False:
-                summary["screening_validation"] = "invalid_decoy_matching"
-            elif n_clean == len(struct_rows) and len(struct_rows) > 0:
-                summary["screening_validation"] = "passed_strict"
-            elif n_auc_pass == len(struct_rows) and len(struct_rows) > 0:
-                summary["screening_validation"] = "passed_enrichment"
+            if assay_benchmark:
+                # Assay inactives are experimental class labels, not synthetic
+                # decoys selected to match one crystal ligand. Applying the
+                # pairwise decoy-matching test here produces a false failure.
+                summary["control_property_diagnostics"] = []
+                summary["control_property_match_passed"] = None
+                summary["screening_validation"] = "benchmark_result"
             else:
-                summary["screening_validation"] = "needs_review"
+                property_checks = []
+                for key in sorted(per_structure):
+                    structure_results = [
+                        r for r in results
+                        if (r.pdb_id, r.ligand_resname) == key
+                        and r.control_label in (0, 1)
+                    ]
+                    active_results = [
+                        r for r in structure_results if r.control_label == 1
+                    ]
+                    if not active_results:
+                        continue
+                    active = active_results[0]
+                    for decoy in (
+                        r for r in structure_results if r.control_label == 0
+                    ):
+                        matched = self._property_matched(active, decoy)
+                        property_checks.append({
+                            "pdb_id": key[0],
+                            "ligand": key[1],
+                            "decoy": decoy.dock_name,
+                            "property_matched": matched,
+                        })
+                known_checks = [
+                    c for c in property_checks if c["property_matched"] is not None
+                ]
+                summary["control_property_diagnostics"] = property_checks
+                summary["control_property_match_passed"] = (
+                    all(c["property_matched"] for c in known_checks)
+                    if known_checks else None
+                )
+                if summary["control_property_match_passed"] is False:
+                    summary["screening_validation"] = "invalid_decoy_matching"
+                elif n_clean == len(struct_rows) and len(struct_rows) > 0:
+                    summary["screening_validation"] = "passed_strict"
+                elif n_auc_pass == len(struct_rows) and len(struct_rows) > 0:
+                    summary["screening_validation"] = "passed_enrichment"
+                else:
+                    summary["screening_validation"] = "needs_review"
 
         enrichment = self._compute_enrichment_metrics(score_labels)
         if enrichment:
@@ -6007,26 +6090,34 @@ class RedockAnalysisApp(tk.Tk):
             summary["control_decoys"] = enrichment["decoys"]
             summary["roc_auc"] = enrichment["roc_auc"]
             summary["log_auc"] = enrichment["log_auc"]
+            summary["average_precision"] = enrichment["average_precision"]
+            summary["active_prevalence"] = enrichment["active_prevalence"]
             quality = (
                 "Excellent" if enrichment["roc_auc"] >= 0.7 else
                 "Good" if enrichment["roc_auc"] >= 0.6 else
                 "Fair" if enrichment["roc_auc"] >= 0.5 else "Poor"
             )
             summary.setdefault("interpretation", {})["enrichment_quality"] = quality
-            summary["interpretation"]["enrichment_message"] = (
-                f"Explicit controls only: ROC AUC = {enrichment['roc_auc']:.3f} "
-                f"({enrichment['actives']} actives, {enrichment['decoys']} decoys)."
-            )
+            if assay_benchmark:
+                summary["interpretation"]["enrichment_message"] = (
+                    f"Assay benchmark: ROC AUC = {enrichment['roc_auc']:.3f} "
+                    f"({enrichment['actives']} actives, "
+                    f"{enrichment['decoys']} inactives)."
+                )
+            else:
+                summary["interpretation"]["enrichment_message"] = (
+                    f"Explicit controls only: ROC AUC = {enrichment['roc_auc']:.3f} "
+                    f"({enrichment['actives']} actives, {enrichment['decoys']} decoys)."
+                )
 
-            ranked = sorted(score_labels, key=lambda item: item[0], reverse=True)
-            n_total = len(ranked)
-            n_actives = max(1, enrichment["actives"])
             for pct, key in ((1.0, "ef_1_percent"), (5.0, "ef_5_percent"), (10.0, "ef_10_percent")):
-                n_select = max(1, int(math.ceil(n_total * pct / 100.0)))
-                top = ranked[:n_select]
-                actives_found = sum(label for _, label in top)
-                ef = (actives_found / n_select) / (n_actives / n_total)
-                summary[key] = float(ef)
+                tie_metrics = self._tie_aware_enrichment_factor(score_labels, pct)
+                if tie_metrics is None:
+                    continue
+                summary[key] = tie_metrics["enrichment_factor"]
+                summary[f"{key}_min"] = tie_metrics["enrichment_factor_min"]
+                summary[f"{key}_max"] = tie_metrics["enrichment_factor_max"]
+                summary[f"{key}_details"] = tie_metrics
         
         # Calculate protocol/engine breakdown (only for actives with valid RMSD)
         # Older redock results predate the explicit completion field. A valid
@@ -6205,6 +6296,7 @@ class RedockAnalysisApp(tk.Tk):
         return summary
     
     def _summary_to_markdown(self, summary: dict) -> str:
+        assay_benchmark = summary.get("enrichment_dataset_type") == "assay_benchmark"
         lines = [
             "# Docking Analysis Summary",
             "",
@@ -6214,14 +6306,26 @@ class RedockAnalysisApp(tk.Tk):
             f"- Screening samples: {summary.get('n_samples', 0)}",
         ]
         if summary.get("n_actives") or summary.get("n_decoys"):
-            lines.extend([
-                f"- Control actives: {summary.get('n_actives', 0)}",
-                f"- Control decoys: {summary.get('n_decoys', 0)}",
-            ])
+            if assay_benchmark:
+                lines.extend([
+                    f"- Assay actives: {summary.get('n_actives', 0)}",
+                    f"- Assay inactives: {summary.get('n_decoys', 0)}",
+                ])
+            else:
+                lines.extend([
+                    f"- Control actives: {summary.get('n_actives', 0)}",
+                    f"- Control decoys: {summary.get('n_decoys', 0)}",
+                ])
         if summary.get("mean_runtime_sec") is not None:
-            lines.append(f"- Mean runtime (s): {self._fmt(summary.get('mean_runtime_sec'))}")
+            lines.append(
+                f"- Mean recorded case runtime (s): "
+                f"{self._fmt(summary.get('mean_runtime_sec'))}"
+            )
         if summary.get("median_runtime_sec") is not None:
-            lines.append(f"- Median runtime (s): {self._fmt(summary.get('median_runtime_sec'))}")
+            lines.append(
+                f"- Median recorded case runtime (s): "
+                f"{self._fmt(summary.get('median_runtime_sec'))}"
+            )
 
         target_pose_rows = summary.get("per_target_pose_recovery") or []
         has_pose_recovery = (
@@ -6374,15 +6478,23 @@ class RedockAnalysisApp(tk.Tk):
 
         target_rows = summary.get("per_target_enrichment") or []
         if target_rows:
+            target_heading = (
+                "Assay Benchmark Enrichment (per target)"
+                if assay_benchmark else "Control Enrichment (per target)"
+            )
+            negative_label = "Inactives" if assay_benchmark else "Decoys"
+            top_label = "Best active top" if assay_benchmark else "Active top"
             lines.extend([
                 "",
-                "## Control Enrichment (per target)",
+                f"## {target_heading}",
                 "",
-                "Macro AUC is the mean of the target's per-structure AUC values and is the "
-                "preferred target-level statistic. Target-pooled AUC combines raw scores "
-                "across that target's receptor structures and is diagnostic only.",
+                "Macro AUC is the mean of the target's per-structure AUC values. When a "
+                "target contains multiple receptor structures, macro AUC is preferred; "
+                "target-pooled AUC then combines receptor-specific score scales and is "
+                "diagnostic only.",
                 "",
-                "| Target | Structures | Macro AUC | Target-pooled AUC | Actives | Decoys | Active top |",
+                f"| Target | Structures | Macro AUC | Target-pooled AUC | Actives | "
+                f"{negative_label} | {top_label} |",
                 "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
             ])
             for row in sorted(target_rows, key=lambda item: item["target_name"]):
@@ -6402,19 +6514,31 @@ class RedockAnalysisApp(tk.Tk):
                 "passed_enrichment": "PASSED (ENRICHMENT)",
                 "needs_review": "NEEDS REVIEW",
                 "invalid_decoy_matching": "INVALID DECOY MATCHING",
+                "benchmark_result": "BENCHMARK RESULT",
             }
             validation = summary.get("screening_validation", "unknown")
             validation_label = validation_labels.get(validation, str(validation).upper())
+            structure_heading = (
+                "Assay Benchmark Enrichment (per structure)"
+                if assay_benchmark else "Control Enrichment (per structure)"
+            )
+            assessment_label = (
+                "Benchmark assessment" if assay_benchmark else "Screening validation"
+            )
+            top_rank_label = (
+                "Best assay active ranks first"
+                if assay_benchmark else "Crystal ligand ranks first (strict diagnostic)"
+            )
             lines.extend([
                 "",
-                "## Control Enrichment (per structure)",
+                f"## {structure_heading}",
                 "",
-                f"- Structures with controls: {n_s}",
-                f"- Screening validation: {validation_label}",
+                f"- {'Benchmark structures' if assay_benchmark else 'Structures with controls'}: {n_s}",
+                f"- {assessment_label}: {validation_label}",
                 f"- Structures meeting AUC >= "
                 f"{self._fmt(summary.get('validation_auc_threshold'))}: "
                 f"{summary.get('n_structures_auc_pass')}/{n_s}",
-                f"- Crystal ligand ranks first (strict diagnostic): {n_top}/{n_s} "
+                f"- {top_rank_label}: {n_top}/{n_s} "
                 f"({self._fmt(summary.get('frac_structures_active_top'))})",
                 f"- Mean per-structure ROC AUC: "
                 f"{self._fmt(summary.get('mean_structure_roc_auc'))}",
@@ -6422,46 +6546,105 @@ class RedockAnalysisApp(tk.Tk):
                 f"{self._fmt(summary.get('median_structure_roc_auc'))}",
             ])
             if failed:
-                lines.extend([
-                    "",
-                    "Structures where one or more decoys marginally or substantially "
-                    "outscored the crystal ligand. Review AUC, active rank, and score "
-                    "margin; this does not by itself invalidate useful enrichment:",
-                    "",
-                ])
+                if assay_benchmark:
+                    lines.extend([
+                        "",
+                        "Structures where at least one assay inactive outscored the best "
+                        "assay active. This rank-one diagnostic complements AUC and early "
+                        "enrichment; it is not a decoy-matching validation test:",
+                        "",
+                    ])
+                else:
+                    lines.extend([
+                        "",
+                        "Structures where one or more decoys marginally or substantially "
+                        "outscored the crystal ligand. Review AUC, active rank, and score "
+                        "margin; this does not by itself invalidate useful enrichment:",
+                        "",
+                    ])
                 lines.extend(f"- {s}" for s in failed[:25])
                 if len(failed) > 25:
                     lines.append(f"- ... and {len(failed) - 25} more")
 
             rows = summary.get("per_structure_enrichment") or []
             if rows:
-                lines.extend([
-                    "",
-                    "| PDB | Ligand | AUC | Active rank | Active score | Best decoy | "
-                    "Best decoy score | Margin | Active top |",
-                    "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | :---: |",
-                ])
+                if assay_benchmark:
+                    lines.extend([
+                        "",
+                        "| PDB | Site ligand | AUC | Best active | Best-active rank | "
+                        "Best-active score | Best inactive | Best-inactive score | "
+                        "Margin | Active top |",
+                        "| --- | --- | ---: | --- | ---: | ---: | --- | ---: | ---: | :---: |",
+                    ])
+                else:
+                    lines.extend([
+                        "",
+                        "| PDB | Ligand | AUC | Active rank | Active score | Best decoy | "
+                        "Best decoy score | Margin | Active top |",
+                        "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | :---: |",
+                    ])
                 for r in sorted(rows, key=lambda x: x["roc_auc"]):
-                    lines.append(
-                        f"| {r['pdb_id']} | {r['ligand']} | "
-                        f"{self._fmt(r['roc_auc'])} | {r.get('active_rank')} | "
-                        f"{self._fmt(r.get('active_score'))} | {r.get('best_decoy')} | "
-                        f"{self._fmt(r.get('best_decoy_score'))} | "
-                        f"{self._fmt(r.get('score_margin'))} | "
-                        f"{'yes' if r['active_beats_all_decoys'] else 'no'} |"
-                    )
+                    if assay_benchmark:
+                        lines.append(
+                            f"| {r['pdb_id']} | {r['ligand']} | "
+                            f"{self._fmt(r['roc_auc'])} | {r.get('best_active')} | "
+                            f"{r.get('active_rank')} | "
+                            f"{self._fmt(r.get('active_score'))} | "
+                            f"{r.get('best_decoy')} | "
+                            f"{self._fmt(r.get('best_decoy_score'))} | "
+                            f"{self._fmt(r.get('score_margin'))} | "
+                            f"{'yes' if r['active_beats_all_decoys'] else 'no'} |"
+                        )
+                    else:
+                        lines.append(
+                            f"| {r['pdb_id']} | {r['ligand']} | "
+                            f"{self._fmt(r['roc_auc'])} | {r.get('active_rank')} | "
+                            f"{self._fmt(r.get('active_score'))} | "
+                            f"{r.get('best_decoy')} | "
+                            f"{self._fmt(r.get('best_decoy_score'))} | "
+                            f"{self._fmt(r.get('score_margin'))} | "
+                            f"{'yes' if r['active_beats_all_decoys'] else 'no'} |"
+                        )
 
         if summary.get("roc_auc") is not None:
             cross = summary.get("pooled_enrichment_is_cross_target")
+            pooled_heading = (
+                "Assay Benchmark Enrichment (pooled)"
+                if assay_benchmark else "Control Enrichment (pooled)"
+            )
+            negative_label = "Inactives" if assay_benchmark else "Decoys"
             lines.extend([
                 "",
-                "## Control Enrichment (pooled)",
+                f"## {pooled_heading}",
                 "",
                 f"- Actives: {summary.get('control_actives')}",
-                f"- Decoys: {summary.get('control_decoys')}",
+                f"- {negative_label}: {summary.get('control_decoys')}",
                 f"- ROC AUC: {self._fmt(summary.get('roc_auc'))}",
+                f"- Average precision: {self._fmt(summary.get('average_precision'))}",
+                f"- Random average-precision baseline: "
+                f"{self._fmt(summary.get('active_prevalence'))}",
                 f"- LogAUC (FPR 0.001-1): {self._fmt(summary.get('log_auc'))}"
             ])
+            for label, key in (
+                ("EF1%", "ef_1_percent"),
+                ("EF5%", "ef_5_percent"),
+                ("EF10%", "ef_10_percent"),
+            ):
+                if summary.get(key) is None:
+                    continue
+                lines.append(
+                    f"- {label} (tie-aware expected; min-max): "
+                    f"{self._fmt(summary.get(key))} "
+                    f"({self._fmt(summary.get(f'{key}_min'))}-"
+                    f"{self._fmt(summary.get(f'{key}_max'))})"
+                )
+            if assay_benchmark:
+                lines.extend([
+                    "",
+                    "Assay inactives are experimental class labels, not property-matched "
+                    "decoys for one crystal ligand. Pairwise decoy-matching validation is "
+                    "therefore not applied to this benchmark.",
+                ])
             if cross:
                 lines.extend([
                     "",
