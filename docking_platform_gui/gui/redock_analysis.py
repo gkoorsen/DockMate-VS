@@ -4,6 +4,7 @@ GUI for redock analysis using single or adaptive docking.
 
 import base64
 import copy
+import importlib.metadata
 import json
 import os
 import math
@@ -1348,6 +1349,7 @@ class RedockAnalysisApp(tk.Tk):
                 return
         self._write_json_atomic(manifest_path, {
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "software": self._software_provenance(config),
             "input_file": config["input_file"],
             "protocol_sweep": sweep,
             "single_protocol": config["single"],
@@ -2006,12 +2008,7 @@ class RedockAnalysisApp(tk.Tk):
         manifest_path = output_dir / "run_manifest.json"
         manifest = {
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "software": {
-                "package": "docking_platform_gui",
-                "version": "0.1.0",
-                "python": sys.version,
-                "platform": platform.platform(),
-            },
+            "software": self._software_provenance(config),
             "config": config,
             "cases": [
                 {
@@ -2680,6 +2677,88 @@ class RedockAnalysisApp(tk.Tk):
         temporary = path.with_name(f".{path.name}.tmp")
         temporary.write_text(text)
         temporary.replace(path)
+
+    @staticmethod
+    def _command_version(command: List[str]) -> Optional[str]:
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        output = "\n".join(
+            part.strip()
+            for part in (completed.stdout, completed.stderr)
+            if part and part.strip()
+        )
+        return output or None
+
+    @classmethod
+    def _software_provenance(cls, config: dict) -> dict:
+        """Capture code, dependency, and selected binary versions for a run."""
+        try:
+            package_version = importlib.metadata.version("docking_platform_gui")
+        except importlib.metadata.PackageNotFoundError:
+            package_version = "development"
+
+        repository_root = Path(__file__).resolve().parents[2]
+        git_commit = cls._command_version(
+            ["git", "-C", str(repository_root), "rev-parse", "HEAD"]
+        )
+        git_status = cls._command_version(
+            ["git", "-C", str(repository_root), "status", "--porcelain"]
+        )
+        dependencies = {}
+        for distribution in (
+            "numpy", "pandas", "openpyxl", "rdkit", "loguru",
+            "biopython", "pydantic", "MDAnalysis", "gemmi", "scipy",
+            "scikit-learn", "matplotlib", "seaborn", "openmm",
+            "pdbfixer", "openbabel",
+        ):
+            try:
+                dependencies[distribution] = importlib.metadata.version(distribution)
+            except importlib.metadata.PackageNotFoundError:
+                dependencies[distribution] = None
+
+        single = config.get("single", {})
+        binaries = {}
+
+        def short_version(command: List[str]) -> Optional[str]:
+            output = cls._command_version(command)
+            return "\n".join(output.splitlines()[:5]) if output else None
+
+        for name, key in (("vina", "vina_binary"), ("smina", "smina_binary")):
+            raw_path = single.get(key)
+            if not raw_path:
+                continue
+            binary_path = str(Path(raw_path).expanduser())
+            binaries[name] = {
+                "path": binary_path,
+                "version": short_version([binary_path, "--version"]),
+            }
+        rdock_root = single.get("rdock_root")
+        if rdock_root:
+            rdock_binary = Path(rdock_root).expanduser() / "bin/rbdock"
+            if rdock_binary.exists():
+                binaries["rdock"] = {
+                    "path": str(rdock_binary),
+                    "version": short_version([str(rdock_binary), "-h"]),
+                }
+
+        return {
+            "package": "docking_platform_gui",
+            "version": package_version,
+            "git_commit": git_commit.splitlines()[0] if git_commit else None,
+            "git_dirty": bool(git_status),
+            "python": sys.version,
+            "platform": platform.platform(),
+            "dependencies": dependencies,
+            "external_binaries": binaries,
+        }
 
     def _write_summary_files(self, results_path: Path, summary: dict) -> None:
         """Keep the machine-readable and Markdown summaries in sync."""
@@ -4509,9 +4588,30 @@ class RedockAnalysisApp(tk.Tk):
         return None
 
     def _resolve_ligplot_bin(self) -> Optional[str]:
-        fallback = Path("/Users/gerritkoorsen/Desktop/docking_platform/tools/LigPlus/lib/exe_mac64/ligplot")
-        if fallback.exists():
-            return str(fallback)
+        candidates: List[Path] = []
+        configured = os.environ.get("LIGPLOT_BIN")
+        if configured:
+            candidates.append(Path(configured).expanduser())
+
+        on_path = shutil.which("ligplot")
+        if on_path:
+            candidates.append(Path(on_path))
+
+        roots = [
+            os.environ.get("LIGPLUS_ROOT"),
+            os.environ.get("LIGPLOT_HOME"),
+            str(Path.home() / "LigPlus"),
+            "/Applications/LigPlus",
+        ]
+        for raw_root in roots:
+            if not raw_root:
+                continue
+            root = Path(raw_root).expanduser()
+            candidates.extend(sorted((root / "lib").glob("exe_*/ligplot")))
+
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate.resolve())
         return None
 
     def _resolve_ligplus_tool(self, ligplot_bin: str, tool_name: str) -> Optional[str]:
@@ -4521,14 +4621,29 @@ class RedockAnalysisApp(tk.Tk):
             return str(candidate)
         return None
 
-    def _resolve_components_cif(self) -> Optional[Path]:
+    def _resolve_components_cif(self, ligplot_bin: Optional[str] = None) -> Optional[Path]:
         env_path = os.environ.get("HET_GROUP_DICTIONARY")
         if env_path:
-            path = Path(env_path)
-            if path.exists():
-                return path
-        fallback = Path("/Users/gerritkoorsen/Desktop/docking_platform/tools/LigPlus/lib/data/components.cif")
-        return fallback if fallback.exists() else None
+            path = Path(env_path).expanduser()
+            if path.is_file():
+                return path.resolve()
+
+        roots: List[Path] = []
+        if ligplot_bin:
+            ligplot_path = Path(ligplot_bin).expanduser()
+            if len(ligplot_path.parents) >= 3:
+                roots.append(ligplot_path.parents[2])
+        for variable in ("LIGPLUS_ROOT", "LIGPLOT_HOME"):
+            value = os.environ.get(variable)
+            if value:
+                roots.append(Path(value).expanduser())
+        roots.extend((Path.home() / "LigPlus", Path("/Applications/LigPlus")))
+
+        for root in roots:
+            candidate = root / "lib" / "data" / "components.cif"
+            if candidate.is_file():
+                return candidate.resolve()
+        return None
 
     def _combine_complex(self, receptor_pdb: Path, ligand_pdb: Path, output_pdb: Path) -> None:
         # LigPlot/HBPLUS identify atoms by PDB serial number. RDKit ligand PDBs
@@ -4624,7 +4739,7 @@ class RedockAnalysisApp(tk.Tk):
         if ligplus_root:
             env["LIGPLUS_DIR"] = str(ligplus_root)
             env["LIGPLOT_PARAMS"] = str(ligplus_root / "lib" / "params")
-        components_cif = self._resolve_components_cif()
+        components_cif = self._resolve_components_cif(ligplot_bin)
         if components_cif:
             env["HET_GROUP_DICTIONARY"] = str(components_cif)
 

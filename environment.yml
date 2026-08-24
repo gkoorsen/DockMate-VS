@@ -1,0 +1,23 @@
+name: docking-platform-gui
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.9,<3.13
+  - pip
+  - tk
+  - numpy
+  - pandas
+  - openpyxl
+  - rdkit
+  - loguru
+  - biopython
+  - pydantic<2
+  - mdanalysis
+  - gemmi
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - openmm
+  - pdbfixer
+  - openbabel

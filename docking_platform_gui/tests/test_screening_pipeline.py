@@ -558,6 +558,49 @@ def test_manifest_json_converter_handles_paths_and_numpy_values():
     assert json.loads(payload) == {"path": "run", "array": [1, 2], "number": 3}
 
 
+def test_software_provenance_records_commit_dependencies_and_binary_versions(monkeypatch):
+    def fake_command(command):
+        if "rev-parse" in command:
+            return "abc123\n"
+        if "status" in command:
+            return " M file.py\n"
+        return "AutoDock Vina test build\n"
+
+    monkeypatch.setattr(RedockAnalysisApp, "_command_version", staticmethod(fake_command))
+    provenance = RedockAnalysisApp._software_provenance({
+        "single": {
+            "vina_binary": "/opt/vina",
+            "smina_binary": "/opt/smina",
+        }
+    })
+
+    assert provenance["git_commit"] == "abc123"
+    assert provenance["git_dirty"] is True
+    assert "numpy" in provenance["dependencies"]
+    assert provenance["external_binaries"]["vina"]["path"] == "/opt/vina"
+    assert provenance["external_binaries"]["vina"]["version"] == "AutoDock Vina test build"
+
+
+def test_ligplot_and_dictionary_resolve_from_portable_environment(monkeypatch, tmp_path):
+    root = tmp_path / "LigPlus"
+    ligplot = root / "lib" / "exe_mac64" / "ligplot"
+    components = root / "lib" / "data" / "components.cif"
+    ligplot.parent.mkdir(parents=True)
+    components.parent.mkdir(parents=True)
+    ligplot.write_text("#!/bin/sh\n")
+    components.write_text("data_components\n")
+
+    monkeypatch.setenv("LIGPLUS_ROOT", str(root))
+    monkeypatch.delenv("LIGPLOT_BIN", raising=False)
+    monkeypatch.delenv("LIGPLOT_HOME", raising=False)
+    monkeypatch.delenv("HET_GROUP_DICTIONARY", raising=False)
+    monkeypatch.setattr("docking_platform_gui.gui.redock_analysis.shutil.which", lambda _: None)
+
+    app = _app_without_tk()
+    assert app._resolve_ligplot_bin() == str(ligplot.resolve())
+    assert app._resolve_components_cif(str(ligplot)) == components.resolve()
+
+
 def test_pose_viewer_uses_protocol_development_csv_directly(tmp_path):
     protocol_csv = tmp_path / "protocol_development_results.csv"
     redock_json = tmp_path / "redock_results.json"

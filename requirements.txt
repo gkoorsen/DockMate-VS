@@ -1,3 +1,4 @@
+# Keep this list aligned with the mandatory dependencies in pyproject.toml.
 numpy
 pandas
 openpyxl
@@ -7,3 +8,7 @@ biopython
 pydantic<2
 MDAnalysis
 gemmi
+scipy
+scikit-learn
+matplotlib
+seaborn
