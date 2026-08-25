@@ -2,7 +2,6 @@
 GUI for redock analysis using single or adaptive docking.
 """
 
-import base64
 import copy
 import importlib.metadata
 import json
@@ -30,9 +29,7 @@ import pandas as pd
 import numpy as np
 from loguru import logger
 from rdkit import Chem
-from rdkit.Chem import Crippen, Descriptors, rdMolAlign, rdFMCS, rdMolDescriptors
-from rdkit.Chem.Draw import rdMolDraw2D
-from rdkit.Geometry import Point2D
+from rdkit.Chem import AllChem, Crippen, Descriptors, rdMolDescriptors
 from docking_platform_gui.utils.redock_results import RedockAnalyzer
 from Bio import PDB
 
@@ -5878,13 +5875,52 @@ class RedockAnalysisApp(tk.Tk):
             return receptor_pdb
         return None
 
+    @staticmethod
+    def _prepare_viewer_receptor(
+        receptor_pdb: Path,
+        ligand_resname: str,
+        output_pdb: Path,
+    ) -> Path:
+        """Write a viewer receptor without a residual copy of the site ligand."""
+        selected_resname = (ligand_resname or "").strip().upper()[:3]
+        removed_serials = set()
+        retained_lines = []
+        for line in receptor_pdb.read_text(errors="replace").splitlines():
+            if line.startswith(("ATOM", "HETATM")):
+                resname = line[17:20].strip().upper()
+                if selected_resname and resname == selected_resname:
+                    try:
+                        removed_serials.add(int(line[6:11]))
+                    except ValueError:
+                        pass
+                    continue
+            retained_lines.append(line)
+
+        output_lines = []
+        for line in retained_lines:
+            if line.startswith("CONECT") and removed_serials:
+                try:
+                    serials = [int(value) for value in line[6:].split()]
+                except ValueError:
+                    continue
+                if any(serial in removed_serials for serial in serials):
+                    continue
+            if line == "END":
+                continue
+            output_lines.append(line)
+        output_lines.append("END")
+        output_pdb.parent.mkdir(parents=True, exist_ok=True)
+        output_pdb.write_text("\n".join(output_lines) + "\n")
+        return output_pdb
+
     def _write_ligand_pdb(
         self,
         mol: Chem.Mol,
         ligand_resname: str,
         output_pdb: Path,
         chain: str = "L",
-        resnum: int = 1
+        resnum: int = 1,
+        atom_names: Optional[List[str]] = None,
     ) -> None:
         block = Chem.MolToPDBBlock(mol)
         resname = (ligand_resname or "LIG")[:3].ljust(3)
@@ -5892,10 +5928,19 @@ class RedockAnalysisApp(tk.Tk):
         resnum_str = f"{resnum:>4}"
         out_lines = []
         element_counts: Dict[str, int] = {}
+        original_atom_names = []
+        for atom in mol.GetAtoms():
+            pdb_info = atom.GetPDBResidueInfo()
+            original_atom_names.append(
+                pdb_info.GetName().strip() if pdb_info and pdb_info.GetName().strip() else ""
+            )
+        preserve_original_names = (
+            all(original_atom_names)
+            and len(set(original_atom_names)) == len(original_atom_names)
+        )
         atom_idx = 0
         for line in block.splitlines():
             if line.startswith("CONECT"):
-                out_lines.append(line)
                 continue
             if not line.startswith(("ATOM", "HETATM")):
                 continue
@@ -5903,150 +5948,115 @@ class RedockAnalysisApp(tk.Tk):
             atom_idx += 1
             element = atom.GetSymbol().upper()
             element_counts[element] = element_counts.get(element, 0) + 1
-            atom_name = f"{element}{element_counts[element]}"[-4:]
+            pdb_info = atom.GetPDBResidueInfo()
+            if atom_names and atom_idx <= len(atom_names) and atom_names[atom_idx - 1].strip():
+                atom_name = self._format_pdb_atom_name(atom_names[atom_idx - 1], element)
+            elif preserve_original_names and pdb_info and pdb_info.GetName().strip():
+                atom_name = pdb_info.GetName()[:4].ljust(4)
+            else:
+                generated_name = f"{element}{element_counts[element]}"
+                atom_name = self._format_pdb_atom_name(generated_name, element)
             line = list(line)
             while len(line) < 54:
                 line.append(" ")
-            line[12:16] = list(f"{atom_name:>4}")
+            line[12:16] = list(atom_name)
             line[17:20] = list(resname)
             line[21] = chain_id
             line[22:26] = list(resnum_str)
             line[0:6] = list("HETATM")
             out_lines.append("".join(line))
+
+        # LigPlot treats multi-neighbour CONECT records as a bond group and can
+        # create bonds between the neighbours. Emit one unambiguous pair per
+        # bond; CCD chemistry supplies bond order for known cocrystal ligands.
+        for bond in mol.GetBonds():
+            begin = bond.GetBeginAtomIdx() + 1
+            end = bond.GetEndAtomIdx() + 1
+            out_lines.append(f"CONECT{begin:5d}{end:5d}")
         out_lines.append("END")
         output_pdb.write_text("\n".join(out_lines) + "\n")
 
-    def _mol_to_photoimage(self, mol: Chem.Mol, size: Tuple[int, int]) -> Optional[tk.PhotoImage]:
-        try:
-            draw_mol = Chem.RemoveHs(Chem.Mol(mol))
-            Chem.rdDepictor.Compute2DCoords(draw_mol)
-            drawer = rdMolDraw2D.MolDraw2DCairo(size[0], size[1])
-            rdMolDraw2D.PrepareAndDrawMolecule(drawer, draw_mol)
-            drawer.FinishDrawing()
-            png = drawer.GetDrawingText()
-            if isinstance(png, str):
-                png = png.encode("utf-8")
-            encoded = base64.b64encode(png).decode("ascii")
-            return tk.PhotoImage(data=encoded)
-        except Exception as exc:
-            logger.warning("Failed to render molecule image: {}", exc)
+    @staticmethod
+    def _ligplot_template_file(case: Dict[str, object]) -> Optional[Path]:
+        ligand_code = str(case.get("ligand", "")).strip().upper()
+        if not ligand_code:
             return None
+        case_dir = Path(case["case_dir"])
+        for directory in (case_dir, *list(case_dir.parents)[:4]):
+            candidate = directory / f"{ligand_code}_ideal.sdf"
+            if candidate.is_file():
+                return candidate
+        return None
 
-    def _mol_to_interaction_photoimage(
+    def _prepare_ligplot_pair(
         self,
-        mol: Chem.Mol,
-        contacts: List[Dict[str, object]],
-        size: Tuple[int, int],
-        max_labels: int = 12
-    ) -> Optional[tk.PhotoImage]:
+        case: Dict[str, object],
+        reference: Optional[Chem.Mol],
+        docked: Chem.Mol,
+    ) -> Tuple[
+        Optional[Chem.Mol],
+        Chem.Mol,
+        Optional[List[str]],
+        Optional[List[str]],
+        str,
+        str,
+    ]:
+        ligand_code = str(case.get("ligand", "")).strip().upper()[:3] or "ZQX"
+        template_file = self._ligplot_template_file(case)
+        if reference is None or template_file is None:
+            return reference, docked, None, None, ligand_code, "ZQX"
+
+        supplier = Chem.SDMolSupplier(str(template_file), removeHs=True)
+        template = next((mol for mol in supplier if mol is not None), None)
+        if template is None:
+            return reference, docked, None, None, ligand_code, "ZQX"
+
         try:
-            draw_mol = Chem.RemoveHs(Chem.Mol(mol))
-            Chem.rdDepictor.Compute2DCoords(draw_mol)
-            drawer = rdMolDraw2D.MolDraw2DCairo(size[0], size[1])
-            rdMolDraw2D.PrepareAndDrawMolecule(drawer, draw_mol)
+            reference_heavy = Chem.RemoveHs(Chem.Mol(reference), sanitize=False)
+            typed_reference = AllChem.AssignBondOrdersFromTemplate(template, reference_heavy)
+            reference_match = typed_reference.GetSubstructMatch(template)
+            if len(reference_match) != template.GetNumAtoms():
+                raise ValueError("Reference ligand does not match CCD template")
 
-            atom_coords = [drawer.GetDrawCoords(idx) for idx in range(draw_mol.GetNumAtoms())]
-            if atom_coords:
-                centroid_x = sum(pt.x for pt in atom_coords) / len(atom_coords)
-                centroid_y = sum(pt.y for pt in atom_coords) / len(atom_coords)
-            else:
-                centroid_x = 0.0
-                centroid_y = 0.0
-
-            for contact in contacts[:max_labels]:
-                atom_idx = int(contact["atom_idx"])
-                if atom_idx >= draw_mol.GetNumAtoms():
-                    continue
-                atom_pt = drawer.GetDrawCoords(atom_idx)
-                dx = atom_pt.x - centroid_x
-                dy = atom_pt.y - centroid_y
-                norm = (dx * dx + dy * dy) ** 0.5
-                if norm == 0:
-                    dx, dy = 1.0, 0.0
-                    norm = 1.0
-                scale = 24.0
-                label_pt = Point2D(
-                    atom_pt.x + (dx / norm) * scale,
-                    atom_pt.y + (dy / norm) * scale
-                )
-                drawer.DrawLine(atom_pt, label_pt)
-                label = f"{contact['resname']}{contact['resnum']}"
-                drawer.DrawString(label, label_pt)
-
-            drawer.FinishDrawing()
-            png = drawer.GetDrawingText()
-            if isinstance(png, str):
-                png = png.encode("utf-8")
-            encoded = base64.b64encode(png).decode("ascii")
-            return tk.PhotoImage(data=encoded)
+            reference_names = []
+            for atom_idx in reference_match:
+                info = reference_heavy.GetAtomWithIdx(atom_idx).GetPDBResidueInfo()
+                reference_names.append(info.GetName().strip() if info else "")
+            typed_reference = Chem.RenumberAtoms(typed_reference, list(reference_match))
         except Exception as exc:
-            logger.warning("Failed to render interaction image: {}", exc)
-            return None
-
-    def _compute_contact_summary(
-        self,
-        receptor_pdb: Path,
-        ligand_mol: Chem.Mol,
-        cutoff: float = 4.0
-    ) -> List[Dict[str, object]]:
-        parser = PDB.PDBParser(QUIET=True)
-        try:
-            receptor = parser.get_structure("receptor", str(receptor_pdb))
-        except Exception as exc:
-            logger.warning("Failed to parse PDB for contacts: {}", exc)
-            return []
-
-        if ligand_mol is None or ligand_mol.GetNumAtoms() == 0:
-            return []
+            logger.warning("Could not type LigPlot reference from {}: {}", template_file.name, exc)
+            return reference, docked, None, None, ligand_code, "ZQX"
 
         try:
-            conf = ligand_mol.GetConformer()
+            docked_heavy = Chem.RemoveHs(Chem.Mol(docked), sanitize=False)
+            typed_docked = AllChem.AssignBondOrdersFromTemplate(template, docked_heavy)
+            docked_match = typed_docked.GetSubstructMatch(template)
+            if len(docked_match) != template.GetNumAtoms():
+                raise ValueError("Docked ligand does not match CCD template")
+            typed_docked = Chem.RenumberAtoms(typed_docked, list(docked_match))
+            return (
+                typed_reference,
+                typed_docked,
+                reference_names,
+                list(reference_names),
+                ligand_code,
+                ligand_code,
+            )
         except Exception:
-            return []
+            # A screening compound is not the receptor's cocrystal ligand. Do
+            # not let LigPlus apply the cocrystal dictionary to its topology.
+            return typed_reference, docked, reference_names, None, ligand_code, "ZQX"
 
-        heavy_indices = [
-            idx for idx, atom in enumerate(ligand_mol.GetAtoms())
-            if atom.GetSymbol() != "H"
-        ]
-        if not heavy_indices:
-            return []
-
-        lig_coords = np.array(
-            [list(conf.GetAtomPosition(i)) for i in heavy_indices],
-            dtype=float
-        )
-
-        contacts: List[Dict[str, object]] = []
-        for residue in receptor.get_residues():
-            if residue.id[0] != " ":
-                continue
-            min_dist = None
-            min_idx = None
-            for atom in residue.get_atoms():
-                name = atom.get_name()
-                element = (atom.element or "").strip()
-                if element.upper() == "H" or name.startswith("H"):
-                    continue
-                diff = lig_coords - atom.coord
-                distances = np.sqrt((diff * diff).sum(axis=1))
-                local_min = float(distances.min())
-                if min_dist is None or local_min < min_dist:
-                    min_dist = local_min
-                    min_idx = int(distances.argmin())
-            if min_dist is not None and min_dist <= cutoff and min_idx is not None:
-                chain_id = residue.get_parent().id
-                contacts.append(
-                    {
-                        "chain": chain_id,
-                        "resname": residue.resname,
-                        "resnum": residue.id[1],
-                        "dist": min_dist,
-                        "atom_idx": min_idx
-                    }
-                )
-
-        contacts.sort(key=lambda item: float(item["dist"]))
-        return contacts
+    @staticmethod
+    def _format_pdb_atom_name(atom_name: str, element: str) -> str:
+        clean_name = re.sub(r"[^A-Za-z0-9]", "", (atom_name or "").strip())[:4]
+        if not clean_name:
+            clean_name = (element or "X").upper()[:2]
+        if len(clean_name) >= 4:
+            return clean_name[:4]
+        if len((element or "").strip()) == 1:
+            return f" {clean_name:<3}"[:4]
+        return f"{clean_name:<4}"[:4]
 
     def _resolve_pymol_bin(self) -> Optional[str]:
         pymol_bin = shutil.which("pymol")
@@ -6057,32 +6067,131 @@ class RedockAnalysisApp(tk.Tk):
             return str(fallback)
         return None
 
+    @staticmethod
+    def _ligplot_executable_subdirs() -> List[str]:
+        if sys.platform == "darwin":
+            return ["exe_mac64", "exe_mac"]
+        if sys.platform.startswith("linux"):
+            return ["exe_linux64", "exe_linux"]
+        if os.name == "nt":
+            return ["exe_win64", "exe_win32", "exe_win"]
+        return []
+
+    @staticmethod
+    def _ligplus_root_from_bin(ligplot_bin: Optional[str]) -> Optional[Path]:
+        if not ligplot_bin:
+            return None
+        ligplot_path = Path(ligplot_bin).expanduser()
+        if len(ligplot_path.parents) < 3:
+            return None
+        return ligplot_path.parents[2]
+
+    def _ligplus_root_candidates(self) -> List[Path]:
+        roots: List[Path] = []
+        for variable in ("LIGPLUS_ROOT", "LIGPLOT_HOME"):
+            value = os.environ.get(variable)
+            if value:
+                roots.append(Path(value).expanduser())
+
+        repo_root = Path(__file__).resolve().parents[2]
+        roots.extend(
+            [
+                repo_root / "tools" / "LigPlus",
+                Path.home() / "Desktop" / "docking_platform" / "tools" / "LigPlus",
+                Path.home() / "Desktop" / "LigPlus",
+                Path.home() / "Documents" / "apps" / "LigPlus",
+                Path.home() / "LigPlus",
+                Path("/Applications/LigPlus"),
+            ]
+        )
+
+        unique_roots: List[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = str(root.expanduser())
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_roots.append(root)
+        return unique_roots
+
     def _resolve_ligplot_bin(self) -> Optional[str]:
-        candidates: List[Path] = []
         configured = os.environ.get("LIGPLOT_BIN")
         if configured:
-            candidates.append(Path(configured).expanduser())
+            candidate = Path(configured).expanduser()
+            if candidate.is_file():
+                return str(candidate.resolve())
 
         on_path = shutil.which("ligplot")
         if on_path:
-            candidates.append(Path(on_path))
-
-        roots = [
-            os.environ.get("LIGPLUS_ROOT"),
-            os.environ.get("LIGPLOT_HOME"),
-            str(Path.home() / "LigPlus"),
-            "/Applications/LigPlus",
-        ]
-        for raw_root in roots:
-            if not raw_root:
-                continue
-            root = Path(raw_root).expanduser()
-            candidates.extend(sorted((root / "lib").glob("exe_*/ligplot")))
-
-        for candidate in candidates:
+            candidate = Path(on_path)
             if candidate.is_file():
                 return str(candidate.resolve())
+
+        for root in self._ligplus_root_candidates():
+            lib_dir = root / "lib"
+            for subdir in self._ligplot_executable_subdirs():
+                candidate = lib_dir / subdir / "ligplot"
+                if candidate.is_file():
+                    return str(candidate.resolve())
+            for candidate in sorted(lib_dir.glob("exe_*/ligplot")):
+                if candidate.is_file():
+                    return str(candidate.resolve())
         return None
+
+    def _resolve_ligplus_jar(self, ligplot_bin: Optional[str] = None) -> Optional[Path]:
+        configured = os.environ.get("LIGPLUS_JAR")
+        if configured:
+            candidate = Path(configured).expanduser()
+            if candidate.is_file():
+                return candidate.resolve()
+
+        roots: List[Path] = []
+        ligplus_root = self._ligplus_root_from_bin(ligplot_bin)
+        if ligplus_root is not None:
+            roots.append(ligplus_root)
+        roots.extend(self._ligplus_root_candidates())
+        for root in roots:
+            candidate = root / "LigPlus.jar"
+            if candidate.is_file():
+                return candidate.resolve()
+        return None
+
+    @staticmethod
+    def _resolve_java_bin() -> Optional[str]:
+        configured = os.environ.get("JAVA_BIN")
+        if configured:
+            candidate = Path(configured).expanduser()
+            if candidate.is_file():
+                return str(candidate.resolve())
+
+        java_home = os.environ.get("JAVA_HOME")
+        if java_home:
+            candidate = Path(java_home).expanduser() / "bin" / "java"
+            if candidate.is_file():
+                return str(candidate.resolve())
+
+        return shutil.which("java")
+
+    @staticmethod
+    def _launch_ligplus_drawings(
+        java_bin: str,
+        ligplus_jar: Path,
+        drawings: List[Tuple[str, Path]],
+    ) -> int:
+        launched = 0
+        for _label, drawing in drawings:
+            if not drawing.is_file():
+                continue
+            subprocess.Popen(
+                [java_bin, "-jar", str(ligplus_jar), str(drawing)],
+                cwd=str(ligplus_jar.parent),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            launched += 1
+        return launched
 
     def _resolve_ligplus_tool(self, ligplot_bin: str, tool_name: str) -> Optional[str]:
         ligplot_path = Path(ligplot_bin)
@@ -6099,15 +6208,10 @@ class RedockAnalysisApp(tk.Tk):
                 return path.resolve()
 
         roots: List[Path] = []
-        if ligplot_bin:
-            ligplot_path = Path(ligplot_bin).expanduser()
-            if len(ligplot_path.parents) >= 3:
-                roots.append(ligplot_path.parents[2])
-        for variable in ("LIGPLUS_ROOT", "LIGPLOT_HOME"):
-            value = os.environ.get(variable)
-            if value:
-                roots.append(Path(value).expanduser())
-        roots.extend((Path.home() / "LigPlus", Path("/Applications/LigPlus")))
+        ligplus_root = self._ligplus_root_from_bin(ligplot_bin)
+        if ligplus_root is not None:
+            roots.append(ligplus_root)
+        roots.extend(self._ligplus_root_candidates())
 
         for root in roots:
             candidate = root / "lib" / "data" / "components.cif"
@@ -6177,32 +6281,201 @@ class RedockAnalysisApp(tk.Tk):
         subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return png_file.exists()
 
+    @staticmethod
+    def _restore_ligplot_double_bonds(
+        ps_file: Path,
+        bond_order_file: Path,
+        resnum: int,
+        chain: str,
+    ) -> int:
+        """Restore CCD double bonds that LigPlot omitted from its PostScript."""
+        if not ps_file.is_file() or not bond_order_file.is_file():
+            return 0
+
+        bond_pattern = re.compile(
+            r"^\s*\d+\s+(\S+)\s+(\S+)\s+(-?\d+)\s+(\S)\s+"
+            r"->\s+\d+\s+(\S+)\s+(\S+)\s+(-?\d+)\s+(\S)\s+"
+            r"(SING|DOUB|TRIP)\s*$"
+        )
+        double_bonds = set()
+        selected_chain = (chain or "L")[0]
+        for line in bond_order_file.read_text(errors="replace").splitlines():
+            match = bond_pattern.match(line)
+            if not match:
+                continue
+            (
+                atom1,
+                _resname1,
+                resnum1,
+                chain1,
+                atom2,
+                _resname2,
+                resnum2,
+                chain2,
+                order,
+            ) = match.groups()
+            if (
+                order == "DOUB"
+                and int(resnum1) == resnum
+                and int(resnum2) == resnum
+                and chain1 == selected_chain
+                and chain2 == selected_chain
+            ):
+                double_bonds.add(frozenset((atom1, atom2)))
+        if not double_bonds:
+            return 0
+
+        lines = ps_file.read_text(errors="replace").splitlines()
+        atom_pattern = re.compile(
+            r"^\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+"
+            r"Ligatom_radius\s+Sphere\s*$"
+        )
+        name_pattern = re.compile(
+            r"^\(([^)]*)\)\s+Ligatmname_size\s+Center\s*$"
+        )
+        ligand_atoms: Dict[str, Tuple[float, float]] = {}
+        pending_position: Optional[Tuple[float, float]] = None
+        in_atoms = False
+        for line in lines:
+            if line.strip() == "% Atoms":
+                in_atoms = True
+                continue
+            if in_atoms and line.startswith("% "):
+                break
+            if not in_atoms:
+                continue
+            atom_match = atom_pattern.match(line)
+            if atom_match:
+                pending_position = (
+                    float(atom_match.group(1)),
+                    float(atom_match.group(2)),
+                )
+                continue
+            name_match = name_pattern.match(line)
+            if name_match and pending_position is not None:
+                ligand_atoms[name_match.group(1).strip()] = pending_position
+                pending_position = None
+        if not ligand_atoms:
+            return 0
+
+        atom_at_position = {
+            (round(position[0], 2), round(position[1], 2)): atom_name
+            for atom_name, position in ligand_atoms.items()
+        }
+        width_pattern = re.compile(
+            r"^/Ligbond_width\s+\{\s*([\d.]+)\s*\}\s+def\s*$"
+        )
+        widths = [
+            float(match.group(1))
+            for line in lines
+            if (match := width_pattern.match(line))
+        ]
+        if not widths:
+            return 0
+        ligand_bond_width = widths[-1]
+
+        line_pattern = re.compile(
+            r"^(\s*)(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+"
+            r"(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+L\s*$"
+        )
+        output_lines = []
+        in_bonds = False
+        in_ligand_bonds = False
+        restored = 0
+        for line in lines:
+            if line.strip() == "% Bond lines":
+                in_bonds = True
+                in_ligand_bonds = True
+                output_lines.append(line)
+                continue
+            if in_bonds and line.strip() == "% Atoms":
+                in_bonds = False
+                in_ligand_bonds = False
+            elif in_bonds and line.strip() == "Nligbond_colour":
+                in_ligand_bonds = False
+
+            line_match = line_pattern.match(line) if in_ligand_bonds else None
+            if line_match:
+                indent = line_match.group(1)
+                x1, y1, x2, y2 = map(float, line_match.groups()[1:])
+                atom1 = atom_at_position.get((round(x1, 2), round(y1, 2)))
+                atom2 = atom_at_position.get((round(x2, 2), round(y2, 2)))
+                if atom1 and atom2 and frozenset((atom1, atom2)) in double_bonds:
+                    length = math.hypot(x2 - x1, y2 - y1)
+                    if length > 0:
+                        offset = ligand_bond_width * 0.75
+                        offset_x = -(y2 - y1) * offset / length
+                        offset_y = (x2 - x1) * offset / length
+                        output_lines.extend(
+                            [
+                                f"{indent}{ligand_bond_width / 2:.2f} W",
+                                (
+                                    f"{indent}{x1 + offset_x:.2f} {y1 + offset_y:.2f} "
+                                    f"{x2 + offset_x:.2f} {y2 + offset_y:.2f} L"
+                                ),
+                                (
+                                    f"{indent}{x1 - offset_x:.2f} {y1 - offset_y:.2f} "
+                                    f"{x2 - offset_x:.2f} {y2 - offset_y:.2f} L"
+                                ),
+                                "Ligbond_width   W",
+                            ]
+                        )
+                        restored += 1
+                        continue
+            output_lines.append(line)
+
+        if restored:
+            # Editing the drawing, rather than the ligand coordinates, keeps
+            # LigPlot's interaction distances tied to the experimental pose.
+            ps_file.write_text("\n".join(output_lines) + "\n")
+        return restored
+
     def _run_ligplot(
         self,
         ligplot_bin: str,
         complex_pdb: Path,
-        ligand_resname: str,
         resnum: int,
         chain: str,
         out_dir: Path
     ) -> Optional[Path]:
         out_dir.mkdir(parents=True, exist_ok=True)
+        work_pdb = out_dir / complex_pdb.name
+        if work_pdb.resolve() != complex_pdb.resolve():
+            shutil.copy2(complex_pdb, work_pdb)
+
         # Do not mistake files from an earlier successful render for the
         # current run when LigPlot or Ghostscript fails.
-        for stale_name in ("ligplot.ps", "ligplot.png", "ligplot.sum"):
+        stale_names = [
+            "ligplot.ps",
+            "ligplot.png",
+            "ligplot.sum",
+            "ligplot.bonds",
+            "ligplot.drw",
+            "ligplot.frm",
+            "ligplot.hhb",
+            "ligplot.nnb",
+            "ligplot.pdb",
+            "ligplot.rcm",
+            "hbadd.bonds",
+            "hbadd.map",
+            "hbadd.sum",
+            f"{work_pdb.stem}.hhb",
+            f"{work_pdb.stem}.nnb",
+            f"{work_pdb.stem}.hb2",
+            f"{work_pdb.stem}.nb2",
+        ]
+        for stale_name in stale_names:
             stale_path = out_dir / stale_name
             if stale_path.exists():
                 stale_path.unlink()
         ligplot_path = Path(ligplot_bin)
-        ligplus_root = ligplot_path.parents[2] if len(ligplot_path.parents) >= 3 else None
+        ligplus_root = self._ligplus_root_from_bin(ligplot_bin)
         hbadd_bin = self._resolve_ligplus_tool(ligplot_bin, "hbadd")
         hbplus_bin = self._resolve_ligplus_tool(ligplot_bin, "hbplus")
         if ligplus_root:
             prm = ligplus_root / "lib" / "params" / "ligplot.prm"
             if prm.exists():
-                target_prm = out_dir / "ligplot.prm"
-                if not target_prm.exists():
-                    target_prm.write_text(prm.read_text())
+                shutil.copy2(prm, out_dir / "ligplot.prm")
 
         env = os.environ.copy()
         env["PATH"] = f"{ligplot_path.parent}:{env.get('PATH', '')}"
@@ -6214,22 +6487,45 @@ class RedockAnalysisApp(tk.Tk):
             env["HET_GROUP_DICTIONARY"] = str(components_cif)
 
         if hbadd_bin and components_cif:
-            subprocess.run([hbadd_bin, str(complex_pdb.resolve()), str(components_cif), "-wkdir", str(out_dir)],
-                           check=False, cwd=str(out_dir), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            hbadd_result = subprocess.run(
+                [hbadd_bin, work_pdb.name, str(components_cif)],
+                check=False,
+                cwd=str(out_dir),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            if hbadd_result.returncode != 0:
+                error = hbadd_result.stderr.strip() or hbadd_result.stdout.strip() or "unknown error"
+                logger.warning("HBADD failed for {}: {}", work_pdb.name, error)
         if hbplus_bin:
-            work_pdb = out_dir / complex_pdb.name
-            if work_pdb.resolve() != complex_pdb.resolve():
-                shutil.copy2(complex_pdb, work_pdb)
-            subprocess.run([hbplus_bin, work_pdb.name],
-                           check=False, cwd=str(out_dir), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            hbplus_commands = [
+                [hbplus_bin, "-L", "-h", "2.7", "-d", "3.35", work_pdb.name],
+                [hbplus_bin, "-L", "-N", work_pdb.name],
+            ]
+            for hbplus_cmd in hbplus_commands:
+                hbplus_result = subprocess.run(
+                    hbplus_cmd,
+                    check=False,
+                    cwd=str(out_dir),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+                if hbplus_result.returncode != 0:
+                    error = hbplus_result.stderr.strip() or hbplus_result.stdout.strip() or "unknown error"
+                    logger.warning("HBPLUS failed for {}: {}", work_pdb.name, error)
 
         cmd = [
             ligplot_bin,
-            str(complex_pdb.resolve()),
-            ligand_resname,
+            work_pdb.name,
             str(resnum),
             str(resnum),
-            chain
+            (chain or "L")[0],
+            "-prm",
+            "ligplot.prm",
+            "-ctype",
+            "1",
         ]
         result = subprocess.run(
             cmd,
@@ -6246,6 +6542,18 @@ class RedockAnalysisApp(tk.Tk):
         ps_file = out_dir / "ligplot.ps"
         if not ps_file.exists():
             return None
+        restored_bonds = self._restore_ligplot_double_bonds(
+            ps_file,
+            out_dir / "hbadd.bonds",
+            resnum,
+            chain,
+        )
+        if restored_bonds:
+            logger.debug(
+                "Restored {} LigPlot double-bond strokes for {}",
+                restored_bonds,
+                complex_pdb.name,
+            )
         png_file = out_dir / "ligplot.png"
         if not self._ligplot_ps_to_png(ps_file, png_file):
             return None
@@ -6264,9 +6572,14 @@ class RedockAnalysisApp(tk.Tk):
         viewer_dir = Path(str(case["viewer_dir"])) / "pymol"
         viewer_dir.mkdir(parents=True, exist_ok=True)
 
-        receptor_pdb = self._ensure_receptor_pdb(case_dir)
-        if receptor_pdb is None or not receptor_pdb.exists():
+        source_receptor = self._ensure_receptor_pdb(case_dir)
+        if source_receptor is None or not source_receptor.exists():
             return None
+        receptor_pdb = self._prepare_viewer_receptor(
+            source_receptor,
+            str(case.get("ligand", "")),
+            viewer_dir / "receptor_viewer.pdb",
+        )
 
         poses, scores = self._load_poses_and_scores(output_file)
         if not poses:
@@ -6343,7 +6656,6 @@ class RedockAnalysisApp(tk.Tk):
         if best_score_idx is None:
             best_score_idx = best_rmsd_idx
 
-        pose_indices = []
         pose_entries: List[Tuple[int, str]] = []
         if best_rmsd_idx is not None:
             pose_entries.append((best_rmsd_idx, "best_rmsd"))
@@ -6353,8 +6665,9 @@ class RedockAnalysisApp(tk.Tk):
         pose_files = []
         for idx, label in pose_entries:
             pose_file = viewer_dir / f"{label}.pdb"
-            aligned_pose = self._align_pose_to_ref(ref_mol, poses[idx])
-            self._write_ligand_pdb(aligned_pose, str(case["display_name"]), pose_file)
+            # Keep receptor-frame docking coordinates unchanged so the visual
+            # separation remains consistent with the reported coordinate RMSD.
+            self._write_ligand_pdb(poses[idx], str(case["display_name"]), pose_file)
             pose_files.append((label, pose_file))
 
         pml_lines = [
@@ -6430,7 +6743,8 @@ class RedockAnalysisApp(tk.Tk):
             if best_idx is None:
                 best_idx = 0
             best_score = scores[best_idx] if scores and best_idx < len(scores) else None
-            return ref_mol, poses[best_idx], None, best_score, best_idx, len(poses)
+            selected_rmsd = self._pose_rmsd(ref_mol, poses[best_idx]) if ref_mol is not None else None
+            return ref_mol, poses[best_idx], selected_rmsd, best_score, best_idx, len(poses)
 
         if selection_mode != "best_rmsd":
             raise ValueError(f"Unknown pose selection mode: {selection_mode}")
@@ -6453,6 +6767,114 @@ class RedockAnalysisApp(tk.Tk):
             best_score = scores[best_idx]
 
         return ref_mol, poses[best_idx], best_rmsd, best_score, best_idx, len(poses)
+
+    def _prepare_ligplus_drawings(
+        self,
+        case: Dict[str, object],
+        ligplot_bin: str,
+    ) -> List[Tuple[str, Path]]:
+        """Generate LigPlot drawings for the native and distinct selected poses."""
+        case_dir = Path(str(case["case_dir"]))
+        viewer_dir = Path(str(case["viewer_dir"]))
+        viewer_dir.mkdir(parents=True, exist_ok=True)
+
+        source_receptor = self._ensure_receptor_pdb(case_dir)
+        if source_receptor is None or not source_receptor.exists():
+            return []
+        receptor_pdb = self._prepare_viewer_receptor(
+            source_receptor,
+            str(case.get("ligand", "")),
+            viewer_dir / "receptor_viewer.pdb",
+        )
+
+        best_score = self._select_best_pose(
+            case.get("crystal_ligand_pdb"),
+            Path(str(case["output_file"])),
+            selection_mode="best_score",
+        )
+        if best_score is None:
+            return []
+
+        selections = [("Best score", "best_score", best_score)]
+        if best_score[0] is not None:
+            best_rmsd = self._select_best_pose(
+                case.get("crystal_ligand_pdb"),
+                Path(str(case["output_file"])),
+                selection_mode="best_rmsd",
+            )
+            if best_rmsd is not None:
+                if best_rmsd[4] == best_score[4]:
+                    selections[0] = ("Best score / best RMSD", "best_score", best_score)
+                else:
+                    selections.append(("Best RMSD", "best_rmsd", best_rmsd))
+
+        ligand_chain = "L"
+        ligand_resnum = 1
+        drawings: List[Tuple[str, Path]] = []
+        native_generated = False
+
+        for label, slug, selected in selections:
+            reference, docked, _, _, _, _ = selected
+            (
+                typed_reference,
+                typed_docked,
+                native_atom_names,
+                docked_atom_names,
+                native_resname,
+                docked_resname,
+            ) = self._prepare_ligplot_pair(case, reference, docked)
+
+            if typed_reference is not None and not native_generated:
+                native_dir = viewer_dir / "ligplot_native"
+                native_dir.mkdir(parents=True, exist_ok=True)
+                native_ligand = native_dir / "native_ligand.pdb"
+                native_complex = native_dir / "native_complex.pdb"
+                self._write_ligand_pdb(
+                    typed_reference,
+                    native_resname,
+                    native_ligand,
+                    chain=ligand_chain,
+                    resnum=ligand_resnum,
+                    atom_names=native_atom_names,
+                )
+                self._combine_complex(receptor_pdb, native_ligand, native_complex)
+                self._run_ligplot(
+                    ligplot_bin,
+                    native_complex,
+                    ligand_resnum,
+                    ligand_chain,
+                    native_dir,
+                )
+                native_drawing = native_dir / "ligplot.drw"
+                if native_drawing.is_file():
+                    drawings.append(("Native", native_drawing))
+                native_generated = True
+
+            docked_dir = viewer_dir / f"ligplot_{slug}"
+            docked_dir.mkdir(parents=True, exist_ok=True)
+            docked_ligand = docked_dir / f"{slug}_ligand.pdb"
+            docked_complex = docked_dir / f"{slug}_complex.pdb"
+            self._write_ligand_pdb(
+                typed_docked,
+                docked_resname,
+                docked_ligand,
+                chain=ligand_chain,
+                resnum=ligand_resnum,
+                atom_names=docked_atom_names,
+            )
+            self._combine_complex(receptor_pdb, docked_ligand, docked_complex)
+            self._run_ligplot(
+                ligplot_bin,
+                docked_complex,
+                ligand_resnum,
+                ligand_chain,
+                docked_dir,
+            )
+            docked_drawing = docked_dir / "ligplot.drw"
+            if docked_drawing.is_file():
+                drawings.append((label, docked_drawing))
+
+        return drawings
 
     @staticmethod
     def _pose_results_csv(results_path: Path) -> Path:
@@ -6516,7 +6938,9 @@ class RedockAnalysisApp(tk.Tk):
 
         dialog = tk.Toplevel(self)
         dialog.title("Docking Pose Viewer")
-        dialog.geometry("980x640")
+        viewer_width = max(820, min(1250, dialog.winfo_screenwidth() - 120))
+        dialog.geometry(f"{viewer_width}x400")
+        dialog.minsize(min(900, viewer_width), 350)
         dialog.transient(self)
 
         state = {"index": 0, "request_id": 0, "closed": False}
@@ -6530,78 +6954,82 @@ class RedockAnalysisApp(tk.Tk):
         header = tk.Frame(dialog)
         header.pack(fill="x", padx=10, pady=10)
 
-        info_var = tk.StringVar(value="Loading pose...")
-        info_label = tk.Label(header, textvariable=info_var, anchor="w")
-        info_label.pack(side="left", fill="x", expand=True)
+        info_var = tk.StringVar(value="Loading pose information...")
+        tk.Label(header, textvariable=info_var, anchor="w").pack(
+            side="left", fill="x", expand=True
+        )
 
         nav_frame = tk.Frame(header)
         nav_frame.pack(side="right")
-
         prev_btn = tk.Button(nav_frame, text="Prev", width=8)
         next_btn = tk.Button(nav_frame, text="Next", width=8)
-        prev_btn.pack(side="left", padx=4)
-        next_btn.pack(side="left", padx=4)
         pymol_btn = tk.Button(nav_frame, text="Open PyMOL", width=12)
-        pymol_btn.pack(side="left", padx=4)
-        ligplot_btn = tk.Button(nav_frame, text="LigPlot", width=10)
-        ligplot_btn.pack(side="left", padx=4)
+        ligplot_btn = tk.Button(nav_frame, text="Open LigPlot+", width=13)
+        for button in (prev_btn, next_btn, pymol_btn, ligplot_btn):
+            button.pack(side="left", padx=4)
 
         jump_frame = tk.Frame(dialog)
         jump_frame.pack(fill="x", padx=10, pady=(0, 6))
-        tk.Label(jump_frame, text="Jump to").pack(side="left")
+        jump_frame.grid_columnconfigure(1, weight=1)
+        tk.Label(jump_frame, text="Jump to").grid(row=0, column=0, sticky="w")
         case_select_var = tk.StringVar(value=case_labels[0])
         case_select = ttk.Combobox(
             jump_frame,
             textvariable=case_select_var,
             values=case_labels,
-            width=30
+            width=100,
         )
-        case_select.pack(side="left", padx=6)
+        case_select.grid(row=0, column=1, sticky="ew", padx=8)
         jump_btn = tk.Button(jump_frame, text="Go", width=6)
-        jump_btn.pack(side="left")
+        jump_btn.grid(row=0, column=2, sticky="e")
 
-        content = tk.Frame(dialog)
-        content.pack(fill="both", expand=True, padx=10, pady=10)
-        content.grid_columnconfigure(0, weight=1)
-        content.grid_columnconfigure(1, weight=1)
-        content.grid_rowconfigure(1, weight=1)
-
-        tk.Label(content, text="Reference pose / status", font=("Helvetica", 12, "bold")).grid(
-            row=0, column=0, sticky="w", padx=5, pady=(0, 6)
+        summary_frame = tk.LabelFrame(
+            dialog,
+            text="Selected docking case",
+            padx=12,
+            pady=10,
         )
-        tk.Label(content, text="Best docked ligand (2D)", font=("Helvetica", 12, "bold")).grid(
-            row=0, column=1, sticky="w", padx=5, pady=(0, 6)
+        summary_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        summary_var = tk.StringVar(value="Loading selected poses...")
+        tk.Label(
+            summary_frame,
+            textvariable=summary_var,
+            justify="left",
+            anchor="nw",
+            wraplength=viewer_width - 80,
+        ).pack(fill="both", expand=True)
+
+        guidance_var = tk.StringVar(
+            value=(
+                "PyMOL opens the receptor-frame overlay. LigPlot+ opens native, best-score, "
+                "and distinct best-RMSD interaction drawings in the external LigPlot+ application."
+            )
         )
+        tk.Label(
+            dialog,
+            textvariable=guidance_var,
+            anchor="w",
+            justify="left",
+            wraplength=viewer_width - 40,
+            fg="#555555",
+        ).pack(fill="x", padx=10, pady=(0, 10))
 
-        native_label = tk.Label(content, bd=1, relief="solid")
-        docked_label = tk.Label(content, bd=1, relief="solid")
-        native_label.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
-        docked_label.grid(row=1, column=1, sticky="nsew", padx=5, pady=5)
+        def _format_metric(value: object, suffix: str = "") -> str:
+            if value is None or pd.isna(value):
+                return "N/A"
+            try:
+                return f"{float(value):.2f}{suffix}"
+            except (TypeError, ValueError):
+                return str(value)
 
-        native_contact_frame = tk.Frame(content)
-        docked_contact_frame = tk.Frame(content)
-        native_contact_frame.grid(row=2, column=0, sticky="nsew", padx=5, pady=5)
-        docked_contact_frame.grid(row=2, column=1, sticky="nsew", padx=5, pady=5)
-        native_contact_frame.grid_columnconfigure(0, weight=1)
-        docked_contact_frame.grid_columnconfigure(0, weight=1)
-
-        tk.Label(native_contact_frame, text="Contacts <= 4.0Å").grid(row=0, column=0, sticky="w")
-        tk.Label(docked_contact_frame, text="Contacts <= 4.0Å").grid(row=0, column=0, sticky="w")
-
-        native_contact_text = tk.Text(native_contact_frame, height=8, wrap="none")
-        docked_contact_text = tk.Text(docked_contact_frame, height=8, wrap="none")
-        native_contact_text.grid(row=1, column=0, sticky="nsew")
-        docked_contact_text.grid(row=1, column=0, sticky="nsew")
-        native_scroll = ttk.Scrollbar(native_contact_frame, orient="vertical", command=native_contact_text.yview)
-        docked_scroll = ttk.Scrollbar(docked_contact_frame, orient="vertical", command=docked_contact_text.yview)
-        native_contact_text.configure(yscrollcommand=native_scroll.set)
-        docked_contact_text.configure(yscrollcommand=docked_scroll.set)
-        native_scroll.grid(row=1, column=1, sticky="ns")
-        docked_scroll.grid(row=1, column=1, sticky="ns")
-
-        detail_var = tk.StringVar(value="")
-        detail_label = tk.Label(dialog, textvariable=detail_var, anchor="w")
-        detail_label.pack(fill="x", padx=10, pady=(0, 10))
+        def _selection_line(label: str, selected) -> str:
+            if selected is None:
+                return f"{label}: N/A"
+            _, _, rmsd, score, pose_idx, pose_count = selected
+            return (
+                f"{label}: pose {pose_idx + 1}/{pose_count} | "
+                f"RMSD {_format_metric(rmsd, ' A')} | score {_format_metric(score)}"
+            )
 
         def _render_case(idx: int) -> None:
             if idx < 0 or idx >= len(cases):
@@ -6614,123 +7042,51 @@ class RedockAnalysisApp(tk.Tk):
             info_var.set(
                 f"Case {idx + 1}/{len(cases)}: {case['pdb_id']}_{case['display_name']} (loading)"
             )
-            detail_var.set("")
-            native_label.config(image="", text="Loading...")
-            docked_label.config(image="", text="Loading...")
-            native_contact_text.config(state="normal")
-            docked_contact_text.config(state="normal")
-            native_contact_text.delete("1.0", "end")
-            docked_contact_text.delete("1.0", "end")
-            native_contact_text.insert("1.0", "Loading...")
-            docked_contact_text.insert("1.0", "Loading...")
-            native_contact_text.config(state="disabled")
-            docked_contact_text.config(state="disabled")
+            summary_var.set("Loading selected poses...")
 
             def _worker():
-                selected = self._select_best_pose(
+                best_score = self._select_best_pose(
                     case["crystal_ligand_pdb"],
-                    case["output_file"]
+                    case["output_file"],
+                    selection_mode="best_score",
                 )
-                if not selected:
-                    return None
-                receptor_pdb = self._ensure_receptor_pdb(case["case_dir"])
-                if receptor_pdb is None:
-                    return selected, None, None
-                viewer_dir = case["viewer_dir"]
-                viewer_dir.mkdir(parents=True, exist_ok=True)
-                native_lig = viewer_dir / "native_ligand.pdb"
-                docked_lig = viewer_dir / "docked_best_ligand.pdb"
-                ref_mol, best_pose, best_rmsd, best_score, best_idx, pose_count = selected
-                if ref_mol is not None:
-                    self._write_ligand_pdb(ref_mol, case["display_name"], native_lig)
-                self._write_ligand_pdb(best_pose, case["display_name"], docked_lig)
-                native_contacts = self._compute_contact_summary(receptor_pdb, ref_mol) if ref_mol is not None else None
-                docked_contacts = self._compute_contact_summary(receptor_pdb, best_pose)
-                return selected, native_contacts, docked_contacts
+                best_rmsd = None
+                if best_score is not None and best_score[0] is not None:
+                    best_rmsd = self._select_best_pose(
+                        case["crystal_ligand_pdb"],
+                        case["output_file"],
+                        selection_mode="best_rmsd",
+                    )
+                return best_score, best_rmsd
 
             def _apply(payload):
                 if state["closed"] or request_id != state["request_id"]:
                     return
-                if not payload:
-                    info_var.set(
-                        f"Case {idx + 1}/{len(cases)}: {case['pdb_id']}_{case['display_name']} (no poses)"
-                    )
-                    native_label.config(text="No native pose", image="")
-                    docked_label.config(text="No docked pose", image="")
-                    native_contact_text.config(state="normal")
-                    docked_contact_text.config(state="normal")
-                    native_contact_text.delete("1.0", "end")
-                    docked_contact_text.delete("1.0", "end")
-                    native_contact_text.insert("1.0", "No contacts")
-                    docked_contact_text.insert("1.0", "No contacts")
-                    native_contact_text.config(state="disabled")
-                    docked_contact_text.config(state="disabled")
-                    return
-
-                selected, native_contacts, docked_contacts = payload
-                ref_mol, best_pose, best_rmsd, best_score, best_idx, pose_count = selected
-                native_img = (
-                    self._mol_to_interaction_photoimage(ref_mol, native_contacts, (420, 420))
-                    if ref_mol is not None else None
-                )
-                docked_img = self._mol_to_interaction_photoimage(best_pose, docked_contacts, (420, 420))
-                if native_img is None and ref_mol is not None:
-                    native_img = self._mol_to_photoimage(ref_mol, (420, 420))
-                if docked_img is None:
-                    docked_img = self._mol_to_photoimage(best_pose, (420, 420))
-
-                if native_img:
-                    native_label.config(image=native_img, text="")
-                    native_label.image = native_img
-                elif ref_mol is None:
-                    native_label.config(text="No crystal ligand\nscreening pose only", image="")
-                else:
-                    native_label.config(text="Native image unavailable", image="")
-
-                if docked_img:
-                    docked_label.config(image=docked_img, text="")
-                    docked_label.image = docked_img
-                else:
-                    docked_label.config(text="Docked image unavailable", image="")
-
-                rmsd_text = f"{best_rmsd:.2f}" if best_rmsd is not None else "N/A"
-                score_text = f"{best_score:.2f}" if isinstance(best_score, (int, float)) else "N/A"
                 info_var.set(
                     f"Case {idx + 1}/{len(cases)}: {case['pdb_id']}_{case['display_name']}"
                 )
-                detail_var.set(
-                    f"Best pose {best_idx + 1}/{pose_count} | RMSD {rmsd_text} | Score {score_text}"
+                if not payload or payload[0] is None:
+                    summary_var.set("No readable docked poses were found for this case.")
+                    return
+
+                best_score, best_rmsd = payload
+                reference_status = "available" if best_score[0] is not None else "not available"
+                rmsd_line = (
+                    _selection_line("Best-RMSD pose", best_rmsd)
+                    if best_rmsd is not None
+                    else "Best-RMSD pose: N/A (no native/reference ligand)"
                 )
-                native_contact_text.config(state="normal")
-                docked_contact_text.config(state="normal")
-                native_contact_text.delete("1.0", "end")
-                docked_contact_text.delete("1.0", "end")
-                if ref_mol is None:
-                    native_contact_text.insert("1.0", "No native/reference ligand for screening rows")
-                elif native_contacts:
-                    native_contact_text.insert(
-                        "1.0",
-                        "\n".join(
-                            f"{item['chain']} {item['resname']} {int(item['resnum']):>4}  "
-                            f"{float(item['dist']):5.2f}Å"
-                            for item in native_contacts[:40]
-                        )
+                summary_var.set(
+                    "\n".join(
+                        [
+                            f"Structure: {case['pdb_id']} | Ligand/job: {case['display_name']}",
+                            f"Native/reference ligand: {reference_status}",
+                            _selection_line("Best-score pose", best_score),
+                            rmsd_line,
+                            f"Pose file: {case['output_file']}",
+                        ]
                     )
-                else:
-                    native_contact_text.insert("1.0", "No contacts <= 4.0Å")
-                if docked_contacts:
-                    docked_contact_text.insert(
-                        "1.0",
-                        "\n".join(
-                            f"{item['chain']} {item['resname']} {int(item['resnum']):>4}  "
-                            f"{float(item['dist']):5.2f}Å"
-                            for item in docked_contacts[:40]
-                        )
-                    )
-                else:
-                    docked_contact_text.insert("1.0", "No contacts <= 4.0Å")
-                native_contact_text.config(state="disabled")
-                docked_contact_text.config(state="disabled")
+                )
 
             def _run():
                 try:
@@ -6743,12 +7099,10 @@ class RedockAnalysisApp(tk.Tk):
             threading.Thread(target=_run, daemon=True).start()
 
         def _prev():
-            new_idx = max(0, state["index"] - 1)
-            _render_case(new_idx)
+            _render_case(max(0, state["index"] - 1))
 
         def _next():
-            new_idx = min(len(cases) - 1, state["index"] + 1)
-            _render_case(new_idx)
+            _render_case(min(len(cases) - 1, state["index"] + 1))
 
         def _jump_to_label(label: str) -> None:
             raw = label.strip()
@@ -6757,9 +7111,9 @@ class RedockAnalysisApp(tk.Tk):
             key = raw.upper().replace(" ", "_")
             idx = case_label_map.get(key)
             if idx is None:
-                for i, case_label in enumerate(case_labels):
+                for candidate_idx, case_label in enumerate(case_labels):
                     if case_label.upper().startswith(key):
-                        idx = i
+                        idx = candidate_idx
                         break
             if idx is None:
                 info_var.set(f"No match for '{raw}'")
@@ -6781,7 +7135,7 @@ class RedockAnalysisApp(tk.Tk):
             if not pymol_bin:
                 messagebox.showwarning(
                     "PyMOL not found",
-                    "PyMOL executable not found in PATH. Install PyMOL or add it to PATH."
+                    "PyMOL executable not found in PATH. Install PyMOL or add it to PATH.",
                 )
                 return
 
@@ -6792,7 +7146,12 @@ class RedockAnalysisApp(tk.Tk):
                     pml_path = self._prepare_pymol_overlay(case)
                     if not pml_path:
                         return None
-                    subprocess.Popen([pymol_bin, str(pml_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen(
+                        [pymol_bin, str(pml_path)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
                     return pml_path
                 except Exception as exc:
                     logger.warning("Failed to launch PyMOL: {}", exc)
@@ -6802,9 +7161,13 @@ class RedockAnalysisApp(tk.Tk):
                 if state["closed"]:
                     return
                 if pml_path:
-                    info_var.set(f"Opened PyMOL overlay for {case['pdb_id']}_{case['display_name']}")
+                    info_var.set(
+                        f"Opened PyMOL overlay for {case['pdb_id']}_{case['display_name']}"
+                    )
                 else:
-                    info_var.set(f"Failed to open PyMOL for {case['pdb_id']}_{case['display_name']}")
+                    info_var.set(
+                        f"Failed to open PyMOL for {case['pdb_id']}_{case['display_name']}"
+                    )
 
             def _run():
                 result = _worker()
@@ -6819,205 +7182,57 @@ class RedockAnalysisApp(tk.Tk):
             ligplot_bin = self._resolve_ligplot_bin()
             if not ligplot_bin:
                 messagebox.showwarning(
-                    "LigPlot not found",
-                    "LigPlot executable not found. Please check installation."
+                    "LigPlot tools not found",
+                    "LigPlot command-line tools were not found. Set LIGPLOT_BIN or LIGPLUS_ROOT.",
+                )
+                return
+            ligplus_jar = self._resolve_ligplus_jar(ligplot_bin)
+            if ligplus_jar is None:
+                messagebox.showwarning(
+                    "LigPlot+ not found",
+                    "LigPlus.jar was not found. Set LIGPLUS_JAR or LIGPLUS_ROOT.",
+                )
+                return
+            java_bin = self._resolve_java_bin()
+            if java_bin is None:
+                messagebox.showwarning(
+                    "Java not found",
+                    "Java is required to open LigPlot+. Set JAVA_BIN or install a Java runtime.",
                 )
                 return
 
-            info_var.set(f"Generating LigPlot for {case['pdb_id']}_{case['display_name']}...")
+            info_var.set(
+                f"Generating LigPlot+ drawings for {case['pdb_id']}_{case['display_name']}..."
+            )
 
             def _worker():
-                selected = self._select_best_pose(
-                    case["crystal_ligand_pdb"],
-                    case["output_file"],
-                    selection_mode="best_score"
-                )
-                if not selected:
+                drawings = self._prepare_ligplus_drawings(case, ligplot_bin)
+                if not drawings:
                     return None
-
-                receptor_pdb = self._ensure_receptor_pdb(case["case_dir"])
-                if receptor_pdb is None or not receptor_pdb.exists():
-                    return None
-
-                ref_mol, best_pose, _, _, _, _ = selected
-                viewer_dir = Path(case["viewer_dir"])
-                viewer_dir.mkdir(parents=True, exist_ok=True)
-
-                # A stable generic name avoids collisions with unrelated CCD
-                # entries when display names happen to share a three-letter code.
-                ligand_resname = "LIG"
-                ligand_chain = "L"
-                ligand_resnum = 1
-
-                native_lig = viewer_dir / "native_ligand.pdb"
-                docked_lig = viewer_dir / "docked_best_ligand.pdb"
-                self._write_ligand_pdb(best_pose, ligand_resname, docked_lig, chain=ligand_chain, resnum=ligand_resnum)
-
-                native_dir = viewer_dir / "ligplot_native"
-                docked_dir = viewer_dir / "ligplot_docked"
-                docked_dir.mkdir(parents=True, exist_ok=True)
-                docked_complex = docked_dir / "docked_complex.pdb"
-
-                native_png = None
-                if ref_mol is not None:
-                    native_dir.mkdir(parents=True, exist_ok=True)
-                    native_complex = native_dir / "native_complex.pdb"
-                    self._write_ligand_pdb(ref_mol, ligand_resname, native_lig, chain=ligand_chain, resnum=ligand_resnum)
-                    self._combine_complex(receptor_pdb, native_lig, native_complex)
-                    native_png = self._run_ligplot(
-                        ligplot_bin,
-                        native_complex,
-                        ligand_resname,
-                        ligand_resnum,
-                        ligand_chain,
-                        native_dir
-                    )
-
-                self._combine_complex(receptor_pdb, docked_lig, docked_complex)
-
-                docked_png = self._run_ligplot(
-                    ligplot_bin,
-                    docked_complex,
-                    ligand_resname,
-                    ligand_resnum,
-                    ligand_chain,
-                    docked_dir
-                )
-                return native_png, docked_png
+                launched = self._launch_ligplus_drawings(java_bin, ligplus_jar, drawings)
+                return drawings, launched
 
             def _apply(result):
-                if not result or state["closed"]:
-                    info_var.set("LigPlot generation failed")
+                if state["closed"]:
                     return
-                native_png, docked_png = result
-                if not docked_png:
-                    info_var.set("LigPlot generation failed")
+                if not result or result[1] == 0:
+                    info_var.set("LigPlot+ generation or launch failed")
                     return
-
-                dialog_lp = tk.Toplevel(dialog)
-                dialog_lp.title("LigPlot Interaction Diagrams")
-                dialog_lp.geometry("900x540")
-                dialog_lp.transient(dialog)
-
-                frame = tk.Frame(dialog_lp)
-                frame.pack(fill="both", expand=True, padx=10, pady=10)
-                frame.grid_columnconfigure(0, weight=1)
-                frame.grid_columnconfigure(1, weight=1)
-                frame.grid_rowconfigure(1, weight=1)
-
-                header = tk.Frame(frame)
-                header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=5, pady=(0, 6))
-                header.grid_columnconfigure(1, weight=1)
-                tk.Label(header, text="Native", font=("Helvetica", 12, "bold")).grid(row=0, column=0, sticky="w")
-                tk.Label(header, text="Docked", font=("Helvetica", 12, "bold")).grid(row=0, column=2, sticky="w")
-
-                def _fit_image(img: tk.PhotoImage, max_w: int, max_h: int) -> tk.PhotoImage:
-                    width = img.width()
-                    height = img.height()
-                    if width <= 0 or height <= 0:
-                        return img
-                    scale_w = math.ceil(width / max_w) if width > max_w else 1
-                    scale_h = math.ceil(height / max_h) if height > max_h else 1
-                    scale = max(scale_w, scale_h)
-                    return img.subsample(scale) if scale > 1 else img
-
-                native_img_raw = tk.PhotoImage(file=str(native_png)) if native_png else None
-                docked_img_raw = tk.PhotoImage(file=str(docked_png))
-
-                scale_steps = [50, 75, 100, 125, 150, 200]
-                scale_map = {
-                    50: (1, 2),
-                    75: (3, 4),
-                    100: (1, 1),
-                    125: (5, 4),
-                    150: (3, 2),
-                    200: (2, 1),
-                }
-                scale_idx = {"value": scale_steps.index(100)}
-
-                def _scale_image(img: tk.PhotoImage, percent: int) -> tk.PhotoImage:
-                    zoom, subsample = scale_map.get(percent, (1, 1))
-                    if zoom > 1:
-                        img = img.zoom(zoom, zoom)
-                    if subsample > 1:
-                        img = img.subsample(subsample, subsample)
-                    return img
-
-                def _apply_scale(percent: int) -> None:
-                    native_img = _scale_image(native_img_raw, percent) if native_img_raw else None
-                    docked_img = _scale_image(docked_img_raw, percent)
-                    if native_img:
-                        native_lbl.config(image=native_img, text="")
-                    else:
-                        native_lbl.config(image="", text="No native/reference\nligand for screening")
-                    docked_lbl.config(image=docked_img)
-                    native_lbl.image = native_img
-                    docked_lbl.image = docked_img
-                    scale_var.set(f"{percent}%")
-
-                native_lbl = tk.Label(frame, bd=1, relief="solid")
-                docked_lbl = tk.Label(frame, bd=1, relief="solid")
-                native_lbl.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
-                docked_lbl.grid(row=1, column=1, sticky="nsew", padx=5, pady=5)
-
-                controls = tk.Frame(frame)
-                controls.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=(6, 0))
-                scale_var = tk.StringVar(value="100%")
-                tk.Label(controls, text="Zoom").pack(side="left")
-                tk.Button(
-                    controls,
-                    text="-",
-                    width=3,
-                    command=lambda: _zoom(-1)
-                ).pack(side="left", padx=4)
-                tk.Button(
-                    controls,
-                    text="+",
-                    width=3,
-                    command=lambda: _zoom(1)
-                ).pack(side="left", padx=4)
-                tk.Label(controls, textvariable=scale_var, width=6).pack(side="left", padx=(4, 12))
-                tk.Button(
-                    controls,
-                    text="Fit",
-                    command=lambda: _fit()
-                ).pack(side="left")
-
-                def _fit() -> None:
-                    native_img = _fit_image(native_img_raw, 420, 420) if native_img_raw else None
-                    docked_img = _fit_image(docked_img_raw, 420, 420)
-                    if native_img:
-                        native_lbl.config(image=native_img, text="")
-                    else:
-                        native_lbl.config(image="", text="No native/reference\nligand for screening")
-                    docked_lbl.config(image=docked_img)
-                    native_lbl.image = native_img
-                    docked_lbl.image = docked_img
-                    scale_var.set("Fit")
-
-                def _zoom(delta: int) -> None:
-                    idx = max(0, min(len(scale_steps) - 1, scale_idx["value"] + delta))
-                    scale_idx["value"] = idx
-                    _apply_scale(scale_steps[idx])
-
-                _apply_scale(100)
-                native_lbl.image_raw = native_img_raw
-                docked_lbl.image_raw = docked_img_raw
-
-                info_var.set(f"LigPlot generated for {case['pdb_id']}_{case['display_name']}")
+                drawings, launched = result
+                labels = ", ".join(label for label, _ in drawings[:launched])
+                info_var.set(f"Opened LigPlot+: {labels}")
 
             def _run():
                 try:
                     result = _worker()
                 except Exception as exc:
-                    logger.warning("LigPlot failed: {}", exc)
+                    logger.warning("LigPlot+ failed: {}", exc)
                     result = None
                 self._run_on_ui(lambda: _apply(result))
 
             threading.Thread(target=_run, daemon=True).start()
 
         ligplot_btn.config(command=_open_ligplot)
-
         _render_case(0)
 
     def _pose_rmsd(self, ref_mol: Chem.Mol, pose_mol: Chem.Mol) -> Optional[float]:
@@ -7026,57 +7241,6 @@ class RedockAnalysisApp(tk.Tk):
             return coordinate_rmsd(ref_mol, pose_mol, use_symmetry=True)
         except Exception:
             return None
-
-    def _align_pose_to_ref(self, ref_mol: Chem.Mol, pose_mol: Chem.Mol) -> Chem.Mol:
-        aligned = Chem.Mol(pose_mol)
-        try:
-            rdMolAlign.AlignMol(aligned, ref_mol)
-            return aligned
-        except Exception:
-            pass
-
-        try:
-            ref_noh = Chem.RemoveHs(ref_mol, sanitize=False)
-            pose_noh = Chem.RemoveHs(aligned, sanitize=False)
-            min_atoms = min(ref_noh.GetNumAtoms(), pose_noh.GetNumAtoms())
-            if min_atoms < 3:
-                return aligned
-            mcs = rdFMCS.FindMCS(
-                [ref_noh, pose_noh],
-                ringMatchesRingOnly=False,
-                completeRingsOnly=False,
-                matchValences=False,
-                bondCompare=rdFMCS.BondCompare.CompareAny,
-                atomCompare=rdFMCS.AtomCompare.CompareElements
-            )
-            min_required = max(3, int(min_atoms * 0.7))
-            if mcs.numAtoms < min_required:
-                return aligned
-            pattern = Chem.MolFromSmarts(mcs.smartsString)
-            if pattern is None:
-                return aligned
-            ref_match = ref_noh.GetSubstructMatch(pattern)
-            pose_match = pose_noh.GetSubstructMatch(pattern)
-            if not ref_match or not pose_match:
-                return aligned
-            ref_map = []
-            pose_map = []
-            for ref_idx, pose_idx in zip(ref_match, pose_match):
-                ref_atom = ref_noh.GetAtomWithIdx(ref_idx)
-                pose_atom = pose_noh.GetAtomWithIdx(pose_idx)
-                if ref_atom.HasProp("_origAtomIdx"):
-                    ref_map.append(ref_atom.GetIntProp("_origAtomIdx"))
-                else:
-                    ref_map.append(ref_idx)
-                if pose_atom.HasProp("_origAtomIdx"):
-                    pose_map.append(pose_atom.GetIntProp("_origAtomIdx"))
-                else:
-                    pose_map.append(pose_idx)
-            atom_map = list(zip(pose_map, ref_map))
-            rdMolAlign.AlignMol(aligned, ref_mol, atomMap=atom_map)
-        except Exception:
-            return aligned
-        return aligned
 
     def _score_rmsd_corr(
         self,

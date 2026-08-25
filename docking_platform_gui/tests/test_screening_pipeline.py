@@ -10,6 +10,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 from docking_platform_gui.adaptive_docking import AdaptiveDockingPipeline
+import docking_platform_gui.gui.redock_analysis as redock_analysis_module
 from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp, RedockResult
 from docking_platform_gui.utils.rmsd import coordinate_rmsd
 
@@ -57,6 +58,47 @@ def test_screening_always_selects_ligand_variants_by_score():
     assert app._variant_selection_for_mode("screening", "rmsd") == "score"
     assert app._variant_selection_for_mode("screening", "score") == "score"
     assert app._variant_selection_for_mode("single", "rmsd") == "rmsd"
+
+
+def test_pymol_overlay_preserves_receptor_frame_pose_coordinates(
+    monkeypatch, tmp_path: Path
+):
+    app = _app_without_tk()
+    receptor = tmp_path / "receptor_prepared.pdb"
+    native = tmp_path / "crystal_ligand.pdb"
+    receptor.write_text("END\n")
+    native.write_text("END\n")
+    poses = [object(), object()]
+    reference = object()
+    written = {}
+
+    monkeypatch.setattr(app, "_ensure_receptor_pdb", lambda _case_dir: receptor)
+    monkeypatch.setattr(
+        app, "_load_poses_and_scores", lambda _path: (poses, [-9.0, -8.0])
+    )
+    monkeypatch.setattr(app, "_load_reference_mol", lambda _path: reference)
+    monkeypatch.setattr(
+        app, "_pose_rmsd", lambda _reference, pose: 4.0 if pose is poses[0] else 1.0
+    )
+
+    def _record_pose(molecule, _name, output_path, *args, **kwargs):
+        output_path = Path(output_path)
+        written[output_path.name] = molecule
+        output_path.write_text("END\n")
+
+    monkeypatch.setattr(app, "_write_ligand_pdb", _record_pose)
+    case = {
+        "output_file": tmp_path / "docked.pdbqt",
+        "case_dir": tmp_path,
+        "viewer_dir": tmp_path / "viewer",
+        "crystal_ligand_pdb": native,
+        "ligand": "AIH",
+        "display_name": "AIH",
+    }
+
+    assert app._prepare_pymol_overlay(case) is not None
+    assert written["best_score.pdb"] is poses[0]
+    assert written["best_rmsd.pdb"] is poses[1]
 
 
 def test_protocol_integer_lists_are_validated_and_deduplicated():
@@ -745,21 +787,322 @@ def test_software_provenance_records_commit_dependencies_and_binary_versions(mon
 def test_ligplot_and_dictionary_resolve_from_portable_environment(monkeypatch, tmp_path):
     root = tmp_path / "LigPlus"
     ligplot = root / "lib" / "exe_mac64" / "ligplot"
+    linux_ligplot = root / "lib" / "exe_linux64" / "ligplot"
     components = root / "lib" / "data" / "components.cif"
+    ligplus_jar = root / "LigPlus.jar"
     ligplot.parent.mkdir(parents=True)
+    linux_ligplot.parent.mkdir(parents=True)
     components.parent.mkdir(parents=True)
     ligplot.write_text("#!/bin/sh\n")
+    linux_ligplot.write_text("#!/bin/sh\n")
     components.write_text("data_components\n")
+    ligplus_jar.write_bytes(b"jar")
 
     monkeypatch.setenv("LIGPLUS_ROOT", str(root))
     monkeypatch.delenv("LIGPLOT_BIN", raising=False)
     monkeypatch.delenv("LIGPLOT_HOME", raising=False)
     monkeypatch.delenv("HET_GROUP_DICTIONARY", raising=False)
-    monkeypatch.setattr("docking_platform_gui.gui.redock_analysis.shutil.which", lambda _: None)
+    monkeypatch.setattr(redock_analysis_module.shutil, "which", lambda _: None)
+    monkeypatch.setattr(redock_analysis_module.sys, "platform", "darwin")
 
     app = _app_without_tk()
     assert app._resolve_ligplot_bin() == str(ligplot.resolve())
+    assert app._resolve_ligplus_jar(str(ligplot)) == ligplus_jar.resolve()
     assert app._resolve_components_cif(str(ligplot)) == components.resolve()
+
+
+def test_java_resolver_and_ligplus_launcher(monkeypatch, tmp_path):
+    java = tmp_path / "java"
+    jar = tmp_path / "LigPlus.jar"
+    drawing = tmp_path / "ligplot.drw"
+    missing = tmp_path / "missing.drw"
+    java.write_text("#!/bin/sh\n")
+    jar.write_bytes(b"jar")
+    drawing.write_text("drawing\n")
+    monkeypatch.setenv("JAVA_BIN", str(java))
+
+    calls = []
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        return object()
+
+    monkeypatch.setattr(redock_analysis_module.subprocess, "Popen", fake_popen)
+
+    assert RedockAnalysisApp._resolve_java_bin() == str(java.resolve())
+    launched = RedockAnalysisApp._launch_ligplus_drawings(
+        str(java.resolve()), jar, [("Native", drawing), ("Missing", missing)]
+    )
+
+    assert launched == 1
+    assert calls[0][0] == [str(java.resolve()), "-jar", str(jar), str(drawing)]
+    assert calls[0][1]["cwd"] == str(tmp_path)
+    assert calls[0][1]["start_new_session"] is True
+
+
+def test_viewer_receptor_removes_residual_site_ligand_and_connectivity(tmp_path):
+    receptor = tmp_path / "receptor.pdb"
+    output = tmp_path / "viewer" / "receptor_viewer.pdb"
+    receptor.write_text(
+        "\n".join(
+            [
+                "ATOM      1  CA  ALA A  10       0.000   0.000   0.000  1.00  0.00           C  ",
+                "ATOM      2  C1  AIH L   1       1.000   0.000   0.000  1.00  0.00           C  ",
+                "HETATM    3  O   HOH W   1       2.000   0.000   0.000  1.00  0.00           O  ",
+                "CONECT    2    3",
+                "CONECT    1    3",
+                "END",
+            ]
+        )
+        + "\n"
+    )
+
+    RedockAnalysisApp._prepare_viewer_receptor(receptor, "AIH", output)
+    rendered = output.read_text()
+
+    assert " AIH " not in rendered
+    assert "HOH" in rendered
+    assert "CONECT    2    3" not in rendered
+    assert "CONECT    1    3" in rendered
+    assert rendered.endswith("END\n")
+
+
+def test_best_score_selection_reports_its_coordinate_rmsd(monkeypatch, tmp_path):
+    app = _app_without_tk()
+    poses = [object(), object()]
+    reference = object()
+    monkeypatch.setattr(app, "_load_poses_and_scores", lambda _path: (poses, [-9.0, -8.0]))
+    monkeypatch.setattr(app, "_load_reference_mol", lambda _path: reference)
+    monkeypatch.setattr(
+        app, "_pose_rmsd", lambda _reference, pose: 3.25 if pose is poses[0] else 0.5
+    )
+
+    selected = app._select_best_pose(
+        tmp_path / "native.pdb",
+        tmp_path / "docked.pdbqt",
+        selection_mode="best_score",
+    )
+
+    assert selected is not None
+    assert selected[1] is poses[0]
+    assert selected[2] == pytest.approx(3.25)
+    assert selected[3] == pytest.approx(-9.0)
+
+
+def test_ligplus_preparation_generates_native_and_distinct_selected_drawings(
+    monkeypatch, tmp_path
+):
+    app = _app_without_tk()
+    receptor = tmp_path / "receptor_prepared.pdb"
+    receptor.write_text("END\n")
+    reference = object()
+    best_score_pose = object()
+    best_rmsd_pose = object()
+
+    monkeypatch.setattr(app, "_ensure_receptor_pdb", lambda _case_dir: receptor)
+
+    def fake_select(_native, _docked, selection_mode="best_rmsd"):
+        if selection_mode == "best_score":
+            return reference, best_score_pose, 3.0, -9.0, 0, 2
+        return reference, best_rmsd_pose, 0.5, -8.0, 1, 2
+
+    monkeypatch.setattr(app, "_select_best_pose", fake_select)
+    monkeypatch.setattr(
+        app,
+        "_prepare_ligplot_pair",
+        lambda _case, ref, docked: (ref, docked, None, None, "AIH", "AIH"),
+    )
+    monkeypatch.setattr(
+        app,
+        "_write_ligand_pdb",
+        lambda _mol, _name, path, **_kwargs: Path(path).write_text("END\n"),
+    )
+    monkeypatch.setattr(
+        app,
+        "_combine_complex",
+        lambda _receptor, _ligand, path: Path(path).write_text("END\n"),
+    )
+
+    def fake_run(_bin, _complex, _resnum, _chain, out_dir):
+        drawing = Path(out_dir) / "ligplot.drw"
+        drawing.write_text("drawing\n")
+        return None
+
+    monkeypatch.setattr(app, "_run_ligplot", fake_run)
+    case = {
+        "case_dir": tmp_path,
+        "viewer_dir": tmp_path / "viewer",
+        "crystal_ligand_pdb": tmp_path / "native.pdb",
+        "output_file": tmp_path / "docked.pdbqt",
+        "ligand": "AIH",
+    }
+
+    drawings = app._prepare_ligplus_drawings(case, "/opt/ligplot")
+
+    assert [label for label, _ in drawings] == ["Native", "Best score", "Best RMSD"]
+    assert all(path.is_file() for _, path in drawings)
+
+
+def test_ligplot_resolves_legacy_desktop_install(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    root = home / "Desktop" / "docking_platform" / "tools" / "LigPlus"
+    ligplot = root / "lib" / "exe_mac64" / "ligplot"
+    ligplot.parent.mkdir(parents=True)
+    ligplot.write_text("#!/bin/sh\n")
+
+    monkeypatch.delenv("LIGPLOT_BIN", raising=False)
+    monkeypatch.delenv("LIGPLUS_ROOT", raising=False)
+    monkeypatch.delenv("LIGPLOT_HOME", raising=False)
+    monkeypatch.setattr(redock_analysis_module.shutil, "which", lambda _: None)
+    monkeypatch.setattr(redock_analysis_module.sys, "platform", "darwin")
+    monkeypatch.setattr(redock_analysis_module.Path, "home", staticmethod(lambda: home))
+
+    app = _app_without_tk()
+    assert app._resolve_ligplot_bin() == str(ligplot.resolve())
+
+
+def test_ligplot_ligand_writer_replaces_duplicate_pdb_atom_names(tmp_path):
+    mol = Chem.MolFromPDBBlock(
+        "\n".join(
+            [
+                "HETATM    1  C   LIG L   1       0.000   0.000   0.000  1.00  0.00           C  ",
+                "HETATM    2  C   LIG L   1       1.400   0.000   0.000  1.00  0.00           C  ",
+                "HETATM    3  O   LIG L   1       2.600   0.000   0.000  1.00  0.00           O  ",
+                "CONECT    1    2",
+                "CONECT    2    3",
+                "END",
+            ]
+        ),
+        removeHs=False,
+    )
+    assert mol is not None
+
+    output_pdb = tmp_path / "ligand.pdb"
+    _app_without_tk()._write_ligand_pdb(mol, "LIG", output_pdb)
+
+    atom_names = [
+        line[12:16].strip()
+        for line in output_pdb.read_text().splitlines()
+        if line.startswith("HETATM")
+    ]
+    assert atom_names == ["C1", "C2", "O1"]
+    conect = [
+        line
+        for line in output_pdb.read_text().splitlines()
+        if line.startswith("CONECT")
+    ]
+    assert conect == ["CONECT    1    2", "CONECT    2    3"]
+
+
+def test_ligplot_restores_dictionary_double_bonds_without_changing_labels(tmp_path):
+    ps_file = tmp_path / "ligplot.ps"
+    ps_file.write_text(
+        "\n".join(
+            [
+                "/Ligbond_width   {    3.000 } def",
+                "% Bond lines",
+                "Ligbond_colour",
+                "Ligbond_width W",
+                " 10.00 20.00 30.00 20.00 L",
+                " 30.00 20.00 40.00 30.00 L",
+                "Nligbond_colour",
+                " 50.00 50.00 60.00 60.00 L",
+                "% Atoms",
+                " 10.00 20.00 Ligatom_radius Sphere",
+                "( C1 ) Ligatmname_size Center",
+                " 30.00 20.00 Ligatom_radius Sphere",
+                "( C2 ) Ligatmname_size Center",
+                " 40.00 30.00 Ligatom_radius Sphere",
+                "( O1 ) Ligatmname_size Center",
+                "% Hydrophobic interactions",
+                "(2.81) HBtext_size Print",
+            ]
+        )
+        + "\n"
+    )
+    bond_orders = tmp_path / "hbadd.bonds"
+    bond_orders.write_text(
+        "    1  C1  LIG    1  L ->      2  C2  LIG    1  L   DOUB\n"
+        "    2  C2  LIG    1  L ->      3  O1  LIG    1  L   SING\n"
+    )
+
+    restored = RedockAnalysisApp._restore_ligplot_double_bonds(
+        ps_file,
+        bond_orders,
+        1,
+        "L",
+    )
+    rendered = ps_file.read_text()
+
+    assert restored == 1
+    assert " 10.00 20.00 30.00 20.00 L" not in rendered
+    assert " 10.00 22.25 30.00 22.25 L" in rendered
+    assert " 10.00 17.75 30.00 17.75 L" in rendered
+    assert " 30.00 20.00 40.00 30.00 L" in rendered
+    assert "(2.81) HBtext_size Print" in rendered
+    assert RedockAnalysisApp._restore_ligplot_double_bonds(
+        ps_file,
+        bond_orders,
+        1,
+        "L",
+    ) == 0
+
+
+def test_run_ligplot_uses_hbplus_and_ligplot_sequence(monkeypatch, tmp_path):
+    root = tmp_path / "LigPlus"
+    ligplot = root / "lib" / "exe_mac64" / "ligplot"
+    hbadd = root / "lib" / "exe_mac64" / "hbadd"
+    hbplus = root / "lib" / "exe_mac64" / "hbplus"
+    prm = root / "lib" / "params" / "ligplot.prm"
+    components = root / "lib" / "data" / "components.cif"
+    for tool in (ligplot, hbadd, hbplus):
+        tool.parent.mkdir(parents=True, exist_ok=True)
+        tool.write_text("#!/bin/sh\n")
+    prm.parent.mkdir(parents=True, exist_ok=True)
+    prm.write_text("params\n")
+    components.parent.mkdir(parents=True, exist_ok=True)
+    components.write_text("data_components\n")
+
+    complex_pdb = tmp_path / "complexes" / "complex.pdb"
+    complex_pdb.parent.mkdir(parents=True, exist_ok=True)
+    complex_pdb.write_text("END\n")
+    out_dir = tmp_path / "ligplot_out"
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        cwd = Path(kwargs["cwd"])
+        if Path(cmd[0]).name == "ligplot":
+            (cwd / "ligplot.ps").write_text("%!PS\n")
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def fake_ps_to_png(self, ps_file, png_file):
+        png_file.write_bytes(b"png")
+        return True
+
+    monkeypatch.setattr(redock_analysis_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(RedockAnalysisApp, "_ligplot_ps_to_png", fake_ps_to_png)
+
+    app = _app_without_tk()
+    png_file = app._run_ligplot(str(ligplot), complex_pdb, 1, "L", out_dir)
+
+    assert png_file == out_dir / "ligplot.png"
+    assert (out_dir / "ligplot.prm").exists()
+    assert [Path(cmd[0]).name for cmd, _ in calls] == ["hbadd", "hbplus", "hbplus", "ligplot"]
+    assert calls[0][0] == [str(hbadd), "complex.pdb", str(components.resolve())]
+    assert calls[1][0] == [str(hbplus), "-L", "-h", "2.7", "-d", "3.35", "complex.pdb"]
+    assert calls[2][0] == [str(hbplus), "-L", "-N", "complex.pdb"]
+    assert calls[3][0] == [
+        str(ligplot),
+        "complex.pdb",
+        "1",
+        "1",
+        "L",
+        "-prm",
+        "ligplot.prm",
+        "-ctype",
+        "1",
+    ]
 
 
 def test_pose_viewer_uses_protocol_development_csv_directly(tmp_path):
