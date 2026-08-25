@@ -3241,15 +3241,17 @@ class RedockAnalysisApp(tk.Tk):
 
     @staticmethod
     def _protocol_chart_data(
-        frame: pd.DataFrame, threshold: float = 2.0, max_conditions: int = 12
+        frame: pd.DataFrame, threshold: float = 2.0
     ) -> dict:
-        """Aggregate protocol outcomes by the complete experimental condition."""
+        """Build continuous-metric chart data for a factorial protocol sweep."""
         empty = {
-            "condition_performance": [], "condition_rmsd": [],
-            "runtime": [], "completion": [], "rescore_comparison": [],
-            "rescore_rmsd": [], "rescore_change": [],
-            "target_performance": [], "condition_count": 0, "shown_count": 0,
-            "best_condition": None,
+            "pose_ranking_points": [], "rescore_points": [],
+            "runtime_points": [], "factor_effects": [],
+            "source_rows": len(frame), "condition_count": 0,
+            "complex_count": 0, "top1_success": 0, "top5_success": 0,
+            "best_pose_success": 0, "rescore_improved": 0,
+            "rescore_unchanged": 0, "rescore_worse": 0,
+            "median_rescore_delta": None,
         }
         if frame.empty or "status" not in frame:
             return empty
@@ -3290,6 +3292,31 @@ class RedockAnalysisApp(tk.Tk):
         if working.empty:
             return empty
 
+        # Older runs repeated identical rDock work for each Vina
+        # exhaustiveness value even though rDock does not use that parameter.
+        working.loc[
+            working["engine"].astype(str).str.lower() == "rdock", "exhaustiveness"
+        ] = "N/A"
+        identity_columns = [
+            column for column in (
+                "pdb_id", "ligand_resname", "ligand_chain", "target_name",
+                "engine", "box_definition", "rescore_method", "water_handling",
+                "exhaustiveness", "seed",
+            )
+            if column in working.columns
+        ]
+        if identity_columns:
+            rdock_mask = working["engine"].astype(str).str.lower() == "rdock"
+            working = pd.concat(
+                [
+                    working[~rdock_mask],
+                    working[rdock_mask].drop_duplicates(
+                        subset=identity_columns, keep="last"
+                    ),
+                ],
+                axis=0,
+            ).sort_index()
+
         def _compact(value: object) -> str:
             if isinstance(value, (int, np.integer)):
                 return str(value)
@@ -3304,12 +3331,6 @@ class RedockAnalysisApp(tk.Tk):
                 f"e{_compact(exhaustiveness)}", seed_label,
                 f"rescore:{_compact(rescore)}",
             ))
-
-        def _rate(group: pd.DataFrame, column: str) -> Optional[float]:
-            values = group[column].dropna()
-            if values.empty:
-                return None
-            return 100.0 * float((values < threshold).mean())
 
         records = []
         grouped = working.groupby(list(condition_columns), dropna=False, sort=False)
@@ -3327,19 +3348,22 @@ class RedockAnalysisApp(tk.Tk):
             best_values = complete["best_rmsd"].dropna()
             baseline_values = complete["top1_rmsd"].dropna()
             rescored_values = complete["rescore_top1_rmsd"].dropna()
+            selected_top5_values = complete[selected_top5].dropna()
+            label = _condition_label(key, seed_label)
             records.append({
                 "key": key,
-                "label": _condition_label(key, seed_label),
+                "label": label,
+                "engine": str(key[0]),
+                "has_rescore": has_rescore,
                 "rows": complete,
                 "completion": 100.0 * len(complete) / len(all_rows),
-                "best": _rate(complete, "best_rmsd"),
-                "top1": _rate(complete, selected_top1),
-                "top5": _rate(complete, selected_top5),
-                "baseline_top1": _rate(complete, "top1_rmsd"),
-                "rescored_top1": _rate(complete, "rescore_top1_rmsd") if has_rescore else None,
                 "top1_rmsd": (
                     float(selected_top1_values.median())
                     if not selected_top1_values.empty else None
+                ),
+                "top5_rmsd": (
+                    float(selected_top5_values.median())
+                    if not selected_top5_values.empty else None
                 ),
                 "best_rmsd": float(best_values.median()) if not best_values.empty else None,
                 "baseline_top1_rmsd": (
@@ -3350,79 +3374,146 @@ class RedockAnalysisApp(tk.Tk):
                     if has_rescore and not rescored_values.empty else None
                 ),
                 "runtime": float(runtime_values.median()) if not runtime_values.empty else None,
-                "median_top1": (
-                    float(selected_top1_values.median())
-                    if not selected_top1_values.empty else float("inf")
-                ),
-                "has_rescore": has_rescore,
             })
 
-        records.sort(key=lambda row: (
-            -(row["top1"] if row["top1"] is not None else -1.0),
-            -(row["top5"] if row["top5"] is not None else -1.0),
-            -(row["best"] if row["best"] is not None else -1.0),
-            -row["completion"], row["median_top1"],
-        ))
-        shown = records[:max_conditions]
-        best_record = records[0] if records else None
+        pose_ranking_points = []
+        rescore_points = []
+        runtime_points = []
+        for row in records:
+            common = {
+                "engine": row["engine"], "rescore": row["has_rescore"],
+                "label": row["label"],
+            }
+            if row["best_rmsd"] is not None and row["top1_rmsd"] is not None:
+                pose_ranking_points.append({
+                    **common, "x": row["best_rmsd"], "y": row["top1_rmsd"],
+                    "tooltip": (
+                        f"{row['label']}\nBest pose: {row['best_rmsd']:.2f} A; "
+                        f"selected Top-1: {row['top1_rmsd']:.2f} A"
+                    ),
+                })
+            if (
+                row["has_rescore"]
+                and row["baseline_top1_rmsd"] is not None
+                and row["rescored_top1_rmsd"] is not None
+            ):
+                delta = row["rescored_top1_rmsd"] - row["baseline_top1_rmsd"]
+                rescore_points.append({
+                    **common,
+                    "x": row["baseline_top1_rmsd"],
+                    "y": row["rescored_top1_rmsd"],
+                    "delta": delta,
+                    "tooltip": (
+                        f"{row['label']}\nDocking: {row['baseline_top1_rmsd']:.2f} A; "
+                        f"rescored: {row['rescored_top1_rmsd']:.2f} A; "
+                        f"change: {delta:+.2f} A"
+                    ),
+                })
+            if row["runtime"] is not None and row["top1_rmsd"] is not None:
+                runtime_points.append({
+                    **common, "x": row["runtime"], "y": row["top1_rmsd"],
+                    "tooltip": (
+                        f"{row['label']}\nRuntime: {row['runtime']:.1f} s; "
+                        f"selected Top-1: {row['top1_rmsd']:.2f} A"
+                    ),
+                })
 
-        target_performance = []
-        if best_record is not None and not best_record["rows"].empty:
-            best_rows = best_record["rows"].copy()
-            if "target_name" not in best_rows:
-                best_rows["target_name"] = best_rows.get("pdb_id", "unknown")
-            best_rows["target_name"] = best_rows["target_name"].replace("", np.nan)
-            if "pdb_id" in best_rows:
-                best_rows["target_name"] = best_rows["target_name"].fillna(best_rows["pdb_id"])
-            selected_column = (
-                "rescore_top1_rmsd" if best_record["has_rescore"] else "top1_rmsd"
-            )
-            for target, target_rows in best_rows.groupby("target_name", dropna=False):
-                target_performance.append((
-                    str(target),
-                    [_rate(target_rows, selected_column), _rate(target_rows, "best_rmsd")],
-                ))
-            target_performance.sort(
-                key=lambda item: -(item[1][0] if item[1][0] is not None else -1.0)
+        for point in runtime_points:
+            point["pareto"] = not any(
+                other["x"] <= point["x"]
+                and other["y"] <= point["y"]
+                and (other["x"] < point["x"] or other["y"] < point["y"])
+                for other in runtime_points
             )
 
-        rescored_rows = working[
-            working["rescore_method"].astype(str).str.strip().str.lower().map(
-                lambda value: value not in {"", "none", "nan", "n/a"}
-            )
-            & (working["_status"] == "complete")
-        ][["top1_rmsd", "rescore_top1_rmsd"]].dropna()
-        differences = rescored_rows["rescore_top1_rmsd"] - rescored_rows["top1_rmsd"]
+        factor_specs = (
+            ("Engine", 0), ("Box", 1), ("Water", 3),
+            ("Exhaustiveness", 4), ("Ranking", 2),
+        )
+        factor_values: Dict[Tuple[str, str], List[float]] = {}
+        for row in records:
+            if row["top1_rmsd"] is None:
+                continue
+            for factor, key_index in factor_specs:
+                raw_level = row["key"][key_index]
+                if factor == "Exhaustiveness" and str(raw_level).lower() in {"n/a", "nan"}:
+                    continue
+                if factor == "Ranking":
+                    level = "rescored" if row["has_rescore"] else "docking"
+                else:
+                    level = _compact(raw_level)
+                factor_values.setdefault((factor, level), []).append(row["top1_rmsd"])
 
+        factor_effects = []
+        preferred_order = {
+            "Engine": {"smina": 0, "vina": 1, "rdock": 2},
+            "Water": {"remove all": 0, "selective": 1, "retain all": 2},
+            "Ranking": {"docking": 0, "rescored": 1},
+        }
+
+        def _factor_level_key(factor: str, level: str) -> Tuple[int, object]:
+            if factor == "Exhaustiveness":
+                try:
+                    return 0, float(level)
+                except (TypeError, ValueError):
+                    return 1, level
+            order = preferred_order.get(factor, {})
+            return (0, order[level]) if level in order else (1, str(level))
+
+        for factor, _ in factor_specs:
+            levels = sorted(
+                [
+                    (level, values)
+                    for (record_factor, level), values in factor_values.items()
+                    if record_factor == factor
+                ],
+                key=lambda item, current_factor=factor:
+                _factor_level_key(current_factor, item[0]),
+            )
+            for level, values in levels:
+                array = np.asarray(values, dtype=float)
+                factor_effects.append({
+                    "factor": factor, "label": f"{factor}: {level}",
+                    "minimum": float(np.min(array)),
+                    "q1": float(np.percentile(array, 25)),
+                    "median": float(np.median(array)),
+                    "q3": float(np.percentile(array, 75)),
+                    "maximum": float(np.max(array)), "n": len(array),
+                })
+
+        complex_columns = [
+            column for column in ("pdb_id", "ligand_resname", "ligand_chain")
+            if column in working.columns
+        ]
+        complex_count = (
+            working[complex_columns].drop_duplicates().shape[0]
+            if complex_columns else 0
+        )
+        deltas = np.asarray([point["delta"] for point in rescore_points], dtype=float)
         return {
-            "condition_performance": [
-                (row["label"], [row["top1"], row["best"]]) for row in shown
-            ],
-            "condition_rmsd": [
-                (row["label"], [row["top1_rmsd"], row["best_rmsd"]]) for row in shown
-            ],
-            "runtime": [(row["label"], row["runtime"]) for row in shown],
-            "completion": [(row["label"], row["completion"]) for row in shown],
-            "rescore_comparison": [
-                (row["label"], [row["baseline_top1"], row["rescored_top1"]])
-                for row in shown if row["has_rescore"]
-            ],
-            "rescore_rmsd": [
-                (
-                    row["label"],
-                    [row["baseline_top1_rmsd"], row["rescored_top1_rmsd"]],
-                )
-                for row in shown if row["has_rescore"]
-            ],
-            "rescore_change": [
-                ("Improved", float((differences < -1e-6).sum())),
-                ("Unchanged", float((differences.abs() <= 1e-6).sum())),
-                ("Worse", float((differences > 1e-6).sum())),
-            ] if not differences.empty else [],
-            "target_performance": target_performance,
+            "pose_ranking_points": pose_ranking_points,
+            "rescore_points": rescore_points,
+            "runtime_points": runtime_points,
+            "factor_effects": factor_effects,
+            "source_rows": len(frame),
             "condition_count": len(records),
-            "shown_count": len(shown),
-            "best_condition": best_record["label"] if best_record else None,
+            "complex_count": complex_count,
+            "top1_success": sum(
+                row["top1_rmsd"] is not None and row["top1_rmsd"] < threshold
+                for row in records
+            ),
+            "top5_success": sum(
+                row["top5_rmsd"] is not None and row["top5_rmsd"] < threshold
+                for row in records
+            ),
+            "best_pose_success": sum(
+                row["best_rmsd"] is not None and row["best_rmsd"] < threshold
+                for row in records
+            ),
+            "rescore_improved": int((deltas < -1e-6).sum()) if deltas.size else 0,
+            "rescore_unchanged": int((np.abs(deltas) <= 1e-6).sum()) if deltas.size else 0,
+            "rescore_worse": int((deltas > 1e-6).sum()) if deltas.size else 0,
+            "median_rescore_delta": float(np.median(deltas)) if deltas.size else None,
         }
 
     def _populate_protocol_charts(self, parent: tk.Frame, results_path: Path) -> None:
@@ -3436,17 +3527,20 @@ class RedockAnalysisApp(tk.Tk):
             tk.Label(parent, text=f"Could not load chart data: {exc}").pack(anchor="w", padx=10, pady=10)
             return
         data = self._protocol_chart_data(frame)
-        note = f"Charts calculated from {len(frame)} rows in {results_path.name}."
-        if data["condition_count"] > data["shown_count"]:
+        condition_count = data["condition_count"]
+        note = (
+            f"{data['source_rows']} saved rows represent {condition_count} distinct "
+            f"protocol conditions across {data['complex_count']} crystal complex(es). "
+            f"At 2 A: Top-1 {data['top1_success']}/{condition_count}, "
+            f"Top-5 {data['top5_success']}/{condition_count}, and a generated pose "
+            f"{data['best_pose_success']}/{condition_count}."
+        )
+        if data["rescore_points"]:
             note += (
-                f" Showing the best {data['shown_count']} of "
-                f"{data['condition_count']} evaluated protocol conditions."
-            )
-        if data["best_condition"]:
-            note += (
-                f" Best-ranked condition: {data['best_condition']}. Ranking prioritizes "
-                "selected Top-1, Top-5, and best-pose recovery, then completeness and "
-                "median Top-1 RMSD."
+                f" Rescoring improved {data['rescore_improved']}, left "
+                f"{data['rescore_unchanged']} unchanged, and worsened "
+                f"{data['rescore_worse']} conditions; median Top-1 change "
+                f"{data['median_rescore_delta']:+.2f} A."
             )
         tk.Label(
             parent, text=note, anchor="w", justify="left", wraplength=1050,
@@ -3456,58 +3550,69 @@ class RedockAnalysisApp(tk.Tk):
         parent.grid_columnconfigure(1, weight=1)
         parent.grid_rowconfigure(1, weight=1)
         parent.grid_rowconfigure(2, weight=1)
-        third_chart = (
-            "Median Top-1 RMSD: docking vs rescoring",
-            "grouped", data["rescore_rmsd"],
-            ("Docking rank", "Rescored rank"), None,
-            [(2.0, "2 A")],
-        ) if data["rescore_rmsd"] else (
-            "Best condition: recovery by target",
-            "grouped", data["target_performance"],
-            ("Selected Top-1", "Best generated pose"), 100.0, None,
-        )
-        fourth_chart = (
-            "Best condition: recovery by target",
-            "grouped", data["target_performance"],
-            ("Selected Top-1", "Best generated pose"), 100.0, None,
-        ) if len(data["target_performance"]) > 1 else (
-            "Median runtime by protocol condition (s)",
-            "horizontal", data["runtime"], (), None, None,
-        )
-        charts = [
-            (
-                "Median RMSD by protocol condition",
-                "grouped", data["condition_rmsd"],
-                ("Selected Top-1", "Best generated pose"), None,
-                [(2.0, "2 A")],
+
+        pose_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
+        pose_canvas.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        self._install_chart(
+            pose_canvas,
+            lambda: self._draw_protocol_scatter(
+                pose_canvas,
+                "Pose generation vs selected ranking",
+                data["pose_ranking_points"],
+                "Best generated-pose RMSD (A)",
+                "Selected Top-1 RMSD (A)",
+                x_threshold=2.0,
+                y_threshold=2.0,
+                aggregate_points=True,
+                quadrant_labels=True,
             ),
-            (
-                "Pose recovery by protocol condition (%)",
-                "grouped", data["condition_performance"],
-                ("Selected Top-1", "Best generated pose"), 100.0, None,
+        )
+
+        rescore_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
+        rescore_canvas.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
+        self._install_chart(
+            rescore_canvas,
+            lambda: self._draw_protocol_scatter(
+                rescore_canvas,
+                "Paired Top-1 RMSD: docking vs rescoring",
+                data["rescore_points"],
+                "Docking-ranked Top-1 RMSD (A)",
+                "Rescored Top-1 RMSD (A)",
+                x_threshold=2.0,
+                y_threshold=2.0,
+                diagonal=True,
+                equal_axes=True,
+                aggregate_points=True,
             ),
-            third_chart,
-            fourth_chart,
-        ]
-        for index, (title, chart_type, values, series, maximum, thresholds) in enumerate(charts):
-            canvas = tk.Canvas(parent, height=300, bg="white", highlightthickness=1)
-            canvas.grid(
-                row=1 + index // 2, column=index % 2, sticky="nsew", padx=10, pady=10
-            )
-            if chart_type == "grouped":
-                self._install_chart(
-                    canvas,
-                    lambda c=canvas, t=title, v=values, s=series, m=maximum, h=thresholds:
-                    self._draw_grouped_horizontal_chart(
-                        c, t, v, s, max_value=m, thresholds=h
-                    ),
-                )
-            else:
-                self._install_chart(
-                    canvas,
-                    lambda c=canvas, t=title, v=values:
-                    self._draw_horizontal_chart(c, t, v),
-                )
+        )
+
+        runtime_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
+        runtime_canvas.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
+        self._install_chart(
+            runtime_canvas,
+            lambda: self._draw_protocol_scatter(
+                runtime_canvas,
+                "Accuracy-runtime trade-off",
+                data["runtime_points"],
+                "Recorded docking runtime (s, log scale)",
+                "Selected Top-1 RMSD (A)",
+                y_threshold=2.0,
+                pareto=True,
+                log_x=True,
+            ),
+        )
+
+        effects_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
+        effects_canvas.grid(row=2, column=1, sticky="nsew", padx=10, pady=10)
+        self._install_chart(
+            effects_canvas,
+            lambda: self._draw_factor_effect_chart(
+                effects_canvas,
+                "Top-1 RMSD by protocol factor",
+                data["factor_effects"],
+                threshold=2.0,
+            ),
+        )
 
     def _render_results(self, summary: dict, rmsd_values: List[float]) -> None:
         self._clear_frame(self.results_summary_tab)
@@ -3679,6 +3784,7 @@ class RedockAnalysisApp(tk.Tk):
             for row in screening_rows
         ]
         return {
+            "assay_benchmark": summary.get("assay_benchmark_charts") or {},
             "structure_auc": structure_auc[:15],
             "score_margin": score_margin[:15],
             "active_rank_percentile": active_rank_percentile[:15],
@@ -3710,6 +3816,101 @@ class RedockAnalysisApp(tk.Tk):
             parent.grid_rowconfigure(2, weight=1)
             parent.grid_columnconfigure(0, weight=1)
             parent.grid_columnconfigure(1, weight=1)
+
+            assay_data = chart_data["assay_benchmark"]
+            if (
+                summary.get("enrichment_dataset_type") == "assay_benchmark"
+                and assay_data.get("roc_curve")
+            ):
+                tk.Label(
+                    parent,
+                    text=(
+                        f"Assay benchmark: {assay_data['actives']} actives and "
+                        f"{assay_data['inactives']} inactives ranked at one receptor. "
+                        "Curves and distributions use the same ranking score; higher "
+                        "values rank better. Histogram classes are normalized separately."
+                    ),
+                    anchor="w",
+                    justify="left",
+                    wraplength=1050,
+                    fg="#555555",
+                ).grid(
+                    row=0, column=0, columnspan=2, sticky="ew",
+                    padx=10, pady=(10, 0),
+                )
+
+                auc = summary.get("roc_auc")
+                ap = summary.get("average_precision")
+                prevalence = assay_data.get("prevalence")
+                ef_values = [
+                    summary.get("ef_1_percent"),
+                    summary.get("ef_5_percent"),
+                    summary.get("ef_10_percent"),
+                ]
+                chart_specs = [
+                    (
+                        "curve",
+                        f"ROC curve (AUC = {auc:.3f})" if auc is not None else "ROC curve",
+                        assay_data["roc_curve"],
+                        "False-positive rate", "True-positive rate",
+                        True, None, (), "#177E89",
+                    ),
+                    (
+                        "curve",
+                        (
+                            f"Precision-recall curve (AP = {ap:.3f})"
+                            if ap is not None else "Precision-recall curve"
+                        ),
+                        assay_data["precision_recall_curve"],
+                        "Recall", "Precision",
+                        False, prevalence, (), "#D97732",
+                    ),
+                    (
+                        "histogram", "Ranking-score distributions",
+                        assay_data["score_histogram"],
+                        "Ranking score (higher is better)", "Within-class frequency (%)",
+                        False, None, (), "",
+                    ),
+                    (
+                        "curve",
+                        "Cumulative active recovery (EF 1/5/10% = "
+                        + "/".join(
+                            f"{value:.2f}" if value is not None else "N/A"
+                            for value in ef_values
+                        )
+                        + ")",
+                        assay_data["cumulative_recovery_curve"],
+                        "Fraction of library screened", "Fraction of actives recovered",
+                        True, None, (0.01, 0.05, 0.10), "#5B8E3E",
+                    ),
+                ]
+                for index, spec in enumerate(chart_specs):
+                    canvas = tk.Canvas(
+                        parent, height=300, bg="white", highlightthickness=1
+                    )
+                    canvas.grid(
+                        row=1 + index // 2, column=index % 2,
+                        sticky="nsew", padx=10, pady=10,
+                    )
+                    if spec[0] == "histogram":
+                        self._install_chart(
+                            canvas,
+                            lambda c=canvas, s=spec: self._draw_score_distribution_chart(
+                                c, s[1], s[2], s[3], s[4]
+                            ),
+                        )
+                    else:
+                        self._install_chart(
+                            canvas,
+                            lambda c=canvas, s=spec: self._draw_xy_line_chart(
+                                c, s[1], s[2], s[3], s[4],
+                                reference_diagonal=s[5],
+                                horizontal_reference=s[6],
+                                vertical_guides=s[7],
+                                color=s[8],
+                            ),
+                        )
+                return
 
             tk.Label(
                 parent,
@@ -3916,6 +4117,627 @@ class RedockAnalysisApp(tk.Tk):
     def _short_chart_label(label: str, limit: int = 48) -> str:
         cleaned = str(label).replace("\n", " ")
         return cleaned if len(cleaned) <= limit else f"{cleaned[:limit - 3]}..."
+
+    @staticmethod
+    def _protocol_engine_color(engine: str) -> str:
+        return {
+            "smina": "#177E89",
+            "vina": "#D97732",
+            "rdock": "#5B8E3E",
+        }.get(str(engine).lower(), "#60758A")
+
+    @staticmethod
+    def _draw_chart_tooltip(
+        canvas: tk.Canvas, event: tk.Event, text: str, width: int, height: int
+    ) -> None:
+        canvas.delete("chart_tooltip")
+        x = min(max(event.x + 12, 8), max(width - 310, 8))
+        y = min(max(event.y + 12, 8), max(height - 66, 8))
+        text_id = canvas.create_text(
+            x + 7, y + 6, text=text, anchor="nw", width=285,
+            fill="#202020", font=("TkDefaultFont", 8), tags="chart_tooltip",
+        )
+        bounds = canvas.bbox(text_id)
+        if bounds:
+            rectangle = canvas.create_rectangle(
+                bounds[0] - 5, bounds[1] - 4, bounds[2] + 5, bounds[3] + 4,
+                fill="#FFFBEA", outline="#5D5A4F", tags="chart_tooltip",
+            )
+            canvas.tag_lower(rectangle, text_id)
+
+    def _draw_protocol_scatter(
+        self,
+        canvas: tk.Canvas,
+        title: str,
+        points: List[dict],
+        x_label: str,
+        y_label: str,
+        x_threshold: Optional[float] = None,
+        y_threshold: Optional[float] = None,
+        diagonal: bool = False,
+        equal_axes: bool = False,
+        pareto: bool = False,
+        aggregate_points: bool = False,
+        quadrant_labels: bool = False,
+        log_x: bool = False,
+    ) -> None:
+        """Render a responsive condition-level scatter plot with hover details."""
+        canvas.delete("all")
+        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 460)
+        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 280)
+        left, right, top, bottom = 64, 24, 67, 48
+        plot_width = max(100, width - left - right)
+        plot_height = max(90, height - top - bottom)
+        canvas.create_text(
+            14, 12, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold")
+        )
+        if not points:
+            canvas.create_text(
+                left, height // 2, text="No applicable data", anchor="w", fill="#666666"
+            )
+            return
+
+        raw_valid_points = [
+            dict(point) for point in points
+            if np.isfinite(point.get("x", np.nan))
+            and np.isfinite(point.get("y", np.nan))
+            and (not log_x or float(point.get("x", 0.0)) > 0)
+        ]
+        if not raw_valid_points:
+            canvas.create_text(
+                left, height // 2, text="No finite values", anchor="w", fill="#666666"
+            )
+            return
+
+        if aggregate_points:
+            grouped_points: Dict[Tuple[str, bool, float, float], List[dict]] = {}
+            for point in raw_valid_points:
+                key = (
+                    str(point.get("engine") or "unknown"),
+                    bool(point.get("rescore")),
+                    round(float(point["x"]), 2),
+                    round(float(point["y"]), 2),
+                )
+                grouped_points.setdefault(key, []).append(point)
+            valid_points = []
+            for group in grouped_points.values():
+                point = dict(group[0])
+                point["count"] = len(group)
+                if len(group) > 1:
+                    point["tooltip"] = (
+                        f"{len(group)} overlapping conditions at this coordinate\n"
+                        f"Example: {point.get('tooltip') or point.get('label', '')}"
+                    )
+                valid_points.append(point)
+        else:
+            valid_points = raw_valid_points
+
+        x_values = [float(point["x"]) for point in valid_points]
+        y_values = [float(point["y"]) for point in valid_points]
+        raw_x_max = max(
+            x_values + ([float(x_threshold)] if x_threshold is not None else [])
+        )
+        y_max = max(y_values + ([float(y_threshold)] if y_threshold is not None else []))
+        if equal_axes:
+            shared_max = max(raw_x_max, y_max) * 1.06
+            x_axis_min, x_axis_max = 0.0, shared_max
+            y_max = shared_max
+        elif log_x:
+            log_values = [math.log10(value) for value in x_values]
+            x_axis_min, x_axis_max = min(log_values), max(log_values)
+            padding = max((x_axis_max - x_axis_min) * 0.04, 0.03)
+            x_axis_min -= padding
+            x_axis_max += padding
+            y_max = max(y_max * 1.06, 1e-6)
+        else:
+            x_axis_min = 0.0
+            x_axis_max = max(raw_x_max * 1.06, 1e-6)
+            y_max = max(y_max * 1.06, 1e-6)
+
+        def _x(value: float) -> float:
+            transformed = math.log10(float(value)) if log_x else float(value)
+            return left + (
+                (transformed - x_axis_min) / (x_axis_max - x_axis_min) * plot_width
+            )
+
+        def _y(value: float) -> float:
+            return top + plot_height - float(value) / y_max * plot_height
+
+        def _tick_text(value: float, maximum: float) -> str:
+            return f"{value:.0f}" if maximum >= 20 else f"{value:.1f}"
+
+        for index in range(6):
+            fraction = index / 5
+            x_axis_value = x_axis_min + (x_axis_max - x_axis_min) * fraction
+            x_value = 10 ** x_axis_value if log_x else x_axis_value
+            y_value = y_max * fraction
+            x_coord = left + plot_width * fraction
+            y_coord = top + plot_height * (1 - fraction)
+            canvas.create_line(
+                x_coord, top, x_coord, top + plot_height, fill="#ECECE8"
+            )
+            canvas.create_line(
+                left, y_coord, left + plot_width, y_coord, fill="#ECECE8"
+            )
+            canvas.create_text(
+                x_coord, top + plot_height + 5,
+                text=_tick_text(x_value, max(x_values)),
+                anchor="n", fill="#555555", font=("TkDefaultFont", 8),
+            )
+            canvas.create_text(
+                left - 7, y_coord, text=_tick_text(y_value, y_max),
+                anchor="e", fill="#555555", font=("TkDefaultFont", 8),
+            )
+
+        if x_threshold is not None:
+            x_coord = _x(float(x_threshold))
+            canvas.create_line(
+                x_coord, top, x_coord, top + plot_height,
+                fill="#B5452D", dash=(5, 3), width=1,
+            )
+            canvas.create_text(
+                x_coord + 3, top + 2, text=f"{x_threshold:g} A", anchor="nw",
+                fill="#9C3D24", font=("TkDefaultFont", 8),
+            )
+        if y_threshold is not None:
+            y_coord = _y(float(y_threshold))
+            canvas.create_line(
+                left, y_coord, left + plot_width, y_coord,
+                fill="#B5452D", dash=(5, 3), width=1,
+            )
+            canvas.create_text(
+                left + 3, y_coord - 2, text=f"{y_threshold:g} A", anchor="sw",
+                fill="#9C3D24", font=("TkDefaultFont", 8),
+            )
+        if diagonal:
+            diagonal_max = min(x_axis_max, y_max)
+            canvas.create_line(
+                _x(0.0), _y(0.0), _x(diagonal_max), _y(diagonal_max),
+                fill="#595959", dash=(3, 3), width=1,
+            )
+            canvas.create_text(
+                _x(diagonal_max * 0.74), _y(diagonal_max * 0.74) - 5,
+                text="no change", anchor="sw", fill="#555555",
+                font=("TkDefaultFont", 8),
+            )
+            canvas.create_text(
+                _x(diagonal_max * 0.22), _y(diagonal_max * 0.70),
+                text="rescoring worsens", anchor="center", fill="#8A4A3B",
+                font=("TkDefaultFont", 8),
+            )
+            canvas.create_text(
+                _x(diagonal_max * 0.72), _y(diagonal_max * 0.23),
+                text="rescoring improves", anchor="center", fill="#356B39",
+                font=("TkDefaultFont", 8),
+            )
+        if quadrant_labels and x_threshold is not None and y_threshold is not None:
+            canvas.create_text(
+                left + 8, top + 8, text="pose generated; ranking failed",
+                anchor="nw", fill="#666666", font=("TkDefaultFont", 8),
+            )
+            canvas.create_text(
+                left + 8, _y(y_threshold) + 8, text="Top-1 recovered",
+                anchor="nw", fill="#356B39", font=("TkDefaultFont", 8),
+            )
+            canvas.create_text(
+                _x(x_threshold) + 8, top + 8, text="search and ranking failed",
+                anchor="nw", fill="#8A4A3B", font=("TkDefaultFont", 8),
+            )
+
+        if pareto:
+            frontier = sorted(
+                (point for point in valid_points if point.get("pareto")),
+                key=lambda point: float(point["x"]),
+            )
+            if len(frontier) > 1:
+                coordinates = []
+                for point in frontier:
+                    coordinates.extend((_x(point["x"]), _y(point["y"])))
+                canvas.create_line(
+                    *coordinates, fill="#313131", width=2, dash=(5, 2)
+                )
+
+        engines = sorted({str(point.get("engine") or "unknown") for point in valid_points})
+        legend_x = left
+        for engine in engines:
+            color = self._protocol_engine_color(engine)
+            canvas.create_oval(
+                legend_x, 39, legend_x + 9, 48, fill=color, outline=color
+            )
+            canvas.create_text(
+                legend_x + 13, 43.5, text=engine, anchor="w",
+                font=("TkDefaultFont", 8),
+            )
+            legend_x += max(62, len(engine) * 7 + 28)
+        if len({bool(point.get("rescore")) for point in valid_points}) > 1:
+            canvas.create_text(
+                legend_x, 43.5, text="circle=docking  diamond=rescored",
+                anchor="w", fill="#555555", font=("TkDefaultFont", 8),
+            )
+            legend_x += 175
+        if any(int(point.get("count", 1)) > 1 for point in valid_points):
+            canvas.create_text(
+                legend_x, 43.5, text="size=overlap count",
+                anchor="w", fill="#555555", font=("TkDefaultFont", 8),
+            )
+        if pareto:
+            canvas.create_text(
+                width - right, 43.5, text="outlined = Pareto-efficient",
+                anchor="e", fill="#333333", font=("TkDefaultFont", 8),
+            )
+
+        for index, point in enumerate(valid_points):
+            x_coord, y_coord = _x(point["x"]), _y(point["y"])
+            color = self._protocol_engine_color(point.get("engine", "unknown"))
+            tag = f"protocol_point_{index}"
+            outline = "#171717" if point.get("pareto") else "#FFFFFF"
+            line_width = 2 if point.get("pareto") else 1
+            radius = 4.0 + min(5.0, max(0.0, math.sqrt(point.get("count", 1)) - 1.0))
+            if point.get("rescore"):
+                marker = canvas.create_polygon(
+                    x_coord, y_coord - radius, x_coord + radius, y_coord,
+                    x_coord, y_coord + radius, x_coord - radius, y_coord,
+                    fill=color, outline=outline, width=line_width, tags=(tag,),
+                )
+            else:
+                marker = canvas.create_oval(
+                    x_coord - radius, y_coord - radius,
+                    x_coord + radius, y_coord + radius,
+                    fill=color, outline=outline, width=line_width, tags=(tag,),
+                )
+            tooltip = point.get("tooltip") or point.get("label") or "Protocol condition"
+            canvas.tag_bind(
+                marker, "<Enter>",
+                lambda event, text=tooltip, w=width, h=height:
+                self._draw_chart_tooltip(canvas, event, text, w, h),
+            )
+            canvas.tag_bind(
+                marker, "<Leave>", lambda _event: canvas.delete("chart_tooltip")
+            )
+
+        canvas.create_line(
+            left, top, left, top + plot_height, fill="#4F4F4F", width=1
+        )
+        canvas.create_line(
+            left, top + plot_height, left + plot_width, top + plot_height,
+            fill="#4F4F4F", width=1,
+        )
+        canvas.create_text(
+            left + plot_width / 2, height - 9, text=x_label, anchor="s",
+            font=("TkDefaultFont", 8),
+        )
+        canvas.create_text(
+            13, top + plot_height / 2, text=y_label, anchor="s", angle=90,
+            font=("TkDefaultFont", 8),
+        )
+
+    def _draw_factor_effect_chart(
+        self,
+        canvas: tk.Canvas,
+        title: str,
+        rows: List[dict],
+        threshold: float = 2.0,
+    ) -> None:
+        """Show median, IQR, and range for each protocol factor level."""
+        canvas.delete("all")
+        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 460)
+        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 280)
+        left, right, top, bottom = 142, 42, 48, 34
+        plot_width = max(100, width - left - right)
+        plot_height = max(100, height - top - bottom)
+        canvas.create_text(
+            14, 12, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold")
+        )
+        canvas.create_text(
+            14, 29,
+            text="Each level pools other tested factors. Line=range; box=IQR; tick=median.",
+            anchor="nw", fill="#666666", font=("TkDefaultFont", 8),
+        )
+        if not rows:
+            canvas.create_text(
+                left, height // 2, text="No applicable data", anchor="w", fill="#666666"
+            )
+            return
+
+        maximum = max(max(float(row["maximum"]), threshold) for row in rows) * 1.05
+        row_height = plot_height / len(rows)
+
+        def _x(value: float) -> float:
+            return left + float(value) / maximum * plot_width
+
+        for index in range(6):
+            fraction = index / 5
+            x_coord = left + fraction * plot_width
+            value = fraction * maximum
+            canvas.create_line(
+                x_coord, top, x_coord, top + plot_height, fill="#ECECE8"
+            )
+            canvas.create_text(
+                x_coord, top + plot_height + 4, text=f"{value:.1f}",
+                anchor="n", fill="#555555", font=("TkDefaultFont", 8),
+            )
+
+        threshold_x = _x(threshold)
+        canvas.create_line(
+            threshold_x, top, threshold_x, top + plot_height,
+            fill="#B5452D", dash=(5, 3), width=1,
+        )
+        canvas.create_text(
+            threshold_x + 3, top + 2, text=f"{threshold:g} A", anchor="nw",
+            fill="#9C3D24", font=("TkDefaultFont", 8),
+        )
+
+        factor_colors = {
+            "Engine": "#177E89", "Box": "#D97732", "Water": "#5B8E3E",
+            "Exhaustiveness": "#60758A", "Ranking": "#B45B73",
+        }
+        previous_factor = None
+        for index, row in enumerate(rows):
+            y_coord = top + (index + 0.5) * row_height
+            factor = str(row["factor"])
+            if previous_factor is not None and factor != previous_factor:
+                canvas.create_line(
+                    8, y_coord - row_height / 2, width - right,
+                    y_coord - row_height / 2, fill="#D6D6D0",
+                )
+            previous_factor = factor
+            color = factor_colors.get(factor, "#60758A")
+            canvas.create_text(
+                left - 7, y_coord, text=self._short_chart_label(row["label"], 24),
+                anchor="e", fill="#252525", font=("TkDefaultFont", 8),
+            )
+            canvas.create_line(
+                _x(row["minimum"]), y_coord, _x(row["maximum"]), y_coord,
+                fill=color, width=2,
+            )
+            half_height = max(2.0, min(6.0, row_height * 0.30))
+            canvas.create_rectangle(
+                _x(row["q1"]), y_coord - half_height,
+                _x(row["q3"]), y_coord + half_height,
+                fill=color, outline=color,
+            )
+            canvas.create_line(
+                _x(row["median"]), y_coord - half_height - 2,
+                _x(row["median"]), y_coord + half_height + 2,
+                fill="#151515", width=2,
+            )
+            value_x = _x(row["maximum"])
+            value_anchor = "e" if value_x > width - right - 70 else "w"
+            value_x += -4 if value_anchor == "e" else 4
+            canvas.create_text(
+                value_x, y_coord,
+                text=f"{row['median']:.2f} (n={row['n']})", anchor=value_anchor,
+                fill="#333333", font=("TkDefaultFont", 7),
+            )
+        canvas.create_text(
+            left + plot_width / 2, height - 4, text="Selected Top-1 RMSD (A)",
+            anchor="s", font=("TkDefaultFont", 8),
+        )
+
+    def _draw_xy_line_chart(
+        self,
+        canvas: tk.Canvas,
+        title: str,
+        points: List[List[float]],
+        x_label: str,
+        y_label: str,
+        reference_diagonal: bool = False,
+        horizontal_reference: Optional[float] = None,
+        vertical_guides: Tuple[float, ...] = (),
+        color: str = "#177E89",
+    ) -> None:
+        """Render a unit-scale screening-performance curve."""
+        canvas.delete("all")
+        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 460)
+        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 280)
+        left, right, top, bottom = 62, 24, 54, 48
+        plot_width = max(100, width - left - right)
+        plot_height = max(90, height - top - bottom)
+        canvas.create_text(
+            14, 12, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold")
+        )
+
+        valid = [
+            (float(point[0]), float(point[1])) for point in points
+            if len(point) >= 2
+            and np.isfinite(point[0])
+            and np.isfinite(point[1])
+        ]
+        if not valid:
+            canvas.create_text(
+                left, height // 2, text="No applicable data", anchor="w",
+                fill="#666666",
+            )
+            return
+
+        def _x(value: float) -> float:
+            return left + min(max(value, 0.0), 1.0) * plot_width
+
+        def _y(value: float) -> float:
+            return top + (1.0 - min(max(value, 0.0), 1.0)) * plot_height
+
+        for tick in np.linspace(0.0, 1.0, 6):
+            x_coord = _x(float(tick))
+            y_coord = _y(float(tick))
+            canvas.create_line(
+                x_coord, top, x_coord, top + plot_height, fill="#E7E7E2"
+            )
+            canvas.create_line(
+                left, y_coord, left + plot_width, y_coord, fill="#E7E7E2"
+            )
+            canvas.create_text(
+                x_coord, top + plot_height + 5, text=f"{tick:.1f}",
+                anchor="n", fill="#555555", font=("TkDefaultFont", 7),
+            )
+            canvas.create_text(
+                left - 7, y_coord, text=f"{tick:.1f}", anchor="e",
+                fill="#555555", font=("TkDefaultFont", 7),
+            )
+
+        if reference_diagonal:
+            canvas.create_line(
+                _x(0.0), _y(0.0), _x(1.0), _y(1.0),
+                fill="#8B8B83", dash=(4, 3),
+            )
+            canvas.create_text(
+                _x(0.76), _y(0.70), text="random", anchor="nw",
+                fill="#777777", font=("TkDefaultFont", 7),
+            )
+        if horizontal_reference is not None and np.isfinite(horizontal_reference):
+            baseline = min(max(float(horizontal_reference), 0.0), 1.0)
+            canvas.create_line(
+                _x(0.0), _y(baseline), _x(1.0), _y(baseline),
+                fill="#8B8B83", dash=(4, 3),
+            )
+            canvas.create_text(
+                _x(1.0) - 3, _y(baseline) - 3,
+                text=f"prevalence {baseline:.3f}", anchor="se",
+                fill="#666666", font=("TkDefaultFont", 7),
+            )
+        for guide in vertical_guides:
+            if not np.isfinite(guide) or guide <= 0 or guide >= 1:
+                continue
+            x_coord = _x(float(guide))
+            canvas.create_line(
+                x_coord, top, x_coord, top + plot_height,
+                fill="#A5A59D", dash=(2, 3),
+            )
+            canvas.create_text(
+                x_coord + 2, top + 2, text=f"{100 * guide:g}%",
+                anchor="nw", fill="#666666", font=("TkDefaultFont", 7),
+            )
+
+        coordinates = []
+        for x_value, y_value in valid:
+            coordinates.extend((_x(x_value), _y(y_value)))
+        if len(coordinates) >= 4:
+            canvas.create_line(*coordinates, fill=color, width=2.5, smooth=False)
+        else:
+            canvas.create_oval(
+                coordinates[0] - 2, coordinates[1] - 2,
+                coordinates[0] + 2, coordinates[1] + 2,
+                fill=color, outline=color,
+            )
+        canvas.create_line(
+            left, top, left, top + plot_height, fill="#555555", width=1
+        )
+        canvas.create_line(
+            left, top + plot_height, left + plot_width, top + plot_height,
+            fill="#555555", width=1,
+        )
+        canvas.create_text(
+            left + plot_width / 2, height - 4, text=x_label,
+            anchor="s", font=("TkDefaultFont", 8),
+        )
+        canvas.create_text(
+            12, top + plot_height / 2, text=y_label, angle=90,
+            anchor="center", font=("TkDefaultFont", 8),
+        )
+
+    def _draw_score_distribution_chart(
+        self,
+        canvas: tk.Canvas,
+        title: str,
+        histogram: dict,
+        x_label: str,
+        y_label: str,
+    ) -> None:
+        """Compare active and inactive score distributions on equal class scales."""
+        canvas.delete("all")
+        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 460)
+        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 280)
+        left, right, top, bottom = 62, 24, 62, 48
+        plot_width = max(100, width - left - right)
+        plot_height = max(90, height - top - bottom)
+        canvas.create_text(
+            14, 12, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold")
+        )
+
+        edges = [float(value) for value in histogram.get("edges") or []]
+        active = [float(value) for value in histogram.get("active_percent") or []]
+        inactive = [float(value) for value in histogram.get("inactive_percent") or []]
+        if len(edges) < 2 or len(active) != len(edges) - 1 or len(inactive) != len(active):
+            canvas.create_text(
+                left, height // 2, text="No applicable data", anchor="w",
+                fill="#666666",
+            )
+            return
+
+        score_min, score_max = edges[0], edges[-1]
+        score_span = max(score_max - score_min, 1e-9)
+        observed_max = max(active + inactive + [1.0])
+        y_max = max(5.0, math.ceil(observed_max / 5.0) * 5.0)
+
+        def _x(value: float) -> float:
+            return left + (value - score_min) / score_span * plot_width
+
+        def _y(value: float) -> float:
+            return top + (1.0 - value / y_max) * plot_height
+
+        for tick in np.linspace(0.0, y_max, 5):
+            y_coord = _y(float(tick))
+            canvas.create_line(
+                left, y_coord, left + plot_width, y_coord, fill="#E7E7E2"
+            )
+            canvas.create_text(
+                left - 7, y_coord, text=f"{tick:.0f}", anchor="e",
+                fill="#555555", font=("TkDefaultFont", 7),
+            )
+        for tick in np.linspace(score_min, score_max, 5):
+            x_coord = _x(float(tick))
+            canvas.create_line(
+                x_coord, top, x_coord, top + plot_height, fill="#F0F0EC"
+            )
+            canvas.create_text(
+                x_coord, top + plot_height + 5, text=f"{tick:.1f}",
+                anchor="n", fill="#555555", font=("TkDefaultFont", 7),
+            )
+
+        colors = (("Actives", "#177E89"), ("Inactives", "#D97732"))
+        legend_x = left
+        for label, fill in colors:
+            canvas.create_rectangle(
+                legend_x, 37, legend_x + 10, 47, fill=fill, outline=fill
+            )
+            canvas.create_text(
+                legend_x + 14, 42, text=label, anchor="w",
+                font=("TkDefaultFont", 8),
+            )
+            legend_x += 82
+
+        for index, (active_value, inactive_value) in enumerate(zip(active, inactive)):
+            x0 = _x(edges[index])
+            x1 = _x(edges[index + 1])
+            group_width = max(x1 - x0, 1.0)
+            padding = min(1.0, group_width * 0.08)
+            half_width = max((group_width - 2 * padding) / 2.0, 0.5)
+            baseline = _y(0.0)
+            canvas.create_rectangle(
+                x0 + padding, _y(active_value),
+                x0 + padding + half_width, baseline,
+                fill="#177E89", outline="#0E5961",
+            )
+            canvas.create_rectangle(
+                x0 + padding + half_width, _y(inactive_value),
+                x1 - padding, baseline,
+                fill="#D97732", outline="#9C4D18",
+            )
+
+        canvas.create_line(
+            left, top, left, top + plot_height, fill="#555555", width=1
+        )
+        canvas.create_line(
+            left, top + plot_height, left + plot_width, top + plot_height,
+            fill="#555555", width=1,
+        )
+        canvas.create_text(
+            left + plot_width / 2, height - 4, text=x_label,
+            anchor="s", font=("TkDefaultFont", 8),
+        )
+        canvas.create_text(
+            12, top + plot_height / 2, text=y_label, angle=90,
+            anchor="center", font=("TkDefaultFont", 8),
+        )
 
     def _draw_horizontal_chart(
         self,
@@ -6340,6 +7162,71 @@ class RedockAnalysisApp(tk.Tk):
         }
 
     @staticmethod
+    def _assay_benchmark_chart_data(
+        score_labels: List[Tuple[float, int]], bins: int = 20
+    ) -> Optional[dict]:
+        """Build tie-aware curves and class-normalized score distributions."""
+        valid = [
+            (float(score), int(label)) for score, label in score_labels
+            if label in (0, 1) and np.isfinite(score)
+        ]
+        n_actives = sum(label == 1 for _, label in valid)
+        n_inactives = sum(label == 0 for _, label in valid)
+        if not valid or not n_actives or not n_inactives:
+            return None
+
+        ranked = sorted(valid, key=lambda item: item[0], reverse=True)
+        roc_curve = [[0.0, 0.0]]
+        precision_recall_curve = [[0.0, 1.0]]
+        cumulative_recovery_curve = [[0.0, 0.0]]
+        tp = fp = screened = 0
+        index = 0
+        while index < len(ranked):
+            score = ranked[index][0]
+            tied_labels = []
+            while index < len(ranked) and ranked[index][0] == score:
+                tied_labels.append(ranked[index][1])
+                index += 1
+            tp += sum(label == 1 for label in tied_labels)
+            fp += sum(label == 0 for label in tied_labels)
+            screened += len(tied_labels)
+            recall = tp / n_actives
+            roc_curve.append([fp / n_inactives, recall])
+            precision_recall_curve.append([recall, tp / (tp + fp)])
+            cumulative_recovery_curve.append([screened / len(ranked), recall])
+
+        score_values = np.asarray([score for score, _ in valid], dtype=float)
+        score_min = float(np.min(score_values))
+        score_max = float(np.max(score_values))
+        if math.isclose(score_min, score_max):
+            score_min -= 0.5
+            score_max += 0.5
+        bin_count = max(1, min(int(bins), len(valid)))
+        edges = np.linspace(score_min, score_max, bin_count + 1)
+        active_scores = [score for score, label in valid if label == 1]
+        inactive_scores = [score for score, label in valid if label == 0]
+        active_counts, _ = np.histogram(active_scores, bins=edges)
+        inactive_counts, _ = np.histogram(inactive_scores, bins=edges)
+
+        return {
+            "roc_curve": roc_curve,
+            "precision_recall_curve": precision_recall_curve,
+            "cumulative_recovery_curve": cumulative_recovery_curve,
+            "score_histogram": {
+                "edges": [float(value) for value in edges],
+                "active_percent": [
+                    float(100.0 * value / n_actives) for value in active_counts
+                ],
+                "inactive_percent": [
+                    float(100.0 * value / n_inactives) for value in inactive_counts
+                ],
+            },
+            "actives": n_actives,
+            "inactives": n_inactives,
+            "prevalence": float(n_actives / len(valid)),
+        }
+
+    @staticmethod
     def _tie_aware_enrichment_factor(
         score_labels: List[Tuple[float, int]],
         percent: float,
@@ -6881,6 +7768,11 @@ class RedockAnalysisApp(tk.Tk):
                 summary[f"{key}_min"] = tie_metrics["enrichment_factor_min"]
                 summary[f"{key}_max"] = tie_metrics["enrichment_factor_max"]
                 summary[f"{key}_details"] = tie_metrics
+
+            if assay_benchmark and len(per_structure) == 1:
+                summary["assay_benchmark_charts"] = (
+                    self._assay_benchmark_chart_data(score_labels)
+                )
         
         # Calculate protocol/engine breakdown (only for actives with valid RMSD)
         # Older redock results predate the explicit completion field. A valid

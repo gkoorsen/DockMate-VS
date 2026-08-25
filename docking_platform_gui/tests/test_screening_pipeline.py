@@ -314,18 +314,23 @@ def test_protocol_chart_data_uses_completed_csv_rows_and_excludes_sentinels():
     data = RedockAnalysisApp._protocol_chart_data(frame)
 
     label = "smina | margin:4 | remove all | e8 | s42 | rescore:vinardo"
-    assert data["condition_performance"] == [(label, [100.0, 100.0])]
-    assert data["condition_rmsd"] == [(label, [1.5, 1.0])]
-    assert data["rescore_comparison"] == [
-        (label, [0.0, 100.0])
-    ]
-    assert data["rescore_rmsd"] == [(label, [3.0, 1.5])]
-    assert data["runtime"] == [(label, 25.0)]
-    assert data["completion"] == [(label, pytest.approx(66.6666667))]
-    assert data["target_performance"] == [("Mpro", [100.0, 100.0])]
-    assert data["rescore_change"] == [
-        ("Improved", 1.0), ("Unchanged", 0.0), ("Worse", 0.0)
-    ]
+    assert data["pose_ranking_points"] == [{
+        "engine": "smina", "rescore": True, "label": label,
+        "x": 1.0, "y": 1.5,
+        "tooltip": (
+            f"{label}\nBest pose: 1.00 A; selected Top-1: 1.50 A"
+        ),
+    }]
+    assert data["rescore_points"][0]["x"] == 3.0
+    assert data["rescore_points"][0]["y"] == 1.5
+    assert data["rescore_points"][0]["delta"] == -1.5
+    assert data["runtime_points"][0]["x"] == 25.0
+    assert data["top1_success"] == 1
+    assert data["top5_success"] == 1
+    assert data["best_pose_success"] == 1
+    assert data["rescore_improved"] == 1
+    assert data["rescore_unchanged"] == 0
+    assert data["rescore_worse"] == 0
 
 
 def test_protocol_chart_data_treats_seeds_as_replicates():
@@ -342,9 +347,55 @@ def test_protocol_chart_data_treats_seeds_as_replicates():
     data = RedockAnalysisApp._protocol_chart_data(frame)
 
     assert data["condition_count"] == 1
-    assert "3 seeds" in data["best_condition"]
-    assert data["condition_performance"][0][1] == pytest.approx([100 / 3, 100.0])
-    assert data["condition_rmsd"][0][1] == [2.5, 1.2]
+    assert "3 seeds" in data["pose_ranking_points"][0]["label"]
+    assert data["pose_ranking_points"][0]["x"] == 1.2
+    assert data["pose_ranking_points"][0]["y"] == 2.5
+    assert data["top1_success"] == 0
+    assert data["best_pose_success"] == 1
+
+
+def test_protocol_chart_data_uses_every_rescored_condition():
+    frame = pd.DataFrame([
+        {
+            "status": "complete", "pdb_id": "1ABC", "ligand_resname": "LIG",
+            "engine": "smina", "box_definition": f"box:{index}",
+            "rescore_method": "vinardo", "water_handling": "retain_all",
+            "exhaustiveness": 8, "seed": 42, "best_rmsd": 1.0,
+            "top1_rmsd": 3.0 + index / 10, "top5_rmsd": 1.0,
+            "rescore_top1_rmsd": 2.5 + index / 10,
+            "rescore_top5_rmsd": 1.0, "runtime_sec": 10.0 + index,
+        }
+        for index in range(20)
+    ])
+
+    data = RedockAnalysisApp._protocol_chart_data(frame)
+
+    assert data["condition_count"] == 20
+    assert len(data["pose_ranking_points"]) == 20
+    assert len(data["rescore_points"]) == 20
+
+
+def test_protocol_chart_data_collapses_legacy_rdock_exhaustiveness_duplicates():
+    frame = pd.DataFrame([
+        {
+            "status": "complete", "pdb_id": "1ABC", "ligand_resname": "LIG",
+            "engine": "rdock", "box_definition": "radius:6",
+            "rescore_method": "none", "water_handling": "retain_all",
+            "exhaustiveness": exhaustiveness, "seed": 42, "best_rmsd": 1.2,
+            "top1_rmsd": 2.5, "top5_rmsd": 1.2, "runtime_sec": 50.0,
+        }
+        for exhaustiveness in (8, 16, 32)
+    ])
+
+    data = RedockAnalysisApp._protocol_chart_data(frame)
+
+    assert data["source_rows"] == 3
+    assert data["condition_count"] == 1
+    assert len(data["pose_ranking_points"]) == 1
+    engine_effect = next(
+        row for row in data["factor_effects"] if row["label"] == "Engine: rdock"
+    )
+    assert engine_effect["n"] == 1
 
 
 def test_screening_chart_data_prioritizes_enrichment_and_cross_structure_hits():
@@ -874,6 +925,32 @@ def test_multi_active_assay_benchmark_is_not_treated_as_matched_decoys():
     assert "Best inactive" in markdown
     assert "INVALID DECOY MATCHING" not in markdown
     assert "Crystal ligand ranks first" not in markdown
+    chart_data = summary["assay_benchmark_charts"]
+    assert chart_data["actives"] == 2
+    assert chart_data["inactives"] == 2
+    assert chart_data["roc_curve"][0] == [0.0, 0.0]
+    assert chart_data["roc_curve"][-1] == [1.0, 1.0]
+    assert sum(chart_data["score_histogram"]["active_percent"]) == pytest.approx(100.0)
+    assert sum(chart_data["score_histogram"]["inactive_percent"]) == pytest.approx(100.0)
+    assert app._screening_chart_data(summary)["assay_benchmark"] == chart_data
+
+
+def test_assay_benchmark_chart_curves_advance_score_ties_together():
+    data = RedockAnalysisApp._assay_benchmark_chart_data(
+        [(3.0, 1), (2.0, 1), (2.0, 0), (1.0, 0)], bins=2
+    )
+
+    assert data is not None
+    assert data["roc_curve"] == [
+        [0.0, 0.0], [0.0, 0.5], [0.5, 1.0], [1.0, 1.0]
+    ]
+    assert data["precision_recall_curve"] == [
+        [0.0, 1.0], [0.5, 1.0], [1.0, pytest.approx(2.0 / 3.0)], [1.0, 0.5]
+    ]
+    assert data["cumulative_recovery_curve"] == [
+        [0.0, 0.0], [0.25, 0.5], [0.75, 1.0], [1.0, 1.0]
+    ]
+    assert data["prevalence"] == pytest.approx(0.5)
 
 
 def test_score_only_screening_summary_rebuilds_from_results_json(tmp_path: Path):
