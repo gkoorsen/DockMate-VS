@@ -188,6 +188,15 @@ benchmark labels support enrichment but do not create reference poses.
 The Results window renders summary sections and charts from the raw result
 records. Reopening a run regenerates the summary with current reporting logic.
 
+Use **Load Run Folder...** and select one completed campaign directory directly,
+not the parent `output` directory that contains several campaigns. For a
+Screening campaign, the selected folder contains `redock_results.json` or
+`redock_results.csv`. For Protocol Development, select either the campaign
+folder containing the `protocol_development` subfolder or that subfolder itself.
+Use **Load Results File...** only when selecting the exact
+`redock_results.json`, `redock_results.csv`, or
+`protocol_development_results.csv` file.
+
 The pose viewer can display:
 
 - native co-crystal ligand;

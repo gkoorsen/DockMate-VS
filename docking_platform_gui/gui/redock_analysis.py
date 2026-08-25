@@ -753,18 +753,30 @@ class RedockAnalysisApp(tk.Tk):
         results_actions.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         load_results_btn = tk.Button(
             results_actions,
-            text="Load Results",
-            command=self._safe_call(self._browse_results_file)
+            text="Load Run Folder...",
+            command=self._safe_call(self._browse_results_folder)
         )
         load_results_btn.pack(side="left")
         self._register_busy_widget(load_results_btn)
+        load_results_file_btn = tk.Button(
+            results_actions,
+            text="Load Results File...",
+            command=self._safe_call(self._browse_results_file)
+        )
+        load_results_file_btn.pack(side="left", padx=6)
+        self._register_busy_widget(load_results_file_btn)
         pose_viewer_btn = tk.Button(
             results_actions,
             text="Pose Viewer",
             command=self._safe_call(self._open_pose_viewer_from_last)
         )
-        pose_viewer_btn.pack(side="left", padx=6)
+        pose_viewer_btn.pack(side="left")
         self._register_busy_widget(pose_viewer_btn)
+        tk.Label(
+            results_actions,
+            text="Choose one completed campaign folder, not the parent output folder.",
+            fg="#666666",
+        ).pack(side="left", padx=10)
 
         self.results_notebook = ttk.Notebook(self.results_frame)
         self.results_notebook.grid(row=1, column=0, sticky="nsew")
@@ -2848,8 +2860,80 @@ class RedockAnalysisApp(tk.Tk):
             self._render_results_from_path(results_path)
         self._set_status(f"Loaded results from {results_path.parent}")
 
+    @staticmethod
+    def _result_file_for_selection(
+        selected_path: Path,
+        preferred_mode: Optional[str] = None,
+    ) -> Optional[Path]:
+        """Resolve a selected run directory or exact results file."""
+        selected_path = Path(selected_path).expanduser()
+        valid_names = {
+            "redock_results.json",
+            "redock_results.csv",
+            "protocol_development_results.csv",
+        }
+        if selected_path.is_file():
+            return selected_path if selected_path.name in valid_names else None
+        if not selected_path.is_dir():
+            return None
+
+        screening_candidates = [
+            selected_path / "redock_results.json",
+            selected_path / "redock_results.csv",
+        ]
+        protocol_candidates = [
+            selected_path / "protocol_development_results.csv",
+            selected_path / "protocol_development" / "protocol_development_results.csv",
+        ]
+        candidates = (
+            protocol_candidates + screening_candidates
+            if preferred_mode == "protocol_development"
+            else screening_candidates + protocol_candidates
+        )
+        return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+    def _load_results_selection(self, selected_path: Path) -> None:
+        """Render results discovered from a user-selected folder or file."""
+        preferred_mode = self.mode_var.get() if hasattr(self, "mode_var") else None
+        results_path = self._result_file_for_selection(selected_path, preferred_mode)
+        if results_path is None:
+            messagebox.showerror(
+                "Results not found",
+                "No supported results were found in that selection.\n\n"
+                "For Screening, select the completed run folder containing "
+                "redock_results.json (or redock_results.csv).\n\n"
+                "For Protocol Development, select either the completed run folder "
+                "containing protocol_development/, or the protocol_development "
+                "folder itself.\n\n"
+                "Do not select the parent output folder when it contains multiple runs.",
+            )
+            return
+
+        self.last_results_path = results_path
+        if results_path.name == "protocol_development_results.csv":
+            self._render_protocol_results(
+                results_path, results_path.with_name("protocol_development_summary.md")
+            )
+            result_type = "Protocol Development"
+        else:
+            self._render_results_from_path(results_path)
+            result_type = "Screening"
+        self._set_status(f"Loaded {result_type} results from {results_path.parent}")
+
+    def _browse_results_folder(self) -> None:
+        """Load a campaign by selecting its run folder."""
+        initial = Path(self.output_var.get()).expanduser()
+        initial_dir = initial if initial.is_dir() else initial.parent
+        selected = filedialog.askdirectory(
+            title="Select one completed docking run folder",
+            initialdir=str(initial_dir) if initial_dir.exists() else None,
+            mustexist=True,
+        )
+        if selected:
+            self._load_results_selection(Path(selected))
+
     def _browse_results_file(self) -> None:
-        """Let the user choose the exact campaign instead of guessing from Output."""
+        """Load a campaign by selecting its exact results CSV or JSON file."""
         initial = Path(self.output_var.get()).expanduser()
         initial_dir = initial if initial.is_dir() else initial.parent
         selected = filedialog.askopenfilename(
@@ -2864,33 +2948,7 @@ class RedockAnalysisApp(tk.Tk):
         )
         if not selected:
             return
-        results_path = Path(selected)
-        valid_names = {
-            "redock_results.json", "redock_results.csv",
-            "protocol_development_results.csv",
-        }
-        if results_path.name not in valid_names:
-            messagebox.showerror(
-                "Unsupported results file",
-                "Select redock_results.json, redock_results.csv, or "
-                "protocol_development_results.csv.",
-            )
-            return
-        self.last_results_path = results_path
-        if results_path.name == "protocol_development_results.csv":
-            self._render_protocol_results(
-                results_path, results_path.with_name("protocol_development_summary.md")
-            )
-            result_type = "Protocol Development"
-        else:
-            # The standard renderer is JSON-backed; normalize a selected CSV.
-            render_path = (
-                results_path.with_name("redock_results.json")
-                if results_path.suffix.lower() == ".csv" else results_path
-            )
-            self._render_results_from_path(render_path)
-            result_type = "Screening"
-        self._set_status(f"Loaded {result_type} results from {results_path.parent}")
+        self._load_results_selection(Path(selected))
 
     def _open_pose_viewer_from_last(self) -> None:
         results_path = self._resolve_results_path(allow_csv=True)
@@ -3182,46 +3240,190 @@ class RedockAnalysisApp(tk.Tk):
             return saved_summary
 
     @staticmethod
-    def _protocol_chart_data(frame: pd.DataFrame, threshold: float = 2.0) -> dict:
-        """Build chart series directly from completed protocol result rows."""
+    def _protocol_chart_data(
+        frame: pd.DataFrame, threshold: float = 2.0, max_conditions: int = 12
+    ) -> dict:
+        """Aggregate protocol outcomes by the complete experimental condition."""
+        empty = {
+            "condition_performance": [], "condition_rmsd": [],
+            "runtime": [], "completion": [], "rescore_comparison": [],
+            "rescore_rmsd": [], "rescore_change": [],
+            "target_performance": [], "condition_count": 0, "shown_count": 0,
+            "best_condition": None,
+        }
         if frame.empty or "status" not in frame:
-            return {"best": [], "top1": [], "top5": [], "ranking_change": []}
-        complete = frame[frame["status"] == "complete"].copy()
-        for column in (
-            "best_rmsd", "top1_rmsd", "top5_rmsd",
-            "rescore_top1_rmsd", "rescore_top5_rmsd",
-        ):
-            if column not in complete:
-                complete[column] = np.nan
-            complete.loc[complete[column] >= 900, column] = np.nan
-        if "water_handling" not in complete:
-            complete["water_handling"] = "unknown"
+            return empty
 
-        def _rate(group: pd.DataFrame, column: str) -> float:
-            values = group[column].dropna()
-            return 100.0 * float((values < threshold).mean()) if not values.empty else 0.0
+        working = frame.copy()
+        condition_columns = (
+            "engine", "box_definition", "rescore_method", "water_handling",
+            "exhaustiveness",
+        )
+        defaults = {
+            "engine": "unknown", "box_definition": "unknown",
+            "rescore_method": "none", "water_handling": "unknown",
+            "exhaustiveness": "N/A", "seed": "N/A",
+        }
+        for column in condition_columns:
+            if column not in working:
+                working[column] = defaults[column]
+            working[column] = working[column].fillna(defaults[column])
+        if "seed" not in working:
+            working["seed"] = defaults["seed"]
+        working["seed"] = working["seed"].fillna(defaults["seed"])
 
-        best, top1, top5 = [], [], []
-        for water, group in complete.groupby("water_handling", dropna=False):
-            label = str(water).replace("_", " ")
-            best.append((label, _rate(group, "best_rmsd")))
-            top1.extend([
-                (f"{label}\nbaseline", _rate(group, "top1_rmsd")),
-                (f"{label}\nrescored", _rate(group, "rescore_top1_rmsd")),
-            ])
-            top5.extend([
-                (f"{label}\nbaseline", _rate(group, "top5_rmsd")),
-                (f"{label}\nrescored", _rate(group, "rescore_top5_rmsd")),
-            ])
+        metric_columns = (
+            "best_rmsd", "top1_rmsd", "top5_rmsd", "rescore_top1_rmsd",
+            "rescore_top5_rmsd", "runtime_sec",
+        )
+        for column in metric_columns:
+            if column not in working:
+                working[column] = np.nan
+            working[column] = pd.to_numeric(working[column], errors="coerce")
+            if "rmsd" in column:
+                working.loc[working[column] >= 900, column] = np.nan
 
-        paired = complete[["top1_rmsd", "rescore_top1_rmsd"]].dropna()
-        differences = paired["rescore_top1_rmsd"] - paired["top1_rmsd"]
-        ranking_change = [
-            ("Improved", float((differences < -1e-6).sum())),
-            ("Unchanged", float((differences.abs() <= 1e-6).sum())),
-            ("Worse", float((differences > 1e-6).sum())),
+        working["_status"] = working["status"].astype(str).str.lower()
+        working = working[
+            ~working["_status"].str.contains("unsupported|skipped", na=False)
         ]
-        return {"best": best, "top1": top1, "top5": top5, "ranking_change": ranking_change}
+        if working.empty:
+            return empty
+
+        def _compact(value: object) -> str:
+            if isinstance(value, (int, np.integer)):
+                return str(value)
+            if isinstance(value, (float, np.floating)) and np.isfinite(value):
+                return str(int(value)) if float(value).is_integer() else f"{value:g}"
+            return str(value).replace("_", " ")
+
+        def _condition_label(key: tuple, seed_label: str) -> str:
+            engine, box, rescore, water, exhaustiveness = key
+            return " | ".join((
+                _compact(engine), _compact(box), _compact(water),
+                f"e{_compact(exhaustiveness)}", seed_label,
+                f"rescore:{_compact(rescore)}",
+            ))
+
+        def _rate(group: pd.DataFrame, column: str) -> Optional[float]:
+            values = group[column].dropna()
+            if values.empty:
+                return None
+            return 100.0 * float((values < threshold).mean())
+
+        records = []
+        grouped = working.groupby(list(condition_columns), dropna=False, sort=False)
+        for raw_key, all_rows in grouped:
+            key = raw_key if isinstance(raw_key, tuple) else (raw_key,)
+            complete = all_rows[all_rows["_status"] == "complete"]
+            method = str(key[2]).strip().lower()
+            has_rescore = method not in {"", "none", "nan", "n/a"}
+            selected_top1 = "rescore_top1_rmsd" if has_rescore else "top1_rmsd"
+            selected_top5 = "rescore_top5_rmsd" if has_rescore else "top5_rmsd"
+            runtime_values = complete["runtime_sec"].dropna()
+            seeds = sorted({_compact(value) for value in all_rows["seed"].dropna().tolist()})
+            seed_label = f"s{seeds[0]}" if len(seeds) == 1 else f"{len(seeds)} seeds"
+            selected_top1_values = complete[selected_top1].dropna()
+            best_values = complete["best_rmsd"].dropna()
+            baseline_values = complete["top1_rmsd"].dropna()
+            rescored_values = complete["rescore_top1_rmsd"].dropna()
+            records.append({
+                "key": key,
+                "label": _condition_label(key, seed_label),
+                "rows": complete,
+                "completion": 100.0 * len(complete) / len(all_rows),
+                "best": _rate(complete, "best_rmsd"),
+                "top1": _rate(complete, selected_top1),
+                "top5": _rate(complete, selected_top5),
+                "baseline_top1": _rate(complete, "top1_rmsd"),
+                "rescored_top1": _rate(complete, "rescore_top1_rmsd") if has_rescore else None,
+                "top1_rmsd": (
+                    float(selected_top1_values.median())
+                    if not selected_top1_values.empty else None
+                ),
+                "best_rmsd": float(best_values.median()) if not best_values.empty else None,
+                "baseline_top1_rmsd": (
+                    float(baseline_values.median()) if not baseline_values.empty else None
+                ),
+                "rescored_top1_rmsd": (
+                    float(rescored_values.median())
+                    if has_rescore and not rescored_values.empty else None
+                ),
+                "runtime": float(runtime_values.median()) if not runtime_values.empty else None,
+                "median_top1": (
+                    float(selected_top1_values.median())
+                    if not selected_top1_values.empty else float("inf")
+                ),
+                "has_rescore": has_rescore,
+            })
+
+        records.sort(key=lambda row: (
+            -(row["top1"] if row["top1"] is not None else -1.0),
+            -(row["top5"] if row["top5"] is not None else -1.0),
+            -(row["best"] if row["best"] is not None else -1.0),
+            -row["completion"], row["median_top1"],
+        ))
+        shown = records[:max_conditions]
+        best_record = records[0] if records else None
+
+        target_performance = []
+        if best_record is not None and not best_record["rows"].empty:
+            best_rows = best_record["rows"].copy()
+            if "target_name" not in best_rows:
+                best_rows["target_name"] = best_rows.get("pdb_id", "unknown")
+            best_rows["target_name"] = best_rows["target_name"].replace("", np.nan)
+            if "pdb_id" in best_rows:
+                best_rows["target_name"] = best_rows["target_name"].fillna(best_rows["pdb_id"])
+            selected_column = (
+                "rescore_top1_rmsd" if best_record["has_rescore"] else "top1_rmsd"
+            )
+            for target, target_rows in best_rows.groupby("target_name", dropna=False):
+                target_performance.append((
+                    str(target),
+                    [_rate(target_rows, selected_column), _rate(target_rows, "best_rmsd")],
+                ))
+            target_performance.sort(
+                key=lambda item: -(item[1][0] if item[1][0] is not None else -1.0)
+            )
+
+        rescored_rows = working[
+            working["rescore_method"].astype(str).str.strip().str.lower().map(
+                lambda value: value not in {"", "none", "nan", "n/a"}
+            )
+            & (working["_status"] == "complete")
+        ][["top1_rmsd", "rescore_top1_rmsd"]].dropna()
+        differences = rescored_rows["rescore_top1_rmsd"] - rescored_rows["top1_rmsd"]
+
+        return {
+            "condition_performance": [
+                (row["label"], [row["top1"], row["best"]]) for row in shown
+            ],
+            "condition_rmsd": [
+                (row["label"], [row["top1_rmsd"], row["best_rmsd"]]) for row in shown
+            ],
+            "runtime": [(row["label"], row["runtime"]) for row in shown],
+            "completion": [(row["label"], row["completion"]) for row in shown],
+            "rescore_comparison": [
+                (row["label"], [row["baseline_top1"], row["rescored_top1"]])
+                for row in shown if row["has_rescore"]
+            ],
+            "rescore_rmsd": [
+                (
+                    row["label"],
+                    [row["baseline_top1_rmsd"], row["rescored_top1_rmsd"]],
+                )
+                for row in shown if row["has_rescore"]
+            ],
+            "rescore_change": [
+                ("Improved", float((differences < -1e-6).sum())),
+                ("Unchanged", float((differences.abs() <= 1e-6).sum())),
+                ("Worse", float((differences > 1e-6).sum())),
+            ] if not differences.empty else [],
+            "target_performance": target_performance,
+            "condition_count": len(records),
+            "shown_count": len(shown),
+            "best_condition": best_record["label"] if best_record else None,
+        }
 
     def _populate_protocol_charts(self, parent: tk.Frame, results_path: Path) -> None:
         """Render protocol charts from the selected CSV, not stale summary state."""
@@ -3234,27 +3436,78 @@ class RedockAnalysisApp(tk.Tk):
             tk.Label(parent, text=f"Could not load chart data: {exc}").pack(anchor="w", padx=10, pady=10)
             return
         data = self._protocol_chart_data(frame)
+        note = f"Charts calculated from {len(frame)} rows in {results_path.name}."
+        if data["condition_count"] > data["shown_count"]:
+            note += (
+                f" Showing the best {data['shown_count']} of "
+                f"{data['condition_count']} evaluated protocol conditions."
+            )
+        if data["best_condition"]:
+            note += (
+                f" Best-ranked condition: {data['best_condition']}. Ranking prioritizes "
+                "selected Top-1, Top-5, and best-pose recovery, then completeness and "
+                "median Top-1 RMSD."
+            )
         tk.Label(
-            parent,
-            text=f"Charts calculated from {len(frame)} rows in {results_path.name}",
-            anchor="w", fg="#555555",
+            parent, text=note, anchor="w", justify="left", wraplength=1050,
+            fg="#555555",
         ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_columnconfigure(1, weight=1)
         parent.grid_rowconfigure(1, weight=1)
         parent.grid_rowconfigure(2, weight=1)
+        third_chart = (
+            "Median Top-1 RMSD: docking vs rescoring",
+            "grouped", data["rescore_rmsd"],
+            ("Docking rank", "Rescored rank"), None,
+            [(2.0, "2 A")],
+        ) if data["rescore_rmsd"] else (
+            "Best condition: recovery by target",
+            "grouped", data["target_performance"],
+            ("Selected Top-1", "Best generated pose"), 100.0, None,
+        )
+        fourth_chart = (
+            "Best condition: recovery by target",
+            "grouped", data["target_performance"],
+            ("Selected Top-1", "Best generated pose"), 100.0, None,
+        ) if len(data["target_performance"]) > 1 else (
+            "Median runtime by protocol condition (s)",
+            "horizontal", data["runtime"], (), None, None,
+        )
         charts = [
-            ("Best-pose recovery by water (%)", data["best"]),
-            ("Top-1 recovery: baseline vs rescored (%)", data["top1"]),
-            ("Top-5 recovery: baseline vs rescored (%)", data["top5"]),
-            ("Rescoring effect on Top-1 RMSD (cases)", data["ranking_change"]),
+            (
+                "Median RMSD by protocol condition",
+                "grouped", data["condition_rmsd"],
+                ("Selected Top-1", "Best generated pose"), None,
+                [(2.0, "2 A")],
+            ),
+            (
+                "Pose recovery by protocol condition (%)",
+                "grouped", data["condition_performance"],
+                ("Selected Top-1", "Best generated pose"), 100.0, None,
+            ),
+            third_chart,
+            fourth_chart,
         ]
-        for index, (title, values) in enumerate(charts):
-            canvas = tk.Canvas(parent, height=250, bg="white", highlightthickness=1)
+        for index, (title, chart_type, values, series, maximum, thresholds) in enumerate(charts):
+            canvas = tk.Canvas(parent, height=300, bg="white", highlightthickness=1)
             canvas.grid(
                 row=1 + index // 2, column=index % 2, sticky="nsew", padx=10, pady=10
             )
-            self._draw_bar_chart(canvas, title, values)
+            if chart_type == "grouped":
+                self._install_chart(
+                    canvas,
+                    lambda c=canvas, t=title, v=values, s=series, m=maximum, h=thresholds:
+                    self._draw_grouped_horizontal_chart(
+                        c, t, v, s, max_value=m, thresholds=h
+                    ),
+                )
+            else:
+                self._install_chart(
+                    canvas,
+                    lambda c=canvas, t=title, v=values:
+                    self._draw_horizontal_chart(c, t, v),
+                )
 
     def _render_results(self, summary: dict, rmsd_values: List[float]) -> None:
         self._clear_frame(self.results_summary_tab)
@@ -3304,40 +3557,153 @@ class RedockAnalysisApp(tk.Tk):
 
     @staticmethod
     def _screening_chart_data(summary: dict) -> dict:
-        rows = summary.get("per_structure_screening") or []
+        screening_rows = summary.get("per_structure_screening") or []
+        enrichment_rows = summary.get("per_structure_enrichment") or []
+
+        def _structure_label(row: dict) -> str:
+            structure = f"{row.get('pdb_id', 'N/A')}/{row.get('ligand', 'N/A')}"
+            target = str(row.get("target_name") or "").strip()
+            return f"{target} | {structure}" if target and target != row.get("pdb_id") else structure
+
+        structure_auc = []
+        score_margin = []
+        active_rank_percentile = []
+        for row in enrichment_rows:
+            rank = row.get("active_rank")
+            actives = int(row.get("actives") or 1)
+            decoys = int(row.get("decoys") or 0)
+            total = actives + decoys
+            rank_text = f"rank {rank}/{total}" if rank is not None else "rank N/A"
+            label = f"{_structure_label(row)} ({rank_text})"
+            if row.get("roc_auc") is not None:
+                structure_auc.append((label, float(row["roc_auc"])))
+            if row.get("score_margin") is not None:
+                score_margin.append((label, float(row["score_margin"])))
+            if rank is not None:
+                denominator = max(total - 1, 1)
+                percentile = 100.0 * max(0.0, total - float(rank)) / denominator
+                active_rank_percentile.append((label, percentile))
+        structure_auc.sort(key=lambda item: item[1], reverse=True)
+        score_margin.sort(key=lambda item: item[1], reverse=True)
+        active_rank_percentile.sort(key=lambda item: item[1], reverse=True)
+
+        target_auc = []
+        for row in summary.get("per_target_enrichment") or []:
+            structures = int(row.get("structures") or 0)
+            structure_text = "structure" if structures == 1 else "structures"
+            target_auc.append((
+                f"{row.get('target_name') or 'N/A'} ({structures} {structure_text})",
+                [row.get("macro_roc_auc"), row.get("pooled_roc_auc")],
+            ))
+        target_auc.sort(
+            key=lambda item: -(item[1][0] if item[1][0] is not None else -1.0)
+        )
+
+        hit_stats: Dict[str, Dict[str, float]] = {}
+        for hit in summary.get("screening_top_hits") or []:
+            compound = str(hit.get("compound") or "Unnamed")
+            rank = int(hit.get("rank") or 0)
+            if rank < 1:
+                continue
+            stats = hit_stats.setdefault(compound, {"rank1": 0.0, "top5": 0.0, "rr": 0.0})
+            stats["top5"] += 1.0
+            stats["rr"] += 1.0 / rank
+            if rank == 1:
+                stats["rank1"] += 1.0
+        recurrence_rows = sorted(
+            (
+                (compound, stats["rank1"], stats["top5"], stats["rr"])
+                for compound, stats in hit_stats.items() if stats["rank1"] > 0
+            ),
+            key=lambda item: (-item[1], -item[3], item[0].lower()),
+        )
+        top_hit_recurrence = [
+            (f"{compound} (top-5 hits {int(top5)})", rank1)
+            for compound, rank1, top5, _ in recurrence_rows[:12]
+        ]
+
+        direction = summary.get("screening_score_direction")
+        score_advantage = []
+        for row in screening_rows:
+            best = row.get("best_score")
+            median = row.get("median_score")
+            if best is None or median is None:
+                continue
+            advantage = float(best) - float(median)
+            if direction == "lower":
+                advantage = -advantage
+            score_advantage.append((_structure_label(row), advantage))
+        score_advantage.sort(key=lambda item: item[1], reverse=True)
+
+        early_enrichment = []
+        for label, key in (("EF 1%", "ef_1_percent"), ("EF 5%", "ef_5_percent"), ("EF 10%", "ef_10_percent")):
+            if summary.get(key) is not None:
+                early_enrichment.append((label, float(summary[key])))
+
+        campaign_coverage = []
+        total_cases = int(summary.get("total_cases") or 0)
+        if total_cases:
+            campaign_coverage.append((
+                "Docking completed",
+                100.0 * float(summary.get("docking_completed") or 0) / total_cases,
+            ))
+        control_total = int(summary.get("n_actives") or 0) + int(summary.get("n_decoys") or 0)
+        if control_total:
+            control_scored = int(summary.get("control_actives") or 0) + int(
+                summary.get("control_decoys") or 0
+            )
+            campaign_coverage.append((
+                "Controls with ranking scores", 100.0 * control_scored / control_total,
+            ))
+        sample_total = int(summary.get("n_samples") or 0)
+        if sample_total:
+            campaign_coverage.append((
+                "Unknowns with ranking scores",
+                100.0 * float(summary.get("screening_score_count") or 0) / sample_total,
+            ))
+
         completion = [
-            (f"{row['pdb_id']}\n{row['ligand']}", float(row["completion_rate"]))
-            for row in rows
+            (_structure_label(row), float(row["completion_rate"]))
+            for row in screening_rows
         ]
         score_coverage = [
             (
-                f"{row['pdb_id']}\n{row['ligand']}",
+                _structure_label(row),
                 100.0 * float(row["scored"]) / float(row["cases"])
                 if row.get("cases") else 0.0,
             )
-            for row in rows
+            for row in screening_rows
         ]
         failures = [
-            (f"{row['pdb_id']}\n{row['ligand']}", float(row["cases"] - row["completed"]))
-            for row in rows
+            (_structure_label(row), float(row["cases"] - row["completed"]))
+            for row in screening_rows
         ]
-        pose_counts = [
-            ("Mean poses", float(summary["mean_pose_count"]))
-        ] if summary.get("mean_pose_count") is not None else []
         return {
+            "structure_auc": structure_auc[:15],
+            "score_margin": score_margin[:15],
+            "active_rank_percentile": active_rank_percentile[:15],
+            "target_auc": target_auc[:15],
+            "top_hit_recurrence": top_hit_recurrence,
+            "score_advantage": score_advantage[:15],
+            "early_enrichment": early_enrichment,
+            "campaign_coverage": campaign_coverage,
+            "has_coverage_gap": any(value < 99.999 for _, value in campaign_coverage),
             "completion": completion,
             "score_coverage": score_coverage,
             "failures": failures,
-            "pose_counts": pose_counts,
         }
 
-    def _populate_charts_tab(self, parent: tk.Frame, summary: dict, rmsd_values: List[float]) -> None:
-        is_score_only_screening = bool(
-            summary.get("n_samples")
-            and summary.get("screening_score_count") is not None
-            and summary.get("mean_best_rmsd") is None
+    @staticmethod
+    def _is_screening_summary(summary: dict) -> bool:
+        """Recognize screening reports even when control ligands provide RMSDs."""
+        return bool(
+            summary.get("per_structure_screening")
+            or summary.get("per_structure_enrichment")
+            or summary.get("n_samples")
         )
-        if is_score_only_screening:
+
+    def _populate_charts_tab(self, parent: tk.Frame, summary: dict, rmsd_values: List[float]) -> None:
+        if self._is_screening_summary(summary):
             chart_data = self._screening_chart_data(summary)
             parent.grid_rowconfigure(0, weight=0)
             parent.grid_rowconfigure(1, weight=1)
@@ -3347,24 +3713,114 @@ class RedockAnalysisApp(tk.Tk):
 
             tk.Label(
                 parent,
-                text="Charts reflect screening completion and scoring coverage by receptor structure.",
+                text=(
+                    "Enrichment is assessed within each receptor structure. Positive score "
+                    "margins mean the active beats the best decoy; target-pooled AUC is "
+                    "diagnostic when several receptor structures are combined."
+                    if chart_data["structure_auc"] else
+                    "Unknown-compound scores are compared within each receptor structure; "
+                    "raw scores should not be pooled across structures."
+                ),
                 anchor="w",
                 justify="left",
+                wraplength=1050,
                 fg="#555555",
             ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))
 
-            screening_charts = [
-                ("Completion rate by structure (%)", chart_data["completion"]),
-                ("Scored cases by structure (%)", chart_data["score_coverage"]),
-                ("Failed cases by structure", chart_data["failures"]),
-                ("Overall mean saved pose count", chart_data["pose_counts"]),
-            ]
-            for index, (title, values) in enumerate(screening_charts):
-                canvas = tk.Canvas(parent, height=250, bg="white")
+            if chart_data["structure_auc"]:
+                if chart_data["has_coverage_gap"]:
+                    fourth = (
+                        "Campaign completion and score coverage (%)",
+                        "horizontal", chart_data["campaign_coverage"], (), 100.0, None,
+                    )
+                elif chart_data["top_hit_recurrence"]:
+                    fourth = (
+                        "Rank-1 compound recurrence across structures",
+                        "horizontal", chart_data["top_hit_recurrence"], (), None, None,
+                    )
+                elif (
+                    summary.get("enrichment_dataset_type") == "assay_benchmark"
+                    and chart_data["early_enrichment"]
+                ):
+                    fourth = (
+                        "Early enrichment factor",
+                        "horizontal", chart_data["early_enrichment"], (), None, None,
+                    )
+                else:
+                    fourth = (
+                        "Active rank percentile (100% = rank 1)",
+                        "horizontal", chart_data["active_rank_percentile"], (), 100.0, None,
+                    )
+                margin_title = (
+                    "Best active vs best inactive score margin"
+                    if summary.get("enrichment_dataset_type") == "assay_benchmark"
+                    else "Reference active vs best-decoy score margin"
+                )
+                screening_charts = [
+                    (
+                        "ROC AUC by receptor structure",
+                        "horizontal", chart_data["structure_auc"], (), 1.0,
+                        [(0.5, "random"), (0.7, "review")],
+                    ),
+                    (
+                        margin_title,
+                        "diverging", chart_data["score_margin"], (), None, None,
+                    ),
+                    (
+                        "Target enrichment: macro vs pooled AUC",
+                        "grouped", chart_data["target_auc"],
+                        ("Macro AUC", "Target-pooled AUC"), 1.0,
+                        [(0.5, "random"), (0.7, "review")],
+                    ),
+                    fourth,
+                ]
+            else:
+                screening_charts = [
+                    (
+                        "Best-score advantage over structure median",
+                        "horizontal", chart_data["score_advantage"], (), None, None,
+                    ),
+                    (
+                        "Rank-1 compound recurrence across structures",
+                        "horizontal", chart_data["top_hit_recurrence"], (), None, None,
+                    ),
+                    (
+                        "Completion rate by receptor structure (%)",
+                        "horizontal", chart_data["completion"], (), 100.0, None,
+                    ),
+                    (
+                        "Score coverage by receptor structure (%)",
+                        "horizontal", chart_data["score_coverage"], (), 100.0, None,
+                    ),
+                ]
+
+            for index, (title, chart_type, values, series, maximum, thresholds) in enumerate(screening_charts):
+                canvas = tk.Canvas(parent, height=300, bg="white", highlightthickness=1)
                 canvas.grid(
                     row=1 + index // 2, column=index % 2, sticky="nsew", padx=10, pady=10
                 )
-                self._draw_bar_chart(canvas, title, values)
+                if chart_type == "grouped":
+                    self._install_chart(
+                        canvas,
+                        lambda c=canvas, t=title, v=values, s=series, m=maximum, h=thresholds:
+                        self._draw_grouped_horizontal_chart(
+                            c, t, v, s, max_value=m, thresholds=h
+                        ),
+                    )
+                elif chart_type == "diverging":
+                    self._install_chart(
+                        canvas,
+                        lambda c=canvas, t=title, v=values:
+                        self._draw_diverging_horizontal_chart(c, t, v),
+                    )
+                else:
+                    self._install_chart(
+                        canvas,
+                        lambda c=canvas, t=title, v=values, m=maximum, h=thresholds:
+                        self._draw_horizontal_chart(
+                            c, t, v, max_value=m, thresholds=h
+                        ),
+                    )
             return
 
         parent.grid_rowconfigure(1, weight=1)
@@ -3427,6 +3883,198 @@ class RedockAnalysisApp(tk.Tk):
         for row in rows:
             table.insert("", "end", values=row)
         return table
+
+    @staticmethod
+    def _install_chart(canvas: tk.Canvas, draw: Callable[[], None]) -> None:
+        """Draw now and redraw when a result window is resized."""
+        pending = {"job": None}
+
+        def _draw() -> None:
+            pending["job"] = None
+            draw()
+
+        def _redraw(_event=None) -> None:
+            if pending["job"] is not None:
+                canvas.after_cancel(pending["job"])
+            pending["job"] = canvas.after_idle(_draw)
+
+        canvas.bind("<Configure>", _redraw)
+        _redraw()
+
+    @staticmethod
+    def _chart_dimensions(canvas: tk.Canvas) -> Tuple[int, int, int, int, int, int]:
+        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 420)
+        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 260)
+        label_width = min(245, max(145, int(width * 0.40)))
+        left = label_width
+        right = 58
+        top = 54
+        bottom = 28
+        return width, height, left, right, top, bottom
+
+    @staticmethod
+    def _short_chart_label(label: str, limit: int = 48) -> str:
+        cleaned = str(label).replace("\n", " ")
+        return cleaned if len(cleaned) <= limit else f"{cleaned[:limit - 3]}..."
+
+    def _draw_horizontal_chart(
+        self,
+        canvas: tk.Canvas,
+        title: str,
+        data: List[Tuple[str, Optional[float]]],
+        max_value: Optional[float] = None,
+        thresholds: Optional[List[Tuple[float, str]]] = None,
+    ) -> None:
+        canvas.delete("all")
+        width, height, left, right, top, bottom = self._chart_dimensions(canvas)
+        canvas.create_text(14, 14, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold"))
+        if not data:
+            canvas.create_text(left, height // 2, text="No applicable data", anchor="w", fill="#666666")
+            return
+
+        valid = [float(value) for _, value in data if value is not None and np.isfinite(value)]
+        axis_max = float(max_value) if max_value is not None else (max(valid) if valid else 1.0)
+        if thresholds:
+            axis_max = max(axis_max, max(float(value) for value, _ in thresholds))
+        axis_max = max(axis_max, 1e-9)
+        plot_width = max(80, width - left - right)
+        plot_height = max(70, height - top - bottom)
+        row_height = plot_height / max(len(data), 1)
+
+        for threshold, label in thresholds or []:
+            x = left + min(max(float(threshold) / axis_max, 0.0), 1.0) * plot_width
+            canvas.create_line(x, top - 7, x, height - bottom, fill="#8B8B83", dash=(4, 3))
+            canvas.create_text(x + 3, top - 9, text=label, anchor="sw", fill="#666666", font=("TkDefaultFont", 8))
+
+        for index, (label, raw_value) in enumerate(data):
+            y = top + (index + 0.5) * row_height
+            canvas.create_text(
+                left - 8, y, text=self._short_chart_label(label), anchor="e",
+                fill="#252525", font=("TkDefaultFont", 8),
+            )
+            if raw_value is None or not np.isfinite(raw_value):
+                canvas.create_text(left + 4, y, text="N/A", anchor="w", fill="#888888")
+                continue
+            value = float(raw_value)
+            x1 = left + min(max(value / axis_max, 0.0), 1.0) * plot_width
+            half_height = max(2.0, min(9.0, row_height * 0.30))
+            canvas.create_rectangle(
+                left, y - half_height, x1, y + half_height,
+                fill="#177E89", outline="#0E5961",
+            )
+            canvas.create_text(
+                min(x1 + 5, width - right + 3), y, text=f"{value:.2f}",
+                anchor="w", fill="#252525", font=("TkDefaultFont", 8),
+            )
+        canvas.create_line(left, height - bottom, width - right, height - bottom, fill="#777777")
+
+    def _draw_grouped_horizontal_chart(
+        self,
+        canvas: tk.Canvas,
+        title: str,
+        data: List[Tuple[str, List[Optional[float]]]],
+        series_names: Tuple[str, ...],
+        max_value: Optional[float] = None,
+        thresholds: Optional[List[Tuple[float, str]]] = None,
+    ) -> None:
+        canvas.delete("all")
+        width, height, left, right, top, bottom = self._chart_dimensions(canvas)
+        canvas.create_text(14, 14, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold"))
+        if not data:
+            canvas.create_text(left, height // 2, text="No applicable data", anchor="w", fill="#666666")
+            return
+
+        colors = (("#177E89", "#0E5961"), ("#D97732", "#9C4D18"), ("#5B8E3E", "#365E23"))
+        legend_x = left
+        for index, name in enumerate(series_names):
+            fill, _ = colors[index % len(colors)]
+            canvas.create_rectangle(legend_x, 34, legend_x + 10, 44, fill=fill, outline=fill)
+            canvas.create_text(legend_x + 14, 39, text=name, anchor="w", font=("TkDefaultFont", 8))
+            legend_x += max(95, len(name) * 7 + 30)
+
+        valid = [
+            float(value) for _, values in data for value in values
+            if value is not None and np.isfinite(value)
+        ]
+        axis_max = float(max_value) if max_value is not None else (max(valid) if valid else 1.0)
+        if thresholds:
+            axis_max = max(axis_max, max(float(value) for value, _ in thresholds))
+        axis_max = max(axis_max, 1e-9)
+        plot_width = max(80, width - left - right)
+        plot_height = max(70, height - top - bottom)
+        group_height = plot_height / max(len(data), 1)
+
+        for threshold, label in thresholds or []:
+            x = left + min(max(float(threshold) / axis_max, 0.0), 1.0) * plot_width
+            canvas.create_line(x, top - 2, x, height - bottom, fill="#8B8B83", dash=(4, 3))
+            canvas.create_text(x + 3, top, text=label, anchor="nw", fill="#666666", font=("TkDefaultFont", 8))
+
+        series_count = max(len(series_names), 1)
+        for row_index, (label, values) in enumerate(data):
+            center_y = top + (row_index + 0.5) * group_height
+            canvas.create_text(
+                left - 8, center_y, text=self._short_chart_label(label), anchor="e",
+                fill="#252525", font=("TkDefaultFont", 8),
+            )
+            bar_height = max(2.0, min(7.0, group_height * 0.28))
+            separation = bar_height * 2 + 2
+            first_y = center_y - separation * (series_count - 1) / 2
+            for series_index in range(series_count):
+                value = values[series_index] if series_index < len(values) else None
+                y = first_y + series_index * separation
+                if value is None or not np.isfinite(value):
+                    canvas.create_text(left + 4, y, text="N/A", anchor="w", fill="#888888", font=("TkDefaultFont", 8))
+                    continue
+                numeric = float(value)
+                x1 = left + min(max(numeric / axis_max, 0.0), 1.0) * plot_width
+                fill, outline = colors[series_index % len(colors)]
+                canvas.create_rectangle(left, y - bar_height, x1, y + bar_height, fill=fill, outline=outline)
+                canvas.create_text(
+                    min(x1 + 4, width - right + 3), y, text=f"{numeric:.2f}",
+                    anchor="w", fill="#252525", font=("TkDefaultFont", 8),
+                )
+        canvas.create_line(left, height - bottom, width - right, height - bottom, fill="#777777")
+
+    def _draw_diverging_horizontal_chart(
+        self, canvas: tk.Canvas, title: str, data: List[Tuple[str, Optional[float]]]
+    ) -> None:
+        canvas.delete("all")
+        width, height, left, right, top, bottom = self._chart_dimensions(canvas)
+        canvas.create_text(14, 14, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold"))
+        if not data:
+            canvas.create_text(left, height // 2, text="No applicable data", anchor="w", fill="#666666")
+            return
+
+        valid = [abs(float(value)) for _, value in data if value is not None and np.isfinite(value)]
+        extent = max(valid) if valid else 1.0
+        extent = max(extent, 1e-9)
+        plot_width = max(80, width - left - right)
+        center = left + plot_width / 2
+        row_height = max(70, height - top - bottom) / max(len(data), 1)
+        canvas.create_line(center, top - 8, center, height - bottom, fill="#555555", width=2)
+        canvas.create_text(center - 5, top - 10, text="decoy wins", anchor="se", fill="#9C3D24", font=("TkDefaultFont", 8))
+        canvas.create_text(center + 5, top - 10, text="active wins", anchor="sw", fill="#0E5961", font=("TkDefaultFont", 8))
+
+        for index, (label, raw_value) in enumerate(data):
+            y = top + (index + 0.5) * row_height
+            canvas.create_text(
+                left - 8, y, text=self._short_chart_label(label), anchor="e",
+                fill="#252525", font=("TkDefaultFont", 8),
+            )
+            if raw_value is None or not np.isfinite(raw_value):
+                continue
+            value = float(raw_value)
+            delta = value / extent * (plot_width / 2)
+            x0, x1 = sorted((center, center + delta))
+            half_height = max(2.0, min(9.0, row_height * 0.30))
+            fill, outline = ("#177E89", "#0E5961") if value >= 0 else ("#D95D39", "#9C3D24")
+            canvas.create_rectangle(x0, y - half_height, x1, y + half_height, fill=fill, outline=outline)
+            anchor = "w" if value >= 0 else "e"
+            offset = 4 if value >= 0 else -4
+            canvas.create_text(
+                center + delta + offset, y, text=f"{value:+.2f}", anchor=anchor,
+                fill="#252525", font=("TkDefaultFont", 8),
+            )
 
     def _draw_bar_chart(self, canvas: tk.Canvas, title: str, data: List[Tuple[str, float]]) -> None:
         canvas.delete("all")

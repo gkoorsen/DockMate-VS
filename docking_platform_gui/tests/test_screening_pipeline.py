@@ -286,34 +286,144 @@ def test_protocol_section_parser_keeps_each_summary_table_separate():
 def test_protocol_chart_data_uses_completed_csv_rows_and_excludes_sentinels():
     frame = pd.DataFrame([
         {
-            "status": "complete", "water_handling": "remove_all",
+            "status": "complete", "target_name": "Mpro", "engine": "smina",
+            "box_definition": "margin:4", "rescore_method": "vinardo",
+            "water_handling": "remove_all", "exhaustiveness": 8, "seed": 42,
             "best_rmsd": 1.0, "top1_rmsd": 3.0, "top5_rmsd": 1.0,
             "rescore_top1_rmsd": 1.5, "rescore_top5_rmsd": 1.0,
+            "runtime_sec": 20.0,
         },
         {
-            "status": "complete", "water_handling": "remove_all",
+            "status": "complete", "target_name": "Mpro", "engine": "smina",
+            "box_definition": "margin:4", "rescore_method": "vinardo",
+            "water_handling": "remove_all", "exhaustiveness": 8, "seed": 42,
             "best_rmsd": 999.9, "top1_rmsd": 999.9, "top5_rmsd": 999.9,
             "rescore_top1_rmsd": 999.9, "rescore_top5_rmsd": 999.9,
+            "runtime_sec": 30.0,
         },
         {
-            "status": "failed", "water_handling": "remove_all",
+            "status": "failed", "target_name": "Mpro", "engine": "smina",
+            "box_definition": "margin:4", "rescore_method": "vinardo",
+            "water_handling": "remove_all", "exhaustiveness": 8, "seed": 42,
             "best_rmsd": 0.1, "top1_rmsd": 0.1, "top5_rmsd": 0.1,
             "rescore_top1_rmsd": 0.1, "rescore_top5_rmsd": 0.1,
+            "runtime_sec": 1.0,
         },
     ])
 
     data = RedockAnalysisApp._protocol_chart_data(frame)
 
-    assert data["best"] == [("remove all", 100.0)]
-    assert data["top1"] == [
-        ("remove all\nbaseline", 0.0), ("remove all\nrescored", 100.0)
+    label = "smina | margin:4 | remove all | e8 | s42 | rescore:vinardo"
+    assert data["condition_performance"] == [(label, [100.0, 100.0])]
+    assert data["condition_rmsd"] == [(label, [1.5, 1.0])]
+    assert data["rescore_comparison"] == [
+        (label, [0.0, 100.0])
     ]
-    assert data["top5"] == [
-        ("remove all\nbaseline", 100.0), ("remove all\nrescored", 100.0)
-    ]
-    assert data["ranking_change"] == [
+    assert data["rescore_rmsd"] == [(label, [3.0, 1.5])]
+    assert data["runtime"] == [(label, 25.0)]
+    assert data["completion"] == [(label, pytest.approx(66.6666667))]
+    assert data["target_performance"] == [("Mpro", [100.0, 100.0])]
+    assert data["rescore_change"] == [
         ("Improved", 1.0), ("Unchanged", 0.0), ("Worse", 0.0)
     ]
+
+
+def test_protocol_chart_data_treats_seeds_as_replicates():
+    frame = pd.DataFrame([
+        {
+            "status": "complete", "engine": "smina", "box_definition": "margin:4",
+            "rescore_method": "none", "water_handling": "retain_all",
+            "exhaustiveness": 8, "seed": seed, "best_rmsd": best,
+            "top1_rmsd": top1, "top5_rmsd": best, "runtime_sec": 10.0,
+        }
+        for seed, best, top1 in ((1, 1.0, 1.5), (2, 1.2, 2.5), (3, 1.4, 3.5))
+    ])
+
+    data = RedockAnalysisApp._protocol_chart_data(frame)
+
+    assert data["condition_count"] == 1
+    assert "3 seeds" in data["best_condition"]
+    assert data["condition_performance"][0][1] == pytest.approx([100 / 3, 100.0])
+    assert data["condition_rmsd"][0][1] == [2.5, 1.2]
+
+
+def test_screening_chart_data_prioritizes_enrichment_and_cross_structure_hits():
+    summary = {
+        "screening_score_direction": "lower",
+        "per_structure_enrichment": [
+            {
+                "target_name": "Mpro", "pdb_id": "7GCO", "ligand": "LO0",
+                "roc_auc": 0.93, "active_rank": 3, "decoys": 30,
+                "score_margin": -0.22,
+            },
+            {
+                "target_name": "Mpro", "pdb_id": "5REE", "ligand": "T1M",
+                "roc_auc": 1.0, "active_rank": 1, "decoys": 30,
+                "score_margin": 0.40,
+            },
+        ],
+        "per_target_enrichment": [
+            {
+                "target_name": "Mpro", "structures": 2,
+                "macro_roc_auc": 0.965, "pooled_roc_auc": 0.80,
+            }
+        ],
+        "ef_1_percent": 4.0,
+        "per_structure_screening": [
+            {
+                "target_name": "Mpro", "pdb_id": "7GCO", "ligand": "LO0",
+                "cases": 20, "completed": 20, "completion_rate": 100.0,
+                "scored": 20, "best_score": -10.0, "median_score": -7.0,
+            }
+        ],
+        "screening_top_hits": [
+            {"compound": "Compound A", "rank": 1},
+            {"compound": "Compound A", "rank": 1},
+            {"compound": "Compound B", "rank": 1},
+            {"compound": "Compound A", "rank": 3},
+        ],
+    }
+
+    data = RedockAnalysisApp._screening_chart_data(summary)
+
+    assert data["structure_auc"][0][1] == 1.0
+    assert data["score_margin"][0][1] == 0.40
+    assert data["target_auc"] == [("Mpro (2 structures)", [0.965, 0.80])]
+    assert data["top_hit_recurrence"][0] == ("Compound A (top-5 hits 3)", 2.0)
+    assert data["score_advantage"] == [("Mpro | 7GCO/LO0", 3.0)]
+    assert data["early_enrichment"] == [("EF 1%", 4.0)]
+
+
+def test_mixed_screening_with_control_rmsd_uses_screening_charts():
+    summary = {
+        "n_samples": 40,
+        "mean_best_rmsd": 1.2,
+        "per_structure_enrichment": [{"pdb_id": "1ABC", "ligand": "LIG"}],
+    }
+
+    assert RedockAnalysisApp._is_screening_summary(summary) is True
+
+
+def test_screening_chart_data_flags_incomplete_campaign_coverage():
+    summary = {
+        "total_cases": 100,
+        "docking_completed": 80,
+        "n_actives": 10,
+        "n_decoys": 70,
+        "control_actives": 8,
+        "control_decoys": 52,
+        "n_samples": 20,
+        "screening_score_count": 15,
+    }
+
+    data = RedockAnalysisApp._screening_chart_data(summary)
+
+    assert data["campaign_coverage"] == [
+        ("Docking completed", 80.0),
+        ("Controls with ranking scores", 75.0),
+        ("Unknowns with ranking scores", 75.0),
+    ]
+    assert data["has_coverage_gap"] is True
 
 
 def test_protocol_development_uses_unique_control_actives_only():
@@ -609,6 +719,60 @@ def test_pose_viewer_uses_protocol_development_csv_directly(tmp_path):
     assert RedockAnalysisApp._pose_results_csv(redock_json) == tmp_path / "redock_results.csv"
 
 
+def test_results_loader_resolves_screening_run_folder(tmp_path):
+    run_dir = tmp_path / "screening_run"
+    run_dir.mkdir()
+    results = run_dir / "redock_results.json"
+    results.write_text('{"results": []}')
+
+    assert RedockAnalysisApp._result_file_for_selection(run_dir) == results
+
+
+def test_results_loader_resolves_protocol_run_and_results_folders(tmp_path):
+    run_dir = tmp_path / "protocol_run"
+    protocol_dir = run_dir / "protocol_development"
+    protocol_dir.mkdir(parents=True)
+    results = protocol_dir / "protocol_development_results.csv"
+    results.write_text("status\n")
+
+    assert RedockAnalysisApp._result_file_for_selection(run_dir) == results
+    assert RedockAnalysisApp._result_file_for_selection(protocol_dir) == results
+
+
+def test_results_loader_accepts_exact_supported_file(tmp_path):
+    results = tmp_path / "redock_results.csv"
+    results.write_text("best_score\n")
+
+    assert RedockAnalysisApp._result_file_for_selection(results) == results
+
+
+def test_results_loader_rejects_parent_output_folder_and_unrelated_file(tmp_path):
+    nested_run = tmp_path / "run_1"
+    nested_run.mkdir()
+    (nested_run / "redock_results.json").write_text('{"results": []}')
+    unrelated = tmp_path / "notes.csv"
+    unrelated.write_text("notes\n")
+
+    assert RedockAnalysisApp._result_file_for_selection(tmp_path) is None
+    assert RedockAnalysisApp._result_file_for_selection(unrelated) is None
+
+
+def test_results_loader_prefers_current_workflow_when_both_exist(tmp_path):
+    screening = tmp_path / "redock_results.json"
+    screening.write_text('{"results": []}')
+    protocol_dir = tmp_path / "protocol_development"
+    protocol_dir.mkdir()
+    protocol = protocol_dir / "protocol_development_results.csv"
+    protocol.write_text("status\n")
+
+    assert RedockAnalysisApp._result_file_for_selection(
+        tmp_path, "screening"
+    ) == screening
+    assert RedockAnalysisApp._result_file_for_selection(
+        tmp_path, "protocol_development"
+    ) == protocol
+
+
 def test_summary_counts_samples_separately_and_uses_explicit_controls():
     app = _app_without_tk()
     results = [
@@ -890,10 +1054,9 @@ def test_screening_chart_data_uses_per_structure_completion_and_score_coverage()
 
     data = RedockAnalysisApp._screening_chart_data(summary)
 
-    assert data["completion"] == [("1AAA\nL1", 75.0), ("2BBB\nL2", 100.0)]
-    assert data["score_coverage"] == [("1AAA\nL1", 50.0), ("2BBB\nL2", 100.0)]
-    assert data["failures"] == [("1AAA\nL1", 1.0), ("2BBB\nL2", 0.0)]
-    assert data["pose_counts"] == [("Mean poses", 17.5)]
+    assert data["completion"] == [("1AAA/L1", 75.0), ("2BBB/L2", 100.0)]
+    assert data["score_coverage"] == [("1AAA/L1", 50.0), ("2BBB/L2", 100.0)]
+    assert data["failures"] == [("1AAA/L1", 1.0), ("2BBB/L2", 0.0)]
 
 
 def test_strong_auc_passes_enrichment_without_requiring_active_rank_one():
