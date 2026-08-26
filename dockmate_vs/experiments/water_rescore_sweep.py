@@ -22,16 +22,16 @@ import pandas as pd
 from loguru import logger
 from rdkit import Chem
 
-from docking_platform_gui.adaptive_docking import AdaptiveDockingPipeline
-from docking_platform_gui.binding_site.cocrystal import BindingSiteDefinition
-from docking_platform_gui.config.schema import (
+from dockmate_vs.adaptive_docking import AdaptiveDockingPipeline
+from dockmate_vs.binding_site.cocrystal import BindingSiteDefinition
+from dockmate_vs.config.schema import (
     ProteinPreparationConfig,
     WaterHandling,
     WaterRetentionConfig,
     LigandPreparationConfig
 )
-from docking_platform_gui.docking.smina import SminaDockingEngine
-from docking_platform_gui.preparation.ligand import LigandPreparation
+from dockmate_vs.docking.smina import SminaDockingEngine
+from dockmate_vs.preparation.ligand import LigandPreparation
 
 
 RESCORE_METHODS = ["vina", "vinardo", "ad4_scoring", "dkoes_fast", "dkoes_scoring"]

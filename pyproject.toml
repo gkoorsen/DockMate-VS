@@ -3,9 +3,9 @@ requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "docking_platform_gui"
+name = "dockmate-vs"
 version = "0.1.0"
-description = "Reproducible protocol development and virtual screening GUI for molecular docking"
+description = "Reproducible docking protocol development and structure-based virtual screening"
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
 license = { file = "LICENSE" }
@@ -52,15 +52,15 @@ dependencies = [
 test = ["pytest>=7"]
 
 [project.urls]
-Homepage = "https://github.com/gkoorsen/docking_platform_gui"
-Repository = "https://github.com/gkoorsen/docking_platform_gui"
-Issues = "https://github.com/gkoorsen/docking_platform_gui/issues"
-Documentation = "https://github.com/gkoorsen/docking_platform_gui/blob/master/USER_GUIDE.md"
+Homepage = "https://github.com/gkoorsen/DockMate-VS"
+Repository = "https://github.com/gkoorsen/DockMate-VS"
+Issues = "https://github.com/gkoorsen/DockMate-VS/issues"
+Documentation = "https://github.com/gkoorsen/DockMate-VS/blob/master/USER_GUIDE.md"
 
 [project.scripts]
-redock-gui = "docking_platform_gui.cli:main"
+dockmate-vs = "dockmate_vs.cli:main"
 
 [tool.setuptools.packages.find]
 namespaces = false
-include = ["docking_platform_gui*"]
-exclude = ["docking_platform_gui.tests*"]
+include = ["dockmate_vs*"]
+exclude = ["dockmate_vs.tests*"]

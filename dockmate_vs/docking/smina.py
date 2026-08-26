@@ -26,7 +26,7 @@ import re
 
 from loguru import logger
 
-from docking_platform_gui.docking.base import (
+from dockmate_vs.docking.base import (
     DockingEngine,
     DockingResult,
     DockingPose,

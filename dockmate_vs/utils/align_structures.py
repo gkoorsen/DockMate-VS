@@ -7,12 +7,12 @@ structures downloaded from the PDB generally do not.
 
 Usage
 -----
-    python -m docking_platform_gui.utils.align_structures \\
+    python -m dockmate_vs.utils.align_structures \\
         --structures 6RB1.pdb 3BQC.pdb 5M4F.pdb \\
         --out-dir structures_aligned
 
     # ligand extents from the screening library give a better box size
-    python -m docking_platform_gui.utils.align_structures \\
+    python -m dockmate_vs.utils.align_structures \\
         --structures 6RB1.pdb 3BQC.pdb 5M4F.pdb \\
         --out-dir structures_aligned \\
         --reference 6RB1.pdb \\

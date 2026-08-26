@@ -29,26 +29,26 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
-from docking_platform_gui.utils.rmsd_safe import (
+from dockmate_vs.utils.rmsd_safe import (
     calculate_rmsd_safe,
     detect_molecule_type
 )
 
-from docking_platform_gui.preparation.protein import (
+from dockmate_vs.preparation.protein import (
     ProteinPreparation,
     ProteinPreparationConfig,
     WaterHandling
 )
-from docking_platform_gui.preparation.ligand import (
+from dockmate_vs.preparation.ligand import (
     LigandPreparation,
     LigandPreparationConfig
 )
 
-from docking_platform_gui.preparation.ligand_cache import LigandCache
+from dockmate_vs.preparation.ligand_cache import LigandCache
 
-from docking_platform_gui.binding_site.cocrystal import BindingSiteDefinition
-from docking_platform_gui.docking.smina import SminaDockingEngine
-from docking_platform_gui.utils.rmsd import calculate_rmsd
+from dockmate_vs.binding_site.cocrystal import BindingSiteDefinition
+from dockmate_vs.docking.smina import SminaDockingEngine
+from dockmate_vs.utils.rmsd import calculate_rmsd
 
 
 logger = logging.getLogger(__name__)
@@ -1024,7 +1024,7 @@ class AdaptiveDockingPipeline:
         exhaustiveness: int
     ) -> dict:
         """Run Smina docking."""
-        from docking_platform_gui.docking.smina import SminaDockingEngine
+        from dockmate_vs.docking.smina import SminaDockingEngine
 
         engine = SminaDockingEngine(
             smina_binary=self.docking_binary,

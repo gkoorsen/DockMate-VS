@@ -44,3 +44,8 @@ ligand_cache/
 *.rej
 *.swp
 *~
+
+# Local SoftwareX manuscript and submission preparation
+/manuscript/
+/docking_platform_gui/manuscript/
+/dockmate_vs/manuscript/

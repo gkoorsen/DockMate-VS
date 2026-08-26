@@ -1,20 +1,11 @@
-#!/usr/bin/env python3
-"""
-Launch script for redock analysis GUI.
-
-Usage:
-    python scripts/launch_redock_analysis_gui.py
-"""
+"""Command-line entry point for DockMate-VS."""
 
 import argparse
 import sys
 from pathlib import Path
-import multiprocessing as mp  # ← ADDED: For parallel processing fix
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
-def check_dependencies():
+def check_dependencies() -> None:
     missing = []
 
     try:
@@ -51,10 +42,10 @@ def check_dependencies():
         sys.exit(1)
 
 
-def main():
+def main() -> None:
     check_dependencies()
 
-    parser = argparse.ArgumentParser(description="Launch redock analysis GUI")
+    parser = argparse.ArgumentParser(prog="dockmate-vs", description="Launch DockMate-VS")
     parser.add_argument(
         "--vina",
         action="store_true",
@@ -72,33 +63,22 @@ def main():
         default=None,
         help="Path to Smina binary"
     )
-    parser.add_argument(
-        "--serial",
-        action="store_true",
-        help="Force serial processing (disable parallel RMSD calculation)"
-    )
     args = parser.parse_args()
 
     from loguru import logger
-    from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp
-    import os
-
-    # Set serial mode if requested
-    if args.serial:
-        os.environ['LIGAND_PREP_FORCE_SERIAL'] = '1'
-        logger.info("Serial processing mode enabled via --serial flag")
+    from dockmate_vs.gui.app import DockMateVSApp
 
     logger.add(
-        "redock_gui.log",
+        str(Path("dockmate-vs.log")),
         rotation="10 MB",
         level="INFO",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
     )
 
-    logger.info("Starting redock analysis GUI")
+    logger.info("Starting DockMate-VS")
 
     try:
-        app = RedockAnalysisApp(
+        app = DockMateVSApp(
             use_vina_default=args.vina,
             vina_binary_default=args.vina_binary,
             smina_binary_default=args.smina_binary
@@ -110,17 +90,8 @@ def main():
         traceback.print_exc()
         sys.exit(1)
 
-    logger.info("Redock analysis GUI closed")
+    logger.info("DockMate-VS closed")
 
 
 if __name__ == "__main__":
-    # ← ADDED: Fix multiprocessing for GUI compatibility
-    # Use 'spawn' method instead of 'fork' to avoid deadlocks with Tkinter
-    # This enables parallel RMSD processing in ligand preparation
-    try:
-        mp.set_start_method('spawn', force=True)
-    except RuntimeError:
-        # Start method already set (e.g., in tests or when imported)
-        pass
-    
     main()

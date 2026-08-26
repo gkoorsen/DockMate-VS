@@ -1,16 +1,16 @@
 cff-version: 1.2.0
 message: >-
-  If you use Docking Platform GUI, please cite the archived software release
+  If you use DockMate-VS, please cite the archived software release
   and the associated SoftwareX article when available.
-title: Docking Platform GUI
+title: DockMate-VS
 type: software
 authors:
   - family-names: Koorsen
     given-names: Gerrit
 version: 0.1.0
 license: MIT
-repository-code: https://github.com/gkoorsen/docking_platform_gui
-url: https://github.com/gkoorsen/docking_platform_gui
+repository-code: https://github.com/gkoorsen/DockMate-VS
+url: https://github.com/gkoorsen/DockMate-VS
 abstract: >-
   A spreadsheet-driven desktop application for reproducible molecular-docking
   protocol development, native-pose recovery, control enrichment, rescoring,

@@ -1,4 +1,4 @@
-name: docking-platform-gui
+name: dockmate-vs
 channels:
   - conda-forge
 dependencies:

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Optional
 from loguru import logger
 
-from docking_platform_gui.preparation.ligand import (
+from dockmate_vs.preparation.ligand import (
     PreparedLigand,
     LigandPreparation,
     LigandPreparationConfig

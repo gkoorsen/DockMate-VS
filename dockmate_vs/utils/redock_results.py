@@ -380,7 +380,7 @@ class RedockAnalyzer:
         """Format report as Markdown."""
         lines = []
         
-        lines.append("# Redock Analysis Report (Enhanced)")
+        lines.append("# DockMate-VS Analysis Report")
         lines.append("")
         
         # Summary

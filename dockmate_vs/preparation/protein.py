@@ -39,7 +39,7 @@ except ImportError:
     PDBFile = None
     logger.warning("PDBFixer or OpenMM not installed; protein fixing is unavailable")
 
-from docking_platform_gui.config.schema import (
+from dockmate_vs.config.schema import (
     ProteinPreparationConfig,
     WaterHandling,
     WaterRetentionConfig

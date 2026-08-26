@@ -18,12 +18,12 @@ Do not upload proprietary compounds, credentials, or restricted datasets.
 ## Develop locally
 
 ```bash
-git clone https://github.com/gkoorsen/docking_platform_gui.git
-cd docking_platform_gui
+git clone https://github.com/gkoorsen/DockMate-VS.git
+cd DockMate-VS
 conda env create -f environment.yml
-conda activate docking-platform-gui
+conda activate dockmate-vs
 python -m pip install -e ".[test]"
-python -m pytest docking_platform_gui/tests -q
+python -m pytest dockmate_vs/tests -q
 ```
 
 Use a focused branch and keep each pull request limited to one concern. Add a

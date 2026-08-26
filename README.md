@@ -1,14 +1,14 @@
-# Docking Platform GUI
+# DockMate-VS
 
-[![Tests](https://github.com/gkoorsen/docking_platform_gui/actions/workflows/tests.yml/badge.svg)](https://github.com/gkoorsen/docking_platform_gui/actions/workflows/tests.yml)
+[![Tests](https://github.com/gkoorsen/DockMate-VS/actions/workflows/tests.yml/badge.svg)](https://github.com/gkoorsen/DockMate-VS/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-0B6E69.svg)](LICENSE)
 
-Docking Platform GUI is a spreadsheet-driven desktop application for developing,
+DockMate-VS is a spreadsheet-driven desktop application for developing,
 recording, and applying molecular-docking protocols. It keeps native-pose
 recovery, active/inactive enrichment, and score-only screening as separate
 questions while producing resumable, machine-readable campaigns.
 
-![Docking Platform GUI workflow](docs/images/softwarex_workflow.png)
+![DockMate-VS workflow](docs/images/softwarex_workflow.png)
 
 ## Why use it?
 
@@ -29,10 +29,10 @@ Python 3.9-3.12 is supported. A conda environment is recommended because RDKit
 and optional protein-preparation tools have compiled dependencies.
 
 ```bash
-git clone https://github.com/gkoorsen/docking_platform_gui.git
-cd docking_platform_gui
+git clone https://github.com/gkoorsen/DockMate-VS.git
+cd DockMate-VS
 conda env create -f environment.yml
-conda activate docking-platform-gui
+conda activate dockmate-vs
 pip install -e ".[test]"
 ```
 
@@ -51,13 +51,13 @@ details.
 ## Launch
 
 ```bash
-redock-gui
+dockmate-vs
 ```
 
 or, from a source checkout:
 
 ```bash
-python scripts/launch_redock_analysis_gui.py
+python scripts/launch_dockmate_vs.py
 ```
 
 ## First reproducible example
@@ -104,7 +104,7 @@ summary, recommendations, and plots.
 ## Testing
 
 ```bash
-python -m pytest docking_platform_gui/tests -q
+python -m pytest dockmate_vs/tests -q
 ```
 
 GitHub Actions runs the focused suite on Python 3.9, 3.11, and 3.12 under Linux.
@@ -129,11 +129,11 @@ Citation metadata are provided in [`CITATION.cff`](CITATION.cff). Until the
 SoftwareX article and archived release DOI are available, cite the versioned
 GitHub release and repository URL.
 
-- Problems and feature requests: [GitHub Issues](https://github.com/gkoorsen/docking_platform_gui/issues)
+- Problems and feature requests: [GitHub Issues](https://github.com/gkoorsen/DockMate-VS/issues)
 - Contribution guide: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - Release history: [`CHANGELOG.md`](CHANGELOG.md)
 
 ## License
 
-Docking Platform GUI is distributed under the [MIT License](LICENSE). External
+DockMate-VS is distributed under the [MIT License](LICENSE). External
 programs and benchmark datasets retain their own licenses and terms.

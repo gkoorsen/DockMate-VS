@@ -1,8 +1,8 @@
-# Docking Platform GUI User Guide
+# DockMate-VS User Guide
 
 ## 1. Scope
 
-Docking Platform GUI supports two stages:
+DockMate-VS supports two stages:
 
 1. **Protocol Development** compares docking and ranking conditions against
    native co-crystal poses.
@@ -20,7 +20,7 @@ Python 3.9-3.12 is supported. From the repository root:
 
 ```bash
 conda env create -f environment.yml
-conda activate docking-platform-gui
+conda activate dockmate-vs
 pip install -e ".[test]"
 ```
 
@@ -61,13 +61,13 @@ LigPlus installation named by `LIGPLUS_ROOT`/`LIGPLOT_HOME`. Set
 ## 3. Launching
 
 ```bash
-redock-gui
+dockmate-vs
 ```
 
 or:
 
 ```bash
-python scripts/launch_redock_analysis_gui.py
+python scripts/launch_dockmate_vs.py
 ```
 
 Select an input workbook and a dedicated output directory. Avoid reusing an

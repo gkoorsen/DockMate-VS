@@ -13,7 +13,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem, DataStructs
 from loguru import logger
 
-from docking_platform_gui.utils.rmsd import (
+from dockmate_vs.utils.rmsd import (
     calculate_rmsd as _base_calculate_rmsd,
     _load_molecule,
     _load_molecules

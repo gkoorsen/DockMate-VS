@@ -23,7 +23,7 @@ from functools import partial
 import os
 import time
 
-from docking_platform_gui.config.schema import LigandPreparationConfig
+from dockmate_vs.config.schema import LigandPreparationConfig
 
 
 # Helper functions for parallel RMSD calculation

@@ -2,9 +2,9 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-import docking_platform_gui.preparation.ligand as ligand_module
-from docking_platform_gui.config.schema import LigandPreparationConfig
-from docking_platform_gui.preparation.ligand import LigandPreparation
+import dockmate_vs.preparation.ligand as ligand_module
+from dockmate_vs.config.schema import LigandPreparationConfig
+from dockmate_vs.preparation.ligand import LigandPreparation
 
 
 class _InlinePool:

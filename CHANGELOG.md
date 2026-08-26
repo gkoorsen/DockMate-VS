@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Docking Platform GUI are documented here. The project
+All notable changes to DockMate-VS are documented here. The project
 uses semantic versioning after the initial public release.
 
 ## [0.1.0] - Unreleased
@@ -20,4 +20,4 @@ uses semantic versioning after the initial public release.
 - Offline docking after preflight retrieval of required public structures.
 - Automated unit and integration tests for the screening and reporting paths.
 
-[0.1.0]: https://github.com/gkoorsen/docking_platform_gui/releases/tag/v0.1.0
+[0.1.0]: https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.0

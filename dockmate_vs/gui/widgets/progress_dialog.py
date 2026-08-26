@@ -23,7 +23,7 @@ class ProgressDialog(tk.Toplevel):
         """
         super().__init__(parent)
 
-        self.title("Campaign Running...")
+        self.title("DockMate-VS Campaign Running...")
         self.geometry("700x500")
         self.transient(parent)
         self.grab_set()  # Modal

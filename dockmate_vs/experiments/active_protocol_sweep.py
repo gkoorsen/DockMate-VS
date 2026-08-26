@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
-from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp
+from dockmate_vs.gui.app import DockMateVSApp
 
 
 WATER_MODES = ("remove_all", "retain_all", "selective")
@@ -72,7 +72,7 @@ def main() -> int:
         if row.get("status") in ("complete", "unsupported")
         and int(row.get("protocol_version", -1)) == PROTOCOL_VERSION
     }
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     app._queue = queue.Queue()
 
     manifest = {

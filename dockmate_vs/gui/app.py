@@ -1,5 +1,5 @@
 """
-GUI for redock analysis using single or adaptive docking.
+DockMate-VS graphical application for docking protocol development and screening.
 """
 
 import copy
@@ -30,15 +30,15 @@ import numpy as np
 from loguru import logger
 from rdkit import Chem
 from rdkit.Chem import AllChem, Crippen, Descriptors, rdMolDescriptors
-from docking_platform_gui.utils.redock_results import RedockAnalyzer
+from dockmate_vs.utils.redock_results import RedockAnalyzer
 from Bio import PDB
 
-from docking_platform_gui.adaptive_docking import AdaptiveDockingPipeline
-from docking_platform_gui.binding_site.cocrystal import BindingSite, BindingSiteDefinition
-from docking_platform_gui.docking.smina import SminaDockingEngine
-from docking_platform_gui.gui.utils import download_pdb_structure
-from docking_platform_gui.gui.widgets.progress_dialog import ProgressDialog
-from docking_platform_gui.utils.rmsd import calculate_rmsd
+from dockmate_vs.adaptive_docking import AdaptiveDockingPipeline
+from dockmate_vs.binding_site.cocrystal import BindingSite, BindingSiteDefinition
+from dockmate_vs.docking.smina import SminaDockingEngine
+from dockmate_vs.gui.utils import download_pdb_structure
+from dockmate_vs.gui.widgets.progress_dialog import ProgressDialog
+from dockmate_vs.utils.rmsd import calculate_rmsd
 
 
 COFACTORS = {
@@ -63,7 +63,8 @@ KNOWN_ADDITIVES = {
 }
 
 ADDITIVES_ONLY = KNOWN_ADDITIVES - COFACTORS
-FILTERS_PATH = Path.home() / ".docking_platform_gui" / "redock_filters.json"
+FILTERS_PATH = Path.home() / ".dockmate-vs" / "filters.json"
+LEGACY_FILTERS_PATH = Path.home() / ".docking_platform_gui" / "redock_filters.json"
 
 
 @dataclass
@@ -123,8 +124,8 @@ class RedockResult:
     target_name: Optional[str] = None
 
 
-class RedockAnalysisApp(tk.Tk):
-    """Standalone GUI for redock analysis."""
+class DockMateVSApp(tk.Tk):
+    """DockMate-VS desktop application."""
 
     def __init__(
         self,
@@ -134,12 +135,12 @@ class RedockAnalysisApp(tk.Tk):
     ):
         super().__init__()
 
-        self.title("Docking Analysis")
+        self.title("DockMate-VS")
         self.geometry("1000x780")
         self.resizable(True, True)
 
         self.file_var = tk.StringVar()
-        self.output_var = tk.StringVar(value=str(Path("output/redock_analysis").resolve()))
+        self.output_var = tk.StringVar(value=str(Path("output/dockmate_vs").resolve()))
         self.mode_var = tk.StringVar(value="protocol_development")
         self.exclude_additives_var = tk.BooleanVar(value=False)
         self.exclude_cofactors_var = tk.BooleanVar(value=False)
@@ -2710,7 +2711,7 @@ class RedockAnalysisApp(tk.Tk):
     def _software_provenance(cls, config: dict) -> dict:
         """Capture code, dependency, and selected binary versions for a run."""
         try:
-            package_version = importlib.metadata.version("docking_platform_gui")
+            package_version = importlib.metadata.version("dockmate-vs")
         except importlib.metadata.PackageNotFoundError:
             package_version = "development"
 
@@ -2759,7 +2760,7 @@ class RedockAnalysisApp(tk.Tk):
                 }
 
         return {
-            "package": "docking_platform_gui",
+            "package": "dockmate-vs",
             "version": package_version,
             "git_commit": git_commit.splitlines()[0] if git_commit else None,
             "git_dirty": bool(git_status),
@@ -2972,7 +2973,7 @@ class RedockAnalysisApp(tk.Tk):
                 rmsd_values = [v for v in df["best_rmsd"].tolist() if isinstance(v, (int, float)) and v < 900]
 
         dialog = tk.Toplevel(self)
-        dialog.title("Docking Analysis Results")
+        dialog.title("DockMate-VS Results")
         dialog.geometry("900x700")
         dialog.transient(self)
 
@@ -3023,7 +3024,7 @@ class RedockAnalysisApp(tk.Tk):
     def _show_protocol_results(self, results_path: Path, report_path: Path) -> None:
         """Open the completion summary window for a protocol-development run."""
         dialog = tk.Toplevel(self)
-        dialog.title("Protocol Development Results")
+        dialog.title("DockMate-VS Protocol Development Results")
         dialog.geometry("1100x720")
         dialog.transient(self)
 
@@ -3119,7 +3120,7 @@ class RedockAnalysisApp(tk.Tk):
             report = report_path.read_text()
         else:
             report = f"Protocol summary was not found:\n{report_path}"
-        RedockAnalysisApp._populate_markdown_report(
+        DockMateVSApp._populate_markdown_report(
             parent, report, source_text=f"Results: {results_path}"
         )
 
@@ -3136,7 +3137,7 @@ class RedockAnalysisApp(tk.Tk):
                 justify="left",
                 fg="#555555",
             ).pack(fill="x", pady=(0, 6))
-        prose, tables = RedockAnalysisApp._parse_protocol_markdown_sections(report)
+        prose, tables = DockMateVSApp._parse_protocol_markdown_sections(report)
         for index, line in enumerate(prose):
             if index == 0:
                 tk.Label(
@@ -5798,7 +5799,7 @@ class RedockAnalysisApp(tk.Tk):
 
         if suffix in (".pdbqt",):
             scores = self._parse_pdbqt_scores(docked_file)
-            from docking_platform_gui.utils.rmsd import _parse_pdbqt_models  # type: ignore
+            from dockmate_vs.utils.rmsd import _parse_pdbqt_models  # type: ignore
             for block in _parse_pdbqt_models(docked_file):
                 mol = Chem.MolFromPDBBlock(block, removeHs=False)
                 if mol is None:
@@ -6937,7 +6938,7 @@ class RedockAnalysisApp(tk.Tk):
         case_label_map = {label.upper(): idx for idx, label in enumerate(case_labels)}
 
         dialog = tk.Toplevel(self)
-        dialog.title("Docking Pose Viewer")
+        dialog.title("DockMate-VS Pose Viewer")
         viewer_width = max(820, min(1250, dialog.winfo_screenwidth() - 120))
         dialog.geometry(f"{viewer_width}x400")
         dialog.minsize(min(900, viewer_width), 350)
@@ -7236,7 +7237,7 @@ class RedockAnalysisApp(tk.Tk):
         _render_case(0)
 
     def _pose_rmsd(self, ref_mol: Chem.Mol, pose_mol: Chem.Mol) -> Optional[float]:
-        from docking_platform_gui.utils.rmsd import coordinate_rmsd
+        from dockmate_vs.utils.rmsd import coordinate_rmsd
         try:
             return coordinate_rmsd(ref_mol, pose_mol, use_symmetry=True)
         except Exception:
@@ -8614,7 +8615,7 @@ class RedockAnalysisApp(tk.Tk):
     def _edit_filters(self) -> None:
         """Edit additive/cofactor filters."""
         dialog = tk.Toplevel(self)
-        dialog.title("Edit Filter Lists")
+        dialog.title("DockMate-VS Filter Lists")
         dialog.geometry("700x500")
         dialog.transient(self)
         dialog.grab_set()
@@ -8687,10 +8688,11 @@ class RedockAnalysisApp(tk.Tk):
         return ids
 
     def _load_filter_config(self) -> None:
-        if not FILTERS_PATH.exists():
+        config_path = FILTERS_PATH if FILTERS_PATH.exists() else LEGACY_FILTERS_PATH
+        if not config_path.exists():
             return
         try:
-            data = json.loads(FILTERS_PATH.read_text())
+            data = json.loads(config_path.read_text())
             additives = set(item.strip().upper() for item in data.get("additives", []) if item)
             cofactors = set(item.strip().upper() for item in data.get("cofactors", []) if item)
             if additives or cofactors:
@@ -8700,7 +8702,11 @@ class RedockAnalysisApp(tk.Tk):
                 if cofactors:
                     COFACTORS = cofactors
                 ADDITIVES_ONLY = KNOWN_ADDITIVES - COFACTORS
-                logger.info("Loaded filter lists from {}", FILTERS_PATH)
+                logger.info("Loaded filter lists from {}", config_path)
+                if config_path == LEGACY_FILTERS_PATH:
+                    FILTERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    FILTERS_PATH.write_text(json.dumps(data, indent=2))
+                    logger.info("Migrated filter lists to {}", FILTERS_PATH)
         except Exception as exc:
             logger.warning("Failed to load filter config: {}", exc)
 

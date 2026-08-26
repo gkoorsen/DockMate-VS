@@ -9,14 +9,14 @@ import pytest
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from docking_platform_gui.adaptive_docking import AdaptiveDockingPipeline
-import docking_platform_gui.gui.redock_analysis as redock_analysis_module
-from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp, RedockResult
-from docking_platform_gui.utils.rmsd import coordinate_rmsd
+from dockmate_vs.adaptive_docking import AdaptiveDockingPipeline
+import dockmate_vs.gui.app as redock_analysis_module
+from dockmate_vs.gui.app import DockMateVSApp, RedockResult
+from dockmate_vs.utils.rmsd import coordinate_rmsd
 
 
-def _app_without_tk() -> RedockAnalysisApp:
-    return object.__new__(RedockAnalysisApp)
+def _app_without_tk() -> DockMateVSApp:
+    return object.__new__(DockMateVSApp)
 
 
 def test_decoy_rows_expand_and_blank_decoy_rows_remain_samples(tmp_path: Path):
@@ -58,6 +58,28 @@ def test_screening_always_selects_ligand_variants_by_score():
     assert app._variant_selection_for_mode("screening", "rmsd") == "score"
     assert app._variant_selection_for_mode("screening", "score") == "score"
     assert app._variant_selection_for_mode("single", "rmsd") == "rmsd"
+
+
+def test_filter_config_migrates_legacy_docking_platform_settings(
+    monkeypatch, tmp_path: Path
+):
+    app = _app_without_tk()
+    current = tmp_path / ".dockmate-vs" / "filters.json"
+    legacy = tmp_path / ".docking_platform_gui" / "redock_filters.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"additives": ["GOL"], "cofactors": ["FAD"]}))
+
+    monkeypatch.setattr(redock_analysis_module, "FILTERS_PATH", current)
+    monkeypatch.setattr(redock_analysis_module, "LEGACY_FILTERS_PATH", legacy)
+    monkeypatch.setattr(redock_analysis_module, "KNOWN_ADDITIVES", set())
+    monkeypatch.setattr(redock_analysis_module, "COFACTORS", set())
+    monkeypatch.setattr(redock_analysis_module, "ADDITIVES_ONLY", set())
+
+    app._load_filter_config()
+
+    assert json.loads(current.read_text()) == {"additives": ["GOL"], "cofactors": ["FAD"]}
+    assert redock_analysis_module.KNOWN_ADDITIVES == {"GOL"}
+    assert redock_analysis_module.COFACTORS == {"FAD"}
 
 
 def test_pymol_overlay_preserves_receptor_frame_pose_coordinates(
@@ -102,16 +124,16 @@ def test_pymol_overlay_preserves_receptor_frame_pose_coordinates(
 
 
 def test_protocol_integer_lists_are_validated_and_deduplicated():
-    assert RedockAnalysisApp._parse_positive_int_list("8, 16, 8", "Values") == [8, 16]
+    assert DockMateVSApp._parse_positive_int_list("8, 16, 8", "Values") == [8, 16]
 
     with pytest.raises(ValueError, match="comma-separated"):
-        RedockAnalysisApp._parse_positive_int_list("8, high", "Values")
+        DockMateVSApp._parse_positive_int_list("8, high", "Values")
     with pytest.raises(ValueError, match="greater than zero"):
-        RedockAnalysisApp._parse_positive_int_list("8, 0", "Values")
+        DockMateVSApp._parse_positive_int_list("8, 0", "Values")
 
 
 def test_protocol_box_definitions_accept_margins_and_fixed_sizes():
-    boxes = RedockAnalysisApp._parse_protocol_box_definitions(
+    boxes = DockMateVSApp._parse_protocol_box_definitions(
         "margin:4; margin:6; 20x22x24; margin:4"
     )
 
@@ -122,18 +144,18 @@ def test_protocol_box_definitions_accept_margins_and_fixed_sizes():
     ]
 
     with pytest.raises(ValueError, match="Use margin:4 or 20x20x20"):
-        RedockAnalysisApp._parse_protocol_box_definitions("large")
+        DockMateVSApp._parse_protocol_box_definitions("large")
     with pytest.raises(ValueError, match="greater than zero"):
-        RedockAnalysisApp._parse_protocol_box_definitions("20x0x20")
+        DockMateVSApp._parse_protocol_box_definitions("20x0x20")
 
 
 def test_protocol_rescore_methods_are_validated_and_deduplicated():
-    assert RedockAnalysisApp._parse_protocol_rescore_methods(
+    assert DockMateVSApp._parse_protocol_rescore_methods(
         "none, vina, vinardo, vina"
     ) == ["none", "vina", "vinardo"]
 
     with pytest.raises(ValueError, match="Unsupported rescoring"):
-        RedockAnalysisApp._parse_protocol_rescore_methods("vina, imaginary")
+        DockMateVSApp._parse_protocol_rescore_methods("vina, imaginary")
 
 
 def test_rescored_pose_metrics_follow_rescored_ranking(monkeypatch, tmp_path: Path):
@@ -194,7 +216,7 @@ def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):
         },
     ]
 
-    report = RedockAnalysisApp._write_protocol_report(rows, tmp_path).read_text()
+    report = DockMateVSApp._write_protocol_report(rows, tmp_path).read_text()
 
     assert "| Engine | Box | Rescoring | Water |" in report
     assert "| smina | margin:4 | none | remove_all | 8 |" in report
@@ -214,7 +236,7 @@ def test_protocol_conditions_do_not_repeat_rdock_for_exhaustiveness():
         "rescore_methods": ["none", "vinardo"],
     }
 
-    conditions = RedockAnalysisApp._expand_protocol_conditions(actives, sweep)
+    conditions = DockMateVSApp._expand_protocol_conditions(actives, sweep)
     smina = [condition for condition in conditions if condition[1] == "smina"]
     rdock = [condition for condition in conditions if condition[1] == "rdock"]
 
@@ -235,7 +257,7 @@ def test_protocol_report_collapses_legacy_rdock_exhaustiveness_rows(tmp_path: Pa
         for exhaustiveness in (8, 16, 32)
     ]
 
-    report = RedockAnalysisApp._write_protocol_report(rows, tmp_path).read_text()
+    report = DockMateVSApp._write_protocol_report(rows, tmp_path).read_text()
 
     assert "- Unique crystal complexes evaluated: 1" in report
     assert "- Completed protocol-ranking conditions: 1" in report
@@ -263,7 +285,7 @@ def test_protocol_recommendation_prefers_native_pose_rank_over_failed_top1_delta
         },
     ]
 
-    report = RedockAnalysisApp._write_protocol_report(rows, tmp_path).read_text()
+    report = DockMateVSApp._write_protocol_report(rows, tmp_path).read_text()
     recommendation = report.split("## Recommended protocol per target", 1)[1]
 
     assert "| ESR1 | vina | margin:6 | retain_all | 8 | baseline |" in recommendation
@@ -282,7 +304,7 @@ Comparison explanation.
 | rdock | selective | 10.50 / 12.50 |
 """
 
-    prose, headers, rows = RedockAnalysisApp._parse_protocol_markdown(report)
+    prose, headers, rows = DockMateVSApp._parse_protocol_markdown(report)
 
     assert prose == [
         "Protocol Development Summary",
@@ -316,7 +338,7 @@ def test_protocol_section_parser_keeps_each_summary_table_separate():
 | NQO2 | rescored |
 """
 
-    prose, tables = RedockAnalysisApp._parse_protocol_markdown_sections(report)
+    prose, tables = DockMateVSApp._parse_protocol_markdown_sections(report)
 
     assert prose[0] == "Protocol Development Summary"
     assert [table[0] for table in tables] == [
@@ -353,7 +375,7 @@ def test_protocol_chart_data_uses_completed_csv_rows_and_excludes_sentinels():
         },
     ])
 
-    data = RedockAnalysisApp._protocol_chart_data(frame)
+    data = DockMateVSApp._protocol_chart_data(frame)
 
     label = "smina | margin:4 | remove all | e8 | s42 | rescore:vinardo"
     assert data["pose_ranking_points"] == [{
@@ -386,7 +408,7 @@ def test_protocol_chart_data_treats_seeds_as_replicates():
         for seed, best, top1 in ((1, 1.0, 1.5), (2, 1.2, 2.5), (3, 1.4, 3.5))
     ])
 
-    data = RedockAnalysisApp._protocol_chart_data(frame)
+    data = DockMateVSApp._protocol_chart_data(frame)
 
     assert data["condition_count"] == 1
     assert "3 seeds" in data["pose_ranking_points"][0]["label"]
@@ -410,7 +432,7 @@ def test_protocol_chart_data_uses_every_rescored_condition():
         for index in range(20)
     ])
 
-    data = RedockAnalysisApp._protocol_chart_data(frame)
+    data = DockMateVSApp._protocol_chart_data(frame)
 
     assert data["condition_count"] == 20
     assert len(data["pose_ranking_points"]) == 20
@@ -429,7 +451,7 @@ def test_protocol_chart_data_collapses_legacy_rdock_exhaustiveness_duplicates():
         for exhaustiveness in (8, 16, 32)
     ])
 
-    data = RedockAnalysisApp._protocol_chart_data(frame)
+    data = DockMateVSApp._protocol_chart_data(frame)
 
     assert data["source_rows"] == 3
     assert data["condition_count"] == 1
@@ -477,7 +499,7 @@ def test_screening_chart_data_prioritizes_enrichment_and_cross_structure_hits():
         ],
     }
 
-    data = RedockAnalysisApp._screening_chart_data(summary)
+    data = DockMateVSApp._screening_chart_data(summary)
 
     assert data["structure_auc"][0][1] == 1.0
     assert data["score_margin"][0][1] == 0.40
@@ -494,7 +516,7 @@ def test_mixed_screening_with_control_rmsd_uses_screening_charts():
         "per_structure_enrichment": [{"pdb_id": "1ABC", "ligand": "LIG"}],
     }
 
-    assert RedockAnalysisApp._is_screening_summary(summary) is True
+    assert DockMateVSApp._is_screening_summary(summary) is True
 
 
 def test_screening_chart_data_flags_incomplete_campaign_coverage():
@@ -509,7 +531,7 @@ def test_screening_chart_data_flags_incomplete_campaign_coverage():
         "screening_score_count": 15,
     }
 
-    data = RedockAnalysisApp._screening_chart_data(summary)
+    data = DockMateVSApp._screening_chart_data(summary)
 
     assert data["campaign_coverage"] == [
         ("Docking completed", 80.0),
@@ -528,7 +550,7 @@ def test_protocol_development_uses_unique_control_actives_only():
         {"pdb_id": "3GHI", "site_ligand": "ACT", "chain": "B", "control_label": 1},
     ]
 
-    actives = RedockAnalysisApp._protocol_active_pairs(pairs)
+    actives = DockMateVSApp._protocol_active_pairs(pairs)
 
     assert [(item["pdb_id"], item["site_ligand"]) for item in actives] == [
         ("1ABC", "LIG"),
@@ -598,9 +620,9 @@ def test_covalent_site_ligand_link_is_detected(tmp_path):
         "LINK         SG  CYS A  61                 C10 JMR A 301     1555   1555  1.68\n"
     )
 
-    assert RedockAnalysisApp._has_covalent_ligand_link(pdb, "JMR", "A") is True
-    assert RedockAnalysisApp._has_covalent_ligand_link(pdb, "JMR", "B") is False
-    assert RedockAnalysisApp._has_covalent_ligand_link(pdb, "STI", "A") is False
+    assert DockMateVSApp._has_covalent_ligand_link(pdb, "JMR", "A") is True
+    assert DockMateVSApp._has_covalent_ligand_link(pdb, "JMR", "B") is False
+    assert DockMateVSApp._has_covalent_ligand_link(pdb, "STI", "A") is False
 
 
 def test_control_preserving_sample_is_balanced_and_keeps_sheet_order():
@@ -769,8 +791,8 @@ def test_software_provenance_records_commit_dependencies_and_binary_versions(mon
             return " M file.py\n"
         return "AutoDock Vina test build\n"
 
-    monkeypatch.setattr(RedockAnalysisApp, "_command_version", staticmethod(fake_command))
-    provenance = RedockAnalysisApp._software_provenance({
+    monkeypatch.setattr(DockMateVSApp, "_command_version", staticmethod(fake_command))
+    provenance = DockMateVSApp._software_provenance({
         "single": {
             "vina_binary": "/opt/vina",
             "smina_binary": "/opt/smina",
@@ -829,8 +851,8 @@ def test_java_resolver_and_ligplus_launcher(monkeypatch, tmp_path):
 
     monkeypatch.setattr(redock_analysis_module.subprocess, "Popen", fake_popen)
 
-    assert RedockAnalysisApp._resolve_java_bin() == str(java.resolve())
-    launched = RedockAnalysisApp._launch_ligplus_drawings(
+    assert DockMateVSApp._resolve_java_bin() == str(java.resolve())
+    launched = DockMateVSApp._launch_ligplus_drawings(
         str(java.resolve()), jar, [("Native", drawing), ("Missing", missing)]
     )
 
@@ -857,7 +879,7 @@ def test_viewer_receptor_removes_residual_site_ligand_and_connectivity(tmp_path)
         + "\n"
     )
 
-    RedockAnalysisApp._prepare_viewer_receptor(receptor, "AIH", output)
+    DockMateVSApp._prepare_viewer_receptor(receptor, "AIH", output)
     rendered = output.read_text()
 
     assert " AIH " not in rendered
@@ -1026,7 +1048,7 @@ def test_ligplot_restores_dictionary_double_bonds_without_changing_labels(tmp_pa
         "    2  C2  LIG    1  L ->      3  O1  LIG    1  L   SING\n"
     )
 
-    restored = RedockAnalysisApp._restore_ligplot_double_bonds(
+    restored = DockMateVSApp._restore_ligplot_double_bonds(
         ps_file,
         bond_orders,
         1,
@@ -1040,7 +1062,7 @@ def test_ligplot_restores_dictionary_double_bonds_without_changing_labels(tmp_pa
     assert " 10.00 17.75 30.00 17.75 L" in rendered
     assert " 30.00 20.00 40.00 30.00 L" in rendered
     assert "(2.81) HBtext_size Print" in rendered
-    assert RedockAnalysisApp._restore_ligplot_double_bonds(
+    assert DockMateVSApp._restore_ligplot_double_bonds(
         ps_file,
         bond_orders,
         1,
@@ -1081,7 +1103,7 @@ def test_run_ligplot_uses_hbplus_and_ligplot_sequence(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(redock_analysis_module.subprocess, "run", fake_run)
-    monkeypatch.setattr(RedockAnalysisApp, "_ligplot_ps_to_png", fake_ps_to_png)
+    monkeypatch.setattr(DockMateVSApp, "_ligplot_ps_to_png", fake_ps_to_png)
 
     app = _app_without_tk()
     png_file = app._run_ligplot(str(ligplot), complex_pdb, 1, "L", out_dir)
@@ -1109,8 +1131,8 @@ def test_pose_viewer_uses_protocol_development_csv_directly(tmp_path):
     protocol_csv = tmp_path / "protocol_development_results.csv"
     redock_json = tmp_path / "redock_results.json"
 
-    assert RedockAnalysisApp._pose_results_csv(protocol_csv) == protocol_csv
-    assert RedockAnalysisApp._pose_results_csv(redock_json) == tmp_path / "redock_results.csv"
+    assert DockMateVSApp._pose_results_csv(protocol_csv) == protocol_csv
+    assert DockMateVSApp._pose_results_csv(redock_json) == tmp_path / "redock_results.csv"
 
 
 def test_results_loader_resolves_screening_run_folder(tmp_path):
@@ -1119,7 +1141,7 @@ def test_results_loader_resolves_screening_run_folder(tmp_path):
     results = run_dir / "redock_results.json"
     results.write_text('{"results": []}')
 
-    assert RedockAnalysisApp._result_file_for_selection(run_dir) == results
+    assert DockMateVSApp._result_file_for_selection(run_dir) == results
 
 
 def test_results_loader_resolves_protocol_run_and_results_folders(tmp_path):
@@ -1129,15 +1151,15 @@ def test_results_loader_resolves_protocol_run_and_results_folders(tmp_path):
     results = protocol_dir / "protocol_development_results.csv"
     results.write_text("status\n")
 
-    assert RedockAnalysisApp._result_file_for_selection(run_dir) == results
-    assert RedockAnalysisApp._result_file_for_selection(protocol_dir) == results
+    assert DockMateVSApp._result_file_for_selection(run_dir) == results
+    assert DockMateVSApp._result_file_for_selection(protocol_dir) == results
 
 
 def test_results_loader_accepts_exact_supported_file(tmp_path):
     results = tmp_path / "redock_results.csv"
     results.write_text("best_score\n")
 
-    assert RedockAnalysisApp._result_file_for_selection(results) == results
+    assert DockMateVSApp._result_file_for_selection(results) == results
 
 
 def test_results_loader_rejects_parent_output_folder_and_unrelated_file(tmp_path):
@@ -1147,8 +1169,8 @@ def test_results_loader_rejects_parent_output_folder_and_unrelated_file(tmp_path
     unrelated = tmp_path / "notes.csv"
     unrelated.write_text("notes\n")
 
-    assert RedockAnalysisApp._result_file_for_selection(tmp_path) is None
-    assert RedockAnalysisApp._result_file_for_selection(unrelated) is None
+    assert DockMateVSApp._result_file_for_selection(tmp_path) is None
+    assert DockMateVSApp._result_file_for_selection(unrelated) is None
 
 
 def test_results_loader_prefers_current_workflow_when_both_exist(tmp_path):
@@ -1159,10 +1181,10 @@ def test_results_loader_prefers_current_workflow_when_both_exist(tmp_path):
     protocol = protocol_dir / "protocol_development_results.csv"
     protocol.write_text("status\n")
 
-    assert RedockAnalysisApp._result_file_for_selection(
+    assert DockMateVSApp._result_file_for_selection(
         tmp_path, "screening"
     ) == screening
-    assert RedockAnalysisApp._result_file_for_selection(
+    assert DockMateVSApp._result_file_for_selection(
         tmp_path, "protocol_development"
     ) == protocol
 
@@ -1279,7 +1301,7 @@ def test_multi_active_assay_benchmark_is_not_treated_as_matched_decoys():
 
 
 def test_assay_benchmark_chart_curves_advance_score_ties_together():
-    data = RedockAnalysisApp._assay_benchmark_chart_data(
+    data = DockMateVSApp._assay_benchmark_chart_data(
         [(3.0, 1), (2.0, 1), (2.0, 0), (1.0, 0)], bins=2
     )
 
@@ -1472,7 +1494,7 @@ def test_screening_chart_data_uses_per_structure_completion_and_score_coverage()
         "mean_pose_count": 17.5,
     }
 
-    data = RedockAnalysisApp._screening_chart_data(summary)
+    data = DockMateVSApp._screening_chart_data(summary)
 
     assert data["completion"] == [("1AAA/L1", 75.0), ("2BBB/L2", 100.0)]
     assert data["score_coverage"] == [("1AAA/L1", 50.0), ("2BBB/L2", 100.0)]

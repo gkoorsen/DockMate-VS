@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import docking_platform_gui.gui.redock_analysis as redock_module
-from docking_platform_gui.binding_site.cocrystal import BindingSite
-from docking_platform_gui.docking.base import DockingPose, DockingResult
-from docking_platform_gui.gui.redock_analysis import RedockAnalysisApp
-from docking_platform_gui.gui.redock_analysis import RedockResult
+import dockmate_vs.gui.app as redock_module
+from dockmate_vs.binding_site.cocrystal import BindingSite
+from dockmate_vs.docking.base import DockingPose, DockingResult
+from dockmate_vs.gui.app import DockMateVSApp
+from dockmate_vs.gui.app import RedockResult
 
 
 class FakePipeline:
@@ -89,7 +89,7 @@ def _single_config(selection="score"):
 
 
 def _mock_case(monkeypatch, tmp_path, scores, failed=()):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     app._queue = queue.Queue()
     pdb_file = tmp_path / "1abc.pdb"
     pdb_file.write_text("HEADER\n")
@@ -195,7 +195,7 @@ def test_all_failed_variants_raise_clear_error(monkeypatch, tmp_path):
 
 
 def test_rescoring_scores_every_pose_from_multimodel_pdbqt(monkeypatch, tmp_path):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     case_dir = tmp_path / "case"
     case_dir.mkdir()
     (case_dir / "receptor_prepared.pdbqt").write_text("RECEPTOR\n")
@@ -227,7 +227,7 @@ def test_rescoring_scores_every_pose_from_multimodel_pdbqt(monkeypatch, tmp_path
 
 
 def test_rescoring_returns_subprocess_error_instead_of_raising(monkeypatch, tmp_path):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     case_dir = tmp_path / "case"
     case_dir.mkdir()
     (case_dir / "receptor_prepared.pdbqt").write_text("RECEPTOR\n")
@@ -247,7 +247,7 @@ def test_rescoring_returns_subprocess_error_instead_of_raising(monkeypatch, tmp_
 
 
 def test_protocol_completion_renders_and_opens_results(monkeypatch, tmp_path):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     results = tmp_path / "protocol_development_results.csv"
     report = tmp_path / "protocol_development_summary.md"
     results.write_text("status\ncomplete\n")
@@ -302,7 +302,7 @@ def _resume_manifest(tmp_path, scoring="vina"):
 
 
 def test_compatible_progress_resumes_completed_case(tmp_path):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     manifest_path = tmp_path / "run_manifest.json"
     progress_path = tmp_path / "redock_progress.json"
     output = tmp_path / "docked.pdbqt"
@@ -332,7 +332,7 @@ def test_compatible_progress_resumes_completed_case(tmp_path):
 
 
 def test_changed_scoring_configuration_disables_resume(tmp_path):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     manifest_path = tmp_path / "run_manifest.json"
     progress_path = tmp_path / "redock_progress.json"
     app._write_json_atomic(manifest_path, _resume_manifest(tmp_path, scoring="vina"))
@@ -347,7 +347,7 @@ def test_changed_scoring_configuration_disables_resume(tmp_path):
 
 @pytest.mark.parametrize("completed,has_output", [(False, True), (True, False)])
 def test_failed_or_missing_output_is_retried(tmp_path, completed, has_output):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     manifest_path = tmp_path / "run_manifest.json"
     progress_path = tmp_path / "redock_progress.json"
     output = tmp_path / "docked.pdbqt"
@@ -377,7 +377,7 @@ def test_failed_or_missing_output_is_retried(tmp_path, completed, has_output):
 
 
 def test_legacy_progress_infers_case_id(tmp_path):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     manifest_path = tmp_path / "run_manifest.json"
     progress_path = tmp_path / "redock_progress.json"
     output = tmp_path / "docked.pdbqt"
@@ -407,7 +407,7 @@ def test_legacy_progress_infers_case_id(tmp_path):
 
 
 def test_atomic_progress_write_leaves_no_temporary_file(tmp_path):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     path = tmp_path / "redock_progress.json"
 
     app._write_progress(path, [])
@@ -417,7 +417,7 @@ def test_atomic_progress_write_leaves_no_temporary_file(tmp_path):
 
 
 def test_worker_skips_compatible_completed_case(monkeypatch, tmp_path):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     app._queue = queue.Queue()
     app.progress_dialog = None
     output = tmp_path / "case" / "docked.pdbqt"
@@ -484,7 +484,7 @@ def test_worker_skips_compatible_completed_case(monkeypatch, tmp_path):
 
 
 def test_cancelled_worker_saves_partial_results_without_reporting_done(monkeypatch, tmp_path):
-    app = object.__new__(RedockAnalysisApp)
+    app = object.__new__(DockMateVSApp)
     app._queue = queue.Queue()
     app.progress_dialog = SimpleNamespace(cancelled=True)
     pair = {
