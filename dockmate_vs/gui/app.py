@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import urllib.request
+import yaml
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -141,14 +142,15 @@ class DockMateVSApp(tk.Tk):
 
         self.file_var = tk.StringVar()
         self.output_var = tk.StringVar(value=str(Path("output/dockmate_vs").resolve()))
+        self.execution_backend_var = tk.StringVar(value="local")
+        self.docker_image_var = tk.StringVar(value="dockmate-vs:local")
+        self.docker_platform_var = tk.StringVar(value="linux/amd64")
         self.mode_var = tk.StringVar(value="protocol_development")
         self.exclude_additives_var = tk.BooleanVar(value=False)
         self.exclude_cofactors_var = tk.BooleanVar(value=False)
         self.sample_enable_var = tk.BooleanVar(value=False)
         self.sample_size_var = tk.StringVar(value="")
         self.sample_seed_var = tk.StringVar(value="")
-        self.sample_include_controls_var = tk.BooleanVar(value=True)
-        self.use_smiles_var = tk.BooleanVar(value=False)
         self.variant_mode_var = tk.StringVar(value="adaptive") 
         self.max_tautomers_var = tk.StringVar(value="8")
         self.max_conformers_var = tk.StringVar(value="10")
@@ -218,6 +220,9 @@ class DockMateVSApp(tk.Tk):
         self._rmsd_variant_available = True
         self._network_phase_complete = False
         self._protocol_swept_widgets: List[tk.Widget] = []
+        self._sampling_widgets: List[tk.Widget] = []
+        self._pose_viewer_session = None
+        self._pose_viewer_loaded_path: Optional[Path] = None
 
         self._load_filter_config()
         self._build_ui()
@@ -273,65 +278,6 @@ class DockMateVSApp(tk.Tk):
         tk.Label(container, textvariable=self.pairs_label_var).grid(row=row, column=1, sticky="w", pady=(5, 10))
 
         row += 1
-        filter_frame = tk.LabelFrame(container, text="Filters", padx=8, pady=8)
-        filter_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 10))
-        add_chk = tk.Checkbutton(
-            filter_frame,
-            text="Exclude known additives",
-            variable=self.exclude_additives_var,
-            command=self._update_pair_count
-        )
-        add_chk.grid(row=0, column=0, sticky="w", padx=(0, 10))
-        self._register_busy_widget(add_chk)
-        cof_chk = tk.Checkbutton(
-            filter_frame,
-            text="Exclude cofactors",
-            variable=self.exclude_cofactors_var,
-            command=self._update_pair_count
-        )
-        cof_chk.grid(row=0, column=1, sticky="w")
-        self._register_busy_widget(cof_chk)
-        edit_btn = tk.Button(
-            filter_frame,
-            text="Edit lists...",
-            command=self._safe_call(self._edit_filters)
-        )
-        edit_btn.grid(row=0, column=2, sticky="e", padx=(20, 0))
-        self._register_busy_widget(edit_btn)
-        sample_chk = tk.Checkbutton(
-            filter_frame,
-            text="Random sample",
-            variable=self.sample_enable_var,
-            command=self._update_pair_count
-        )
-        sample_chk.grid(row=1, column=0, sticky="w", pady=(8, 0))
-        self._register_busy_widget(sample_chk)
-        tk.Label(filter_frame, text="Sample size:").grid(row=1, column=1, sticky="e", pady=(8, 0))
-        sample_entry = tk.Entry(filter_frame, textvariable=self.sample_size_var, width=8)
-        sample_entry.grid(row=1, column=2, sticky="w", pady=(8, 0))
-        self._register_busy_widget(sample_entry)
-        tk.Label(filter_frame, text="Seed:").grid(row=1, column=3, sticky="e", padx=(20, 0), pady=(8, 0))
-        seed_entry = tk.Entry(filter_frame, textvariable=self.sample_seed_var, width=10)
-        seed_entry.grid(row=1, column=4, sticky="w", pady=(8, 0))
-        self._register_busy_widget(seed_entry)
-        include_controls_chk = tk.Checkbutton(
-            filter_frame,
-            text="Always include controls",
-            variable=self.sample_include_controls_var,
-            command=self._update_pair_count
-        )
-        include_controls_chk.grid(row=2, column=0, sticky="w", pady=(8, 0))
-        self._register_busy_widget(include_controls_chk)
-        use_smiles_chk = tk.Checkbutton(
-            filter_frame,
-            text="Use SMILES column",
-            variable=self.use_smiles_var,
-            command=self._update_pair_count
-        )
-        use_smiles_chk.grid(row=2, column=1, sticky="w", pady=(8, 0))
-        self._register_busy_widget(use_smiles_chk)
-
-        row += 1
         tk.Label(container, text="Output directory:").grid(row=row, column=0, sticky="w")
         output_entry = tk.Entry(container, textvariable=self.output_var)
         output_entry.grid(row=row, column=1, sticky="ew", padx=5)
@@ -341,13 +287,164 @@ class DockMateVSApp(tk.Tk):
         self._register_busy_widget(output_btn)
 
         row += 1
+        backend_frame = tk.LabelFrame(
+            container, text="Execution backend", padx=8, pady=6
+        )
+        backend_frame.grid(
+            row=row, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+        )
+        local_backend = tk.Radiobutton(
+            backend_frame,
+            text="Local",
+            variable=self.execution_backend_var,
+            value="local",
+            command=self._update_execution_backend,
+        )
+        local_backend.grid(row=0, column=0, sticky="w")
+        self._register_busy_widget(local_backend)
+        docker_backend = tk.Radiobutton(
+            backend_frame,
+            text="Docker (core tools included)",
+            variable=self.execution_backend_var,
+            value="docker",
+            command=self._update_execution_backend,
+        )
+        docker_backend.grid(row=0, column=1, sticky="w", padx=(15, 0))
+        self._register_busy_widget(docker_backend)
+        self.docker_backend_options = tk.Frame(backend_frame)
+        self.docker_backend_options.grid(
+            row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0)
+        )
+        self.docker_backend_options.grid_columnconfigure(1, weight=1)
+        tk.Label(self.docker_backend_options, text="Image:").grid(
+            row=0, column=0, sticky="w"
+        )
+        docker_image_entry = tk.Entry(
+            self.docker_backend_options, textvariable=self.docker_image_var
+        )
+        docker_image_entry.grid(row=0, column=1, sticky="ew", padx=5)
+        self._register_busy_widget(docker_image_entry)
+        tk.Label(self.docker_backend_options, text="Platform:").grid(
+            row=0, column=2, sticky="e", padx=(10, 0)
+        )
+        docker_platform_entry = tk.Entry(
+            self.docker_backend_options, textvariable=self.docker_platform_var, width=14
+        )
+        docker_platform_entry.grid(row=0, column=3, sticky="w", padx=5)
+        self._register_busy_widget(docker_platform_entry)
+        tk.Label(
+            self.docker_backend_options,
+            text=(
+                "Vina, Smina, rDock, Open Babel, fpocket, and preparation dependencies "
+                "run in the container. PyMOL and LigPlot+ remain host applications."
+            ),
+            fg="#666666",
+            justify="left",
+            wraplength=820,
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+        row += 1
         self.workflow_notebook = ttk.Notebook(container)
         self.workflow_notebook.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 5))
         self.protocol_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
         self.screening_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
+        self.filters_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
+        self.pose_viewer_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
         self.workflow_notebook.add(self.protocol_tab, text="Protocol Development")
         self.workflow_notebook.add(self.screening_tab, text="Screening")
+        self.workflow_notebook.add(self.filters_tab, text="Filters")
+        self.workflow_notebook.add(self.pose_viewer_tab, text="Pose Viewer")
         self.workflow_notebook.bind("<<NotebookTabChanged>>", self._on_workflow_changed)
+
+        structure_filters = tk.LabelFrame(
+            self.filters_tab, text="Structure filters", padx=10, pady=10
+        )
+        structure_filters.pack(fill="x")
+        add_chk = tk.Checkbutton(
+            structure_filters,
+            text="Exclude known additives",
+            variable=self.exclude_additives_var,
+            command=self._update_pair_count,
+        )
+        add_chk.grid(row=0, column=0, sticky="w", padx=(0, 18))
+        self._register_busy_widget(add_chk)
+        cof_chk = tk.Checkbutton(
+            structure_filters,
+            text="Exclude cofactors",
+            variable=self.exclude_cofactors_var,
+            command=self._update_pair_count,
+        )
+        cof_chk.grid(row=0, column=1, sticky="w")
+        self._register_busy_widget(cof_chk)
+        edit_btn = tk.Button(
+            structure_filters,
+            text="Edit lists...",
+            command=self._safe_call(self._edit_filters),
+        )
+        edit_btn.grid(row=0, column=2, sticky="e", padx=(24, 0))
+        self._register_busy_widget(edit_btn)
+        tk.Label(
+            structure_filters,
+            text=(
+                "Filters apply to ordinary input cases. Labelled or matched active/decoy "
+                "controls are retained so a benchmark cannot be silently unbalanced."
+            ),
+            fg="#666666",
+            justify="left",
+            wraplength=820,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        sampling_frame = tk.LabelFrame(
+            self.filters_tab, text="Screening sample", padx=10, pady=10
+        )
+        sampling_frame.pack(fill="x", pady=(10, 0))
+        sample_chk = tk.Checkbutton(
+            sampling_frame,
+            text="Randomly sample unlabelled compounds",
+            variable=self.sample_enable_var,
+            command=self._update_pair_count,
+        )
+        sample_chk.grid(row=0, column=0, sticky="w")
+        self._register_busy_widget(sample_chk)
+        sample_size_label = tk.Label(sampling_frame, text="Sample size:")
+        sample_size_label.grid(row=0, column=1, sticky="e", padx=(20, 4))
+        sample_entry = tk.Entry(sampling_frame, textvariable=self.sample_size_var, width=8)
+        sample_entry.grid(row=0, column=2, sticky="w")
+        self._register_busy_widget(sample_entry)
+        sample_seed_label = tk.Label(sampling_frame, text="Seed:")
+        sample_seed_label.grid(row=0, column=3, sticky="e", padx=(20, 4))
+        sample_seed_entry = tk.Entry(
+            sampling_frame, textvariable=self.sample_seed_var, width=10
+        )
+        sample_seed_entry.grid(row=0, column=4, sticky="w")
+        self._register_busy_widget(sample_seed_entry)
+        self._sampling_widgets = [
+            sample_chk, sample_size_label, sample_entry,
+            sample_seed_label, sample_seed_entry,
+        ]
+        tk.Label(
+            sampling_frame,
+            text=(
+                "Sample size counts unlabelled screening compounds only. All controls are "
+                "always retained, and sampling is balanced across receptor structures."
+            ),
+            fg="#666666",
+            justify="left",
+            wraplength=820,
+        ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0))
+
+        tk.Label(
+            self.filters_tab,
+            text=(
+                "SMILES handling is automatic: DockMate-VS uses a detected SMILES column "
+                "when populated and otherwise uses the available co-crystal ligand."
+            ),
+            fg="#444444",
+            justify="left",
+            wraplength=850,
+        ).pack(fill="x", pady=(10, 0))
+
+        self._build_pose_viewer_tab()
         tk.Label(
             self.protocol_tab,
             text="Benchmark protocol combinations on control actives only; completed conditions resume automatically.",
@@ -419,14 +516,28 @@ class DockMateVSApp(tk.Tk):
         ).pack(anchor="w")
 
         row += 1
-        tk.Label(container, text="RMSD threshold (A):").grid(row=row, column=0, sticky="w")
-        threshold_entry = tk.Entry(container, textvariable=self.threshold_var, width=10)
-        threshold_entry.grid(row=row, column=1, sticky="w", padx=5)
+        self.run_configuration_frame = tk.Frame(container)
+        self.run_configuration_frame.grid(
+            row=row, column=0, columnspan=3, sticky="ew", pady=(5, 0)
+        )
+        self.run_configuration_frame.grid_columnconfigure(1, weight=1)
+        settings_row = 0
+        tk.Label(
+            self.run_configuration_frame, text="RMSD threshold (A):"
+        ).grid(row=settings_row, column=0, sticky="w")
+        threshold_entry = tk.Entry(
+            self.run_configuration_frame, textvariable=self.threshold_var, width=10
+        )
+        threshold_entry.grid(row=settings_row, column=1, sticky="w", padx=5)
         self._register_busy_widget(threshold_entry)
 
-        row += 1
-        variant_frame = tk.LabelFrame(container, text="Ligand variants", padx=8, pady=8)
-        variant_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(5, 5))
+        settings_row += 1
+        variant_frame = tk.LabelFrame(
+            self.run_configuration_frame, text="Ligand variants", padx=8, pady=8
+        )
+        variant_frame.grid(
+            row=settings_row, column=0, columnspan=3, sticky="ew", pady=(5, 5)
+        )
         variant_frame.grid_columnconfigure(0, weight=1)
 
         # Adaptive mode (NEW - recommended default)
@@ -501,9 +612,16 @@ class DockMateVSApp(tk.Tk):
         max_conf_entry.grid(row=3, column=2, sticky="w")
         self._register_busy_widget(max_conf_entry)
 
-        row += 1
-        self.adaptive_frame = tk.LabelFrame(container, text="Adaptive search settings", padx=10, pady=10)
-        self.adaptive_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 5))
+        settings_row += 1
+        self.adaptive_frame = tk.LabelFrame(
+            self.run_configuration_frame,
+            text="Adaptive search settings",
+            padx=10,
+            pady=10,
+        )
+        self.adaptive_frame.grid(
+            row=settings_row, column=0, columnspan=3, sticky="ew", pady=(10, 5)
+        )
         self.adaptive_frame.grid_columnconfigure(1, weight=1)
 
         adaptive_chk = tk.Checkbutton(
@@ -542,11 +660,16 @@ class DockMateVSApp(tk.Tk):
             fg="#666666"
         ).grid(row=2, column=2, sticky="w", pady=(8, 0))
 
-        row += 1
+        settings_row += 1
         self.single_frame = tk.LabelFrame(
-            container, text="Docking protocol (single protocol / screening)", padx=10, pady=10
+            self.run_configuration_frame,
+            text="Docking protocol (single protocol / screening)",
+            padx=10,
+            pady=10,
         )
-        self.single_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 5))
+        self.single_frame.grid(
+            row=settings_row, column=0, columnspan=3, sticky="ew", pady=(10, 5)
+        )
         self.single_frame.grid_columnconfigure(3, weight=1)
 
         engine_label = tk.Label(self.single_frame, text="Engine:")
@@ -728,9 +851,11 @@ class DockMateVSApp(tk.Tk):
         site_residues_entry.grid(row=12, column=1, columnspan=3, sticky="ew", pady=(5, 0))
         self._register_busy_widget(site_residues_entry)
 
-        row += 1
-        button_frame = tk.Frame(container)
-        button_frame.grid(row=row, column=0, columnspan=3, sticky="e", pady=(15, 0))
+        settings_row += 1
+        button_frame = tk.Frame(self.run_configuration_frame)
+        button_frame.grid(
+            row=settings_row, column=0, columnspan=3, sticky="e", pady=(15, 0)
+        )
         run_btn = tk.Button(button_frame, text="Run Analysis", command=self._safe_call(self._start_run), width=16)
         run_btn.pack(side="right")
         self._register_busy_widget(run_btn)
@@ -765,7 +890,7 @@ class DockMateVSApp(tk.Tk):
         self._register_busy_widget(load_results_file_btn)
         pose_viewer_btn = tk.Button(
             results_actions,
-            text="Pose Viewer",
+            text="View Poses",
             command=self._safe_call(self._open_pose_viewer_from_last)
         )
         pose_viewer_btn.pack(side="left")
@@ -784,6 +909,65 @@ class DockMateVSApp(tk.Tk):
         self.results_notebook.add(self.results_charts_tab, text="Charts")
         self.results_frame.grid_rowconfigure(1, weight=1)
         self._populate_empty_results()
+        self._update_execution_backend()
+        self.after_idle(self._resize_workflow_notebook)
+
+    def _build_pose_viewer_tab(self) -> None:
+        """Build the in-application pose navigator and external-viewer launch area."""
+        self.pose_viewer_tab.grid_columnconfigure(0, weight=1)
+        tk.Label(
+            self.pose_viewer_tab,
+            text=(
+                "Inspect a completed run, then open the selected receptor-frame overlay "
+                "in PyMOL or its interaction diagrams in LigPlot+."
+            ),
+            anchor="w",
+            justify="left",
+            wraplength=850,
+        ).grid(row=0, column=0, sticky="ew")
+
+        actions = tk.Frame(self.pose_viewer_tab)
+        actions.grid(row=1, column=0, sticky="ew", pady=(8, 6))
+        load_folder_btn = tk.Button(
+            actions,
+            text="Load Run Folder...",
+            command=self._safe_call(self._browse_pose_results_folder),
+        )
+        load_folder_btn.pack(side="left")
+        self._register_busy_widget(load_folder_btn)
+        load_file_btn = tk.Button(
+            actions,
+            text="Load Results File...",
+            command=self._safe_call(self._browse_pose_results_file),
+        )
+        load_file_btn.pack(side="left", padx=6)
+        self._register_busy_widget(load_file_btn)
+        current_btn = tk.Button(
+            actions,
+            text="Use Current Results",
+            command=self._safe_call(self._open_pose_viewer_from_last),
+        )
+        current_btn.pack(side="left")
+        self._register_busy_widget(current_btn)
+
+        self.pose_viewer_source_var = tk.StringVar(value="No run loaded")
+        tk.Label(
+            self.pose_viewer_tab,
+            textvariable=self.pose_viewer_source_var,
+            anchor="w",
+            fg="#555555",
+        ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
+
+        self.pose_viewer_content = tk.Frame(self.pose_viewer_tab)
+        self.pose_viewer_content.grid(row=3, column=0, sticky="nsew")
+        self.pose_viewer_content.grid_columnconfigure(0, weight=1)
+        self.pose_viewer_tab.grid_rowconfigure(3, weight=1)
+        tk.Label(
+            self.pose_viewer_content,
+            text="Load a completed Protocol Development or Screening run to inspect its poses.",
+            fg="#666666",
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", pady=12)
 
     def _browse_excel(self) -> None:
         path = filedialog.askopenfilename(
@@ -823,13 +1007,51 @@ class DockMateVSApp(tk.Tk):
         selected = self.workflow_notebook.select()
         if selected == str(self.screening_tab):
             self.mode_var.set("screening")
-        else:
+        elif selected == str(self.protocol_tab):
             self.mode_var.set("protocol_development")
         self._update_mode()
         self._update_pair_count()
+        self.after_idle(self._resize_workflow_notebook)
+        if (
+            selected == str(self.pose_viewer_tab)
+            and self.last_results_path is not None
+            and self._pose_viewer_loaded_path != self.last_results_path
+        ):
+            self.after_idle(self._open_pose_viewer_from_last)
+
+    def _resize_workflow_notebook(self) -> None:
+        """Fit the notebook to the selected page instead of its tallest page."""
+        selected = self.workflow_notebook.select()
+        if not selected:
+            return
+        page = self.nametowidget(selected)
+        page.update_idletasks()
+        self.workflow_notebook.configure(height=max(70, page.winfo_reqheight() + 12))
 
     def _update_mode(self) -> None:
         mode = self.mode_var.get()
+        selected_tab = self.workflow_notebook.select()
+        run_tab_selected = selected_tab in {
+            str(self.protocol_tab), str(self.screening_tab)
+        }
+        if hasattr(self, "run_configuration_frame"):
+            if run_tab_selected:
+                self.run_configuration_frame.grid()
+            else:
+                self.run_configuration_frame.grid_remove()
+        if hasattr(self, "results_frame"):
+            if run_tab_selected:
+                self.results_frame.grid()
+            else:
+                self.results_frame.grid_remove()
+
+        sampling_state = "normal" if mode == "screening" else "disabled"
+        for widget in self._sampling_widgets:
+            try:
+                widget.configure(state=sampling_state)
+            except tk.TclError:
+                pass
+
         if mode == "adaptive":
             self.adaptive_frame.grid()
             self.single_frame.grid_remove()
@@ -865,6 +1087,14 @@ class DockMateVSApp(tk.Tk):
         if engine == "vina":
             self.scoring_var.set("vina")
 
+    def _update_execution_backend(self) -> None:
+        if not hasattr(self, "docker_backend_options"):
+            return
+        if self.execution_backend_var.get() == "docker":
+            self.docker_backend_options.grid()
+        else:
+            self.docker_backend_options.grid_remove()
+
     def _update_pair_count(self) -> None:
         self._schedule_pair_count_update()
 
@@ -878,17 +1108,14 @@ class DockMateVSApp(tk.Tk):
         self._pair_count_request_id += 1
         request_id = self._pair_count_request_id
 
-        excel_path = Path(self.file_var.get())
+        excel_path_raw = self.file_var.get().strip()
+        excel_path = Path(excel_path_raw) if excel_path_raw else None
         exclude_additives = self.exclude_additives_var.get()
         exclude_cofactors = self.exclude_cofactors_var.get()
         sample_enabled = self.mode_var.get() == "screening" and self.sample_enable_var.get()
         sample_size_raw = self.sample_size_var.get()
-        include_controls = self.sample_include_controls_var.get()
-        use_smiles = self.use_smiles_var.get() or self.mode_var.get() in (
-            "screening", "protocol_development"
-        )
 
-        if not excel_path.exists():
+        if excel_path is None or not excel_path.is_file():
             self.pairs_label_var.set("Loaded pairs: 0")
             self._set_rmsd_variant_available(True)
             return
@@ -901,8 +1128,6 @@ class DockMateVSApp(tk.Tk):
                     excel_path,
                     exclude_additives=exclude_additives,
                     exclude_cofactors=exclude_cofactors,
-                    use_smiles=use_smiles,
-                    include_controls=include_controls
                 )
                 total = len(pairs)
                 rmsd_variant_available = any(p.get("site_ligand") for p in pairs)
@@ -921,15 +1146,11 @@ class DockMateVSApp(tk.Tk):
                             sample_valid = False
 
                     if sample_size and sample_valid:
-                        if include_controls:
-                            sampled_non_controls = min(sample_size, non_controls_count)
-                            label = (
-                                f"Loaded pairs: {total} "
-                                f"(sample {sampled_non_controls} + controls {controls_count})"
-                            )
-                        else:
-                            sample_size = min(sample_size, total)
-                            label = f"Loaded pairs: {total} (sample {sample_size})"
+                        sampled_non_controls = min(sample_size, non_controls_count)
+                        label = (
+                            f"Loaded pairs: {total} "
+                            f"(sample {sampled_non_controls} + controls {controls_count})"
+                        )
                     elif raw:
                         label = f"Loaded pairs: {total} (sample size invalid)"
                     else:
@@ -959,8 +1180,9 @@ class DockMateVSApp(tk.Tk):
         self.update_idletasks()
         logger.info("Run analysis requested")
 
-        excel_path = Path(self.file_var.get())
-        if not excel_path.exists():
+        excel_path_raw = self.file_var.get().strip()
+        excel_path = Path(excel_path_raw) if excel_path_raw else None
+        if excel_path is None or not excel_path.is_file():
             messagebox.showerror("Missing file", "Please choose an Excel file.")
             self._set_status("Missing Excel file")
             return
@@ -970,7 +1192,6 @@ class DockMateVSApp(tk.Tk):
 
         sample_size = None
         sample_seed = None
-        include_controls = self.sample_include_controls_var.get()
         sampling_enabled = self.mode_var.get() == "screening" and self.sample_enable_var.get()
         if sampling_enabled:
             sample_size = self._parse_sample_size(silent=False)
@@ -995,16 +1216,14 @@ class DockMateVSApp(tk.Tk):
             "filters": {
                 "exclude_additives": self.exclude_additives_var.get(),
                 "exclude_cofactors": self.exclude_cofactors_var.get(),
-                "use_smiles": self.use_smiles_var.get() or self.mode_var.get() in (
-                    "screening", "protocol_development"
-                ),
+                "smiles_handling": "automatic",
             },
             "sampling": {
                 "enabled": sampling_enabled,
                 "size": sample_size,
                 "seed": sample_seed,
-                "include_all_controls": include_controls,
-                "strategy": "stratified_by_structure" if include_controls else "global",
+                "include_all_controls": True,
+                "strategy": "stratified_by_structure",
             },
             "single": self._collect_single_config(),
             "adaptive": self._collect_adaptive_config(),
@@ -1031,6 +1250,8 @@ class DockMateVSApp(tk.Tk):
                 self._set_status("Invalid protocol sweep settings")
                 return
 
+        execution_backend = self.execution_backend_var.get()
+
         self._set_busy(True, "Parsing Excel...")
         self.update_idletasks()
 
@@ -1040,10 +1261,6 @@ class DockMateVSApp(tk.Tk):
                     excel_path,
                     exclude_additives=self.exclude_additives_var.get(),
                     exclude_cofactors=self.exclude_cofactors_var.get(),
-                    use_smiles=self.use_smiles_var.get() or config["mode"] in (
-                        "screening", "protocol_development"
-                    ),
-                    include_controls=include_controls
                 )
             except Exception as exc:
                 message = str(exc)
@@ -1064,7 +1281,15 @@ class DockMateVSApp(tk.Tk):
                     )
                     self._run_on_ui(lambda m=msg: self._start_run_failed("No control actives", m))
                     return
-                self._run_on_ui(lambda: self._begin_protocol_run(actives, config))
+                if execution_backend == "docker":
+                    total = len(self._expand_protocol_conditions(
+                        actives, config["protocol_sweep"]
+                    ))
+                    self._run_on_ui(
+                        lambda: self._begin_docker_run(config, total)
+                    )
+                else:
+                    self._run_on_ui(lambda: self._begin_protocol_run(actives, config))
                 return
 
             if sample_size and sample_size > 0:
@@ -1072,7 +1297,6 @@ class DockMateVSApp(tk.Tk):
                     pairs,
                     sample_size,
                     sample_seed,
-                    include_controls=include_controls
                 )
 
             config["planned_cases"] = {
@@ -1118,7 +1342,10 @@ class DockMateVSApp(tk.Tk):
                     self._run_on_ui(lambda m=msg: self._start_run_failed("Mode mismatch", m))
                     return
 
-            self._run_on_ui(lambda: self._begin_run(pairs, col_info, config))
+            if execution_backend == "docker":
+                self._run_on_ui(lambda: self._begin_docker_run(config, len(pairs)))
+            else:
+                self._run_on_ui(lambda: self._begin_run(pairs, col_info, config))
 
         threading.Thread(target=_load_pairs_worker, daemon=True).start()
 
@@ -1144,6 +1371,161 @@ class DockMateVSApp(tk.Tk):
         self._worker.start()
         self.after(200, self._poll_queue)
         self._set_status("Run started")
+
+    @staticmethod
+    def _docker_run_command(
+        image: str,
+        platform_name: str,
+        input_file: Path,
+        output_dir: Path,
+        campaign_file: Path,
+        command_name: str,
+    ) -> List[str]:
+        command = [
+            "docker", "run", "--rm", "--platform", platform_name,
+        ]
+        if hasattr(os, "getuid") and hasattr(os, "getgid"):
+            command.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+        input_dir = input_file.parent.resolve()
+        resolved_output = output_dir.resolve()
+        if input_dir != resolved_output:
+            command.extend(["-v", f"{input_dir}:{input_dir}:ro"])
+        command.extend([
+            "-v", f"{resolved_output}:{resolved_output}",
+            "-w", str(output_dir.resolve()),
+            image,
+            command_name,
+            "--config", str(campaign_file.resolve()),
+        ])
+        return command
+
+    def _begin_docker_run(self, config: dict, total_cases: int) -> None:
+        """Run the same headless campaign in the optional core container."""
+        docker_binary = shutil.which("docker")
+        if not docker_binary:
+            self._start_run_failed(
+                "Docker unavailable",
+                "Docker was selected, but the docker command was not found.",
+            )
+            return
+        image = self.docker_image_var.get().strip()
+        platform_name = self.docker_platform_var.get().strip()
+        if not image or not platform_name:
+            self._start_run_failed(
+                "Docker settings", "Provide both a Docker image and platform."
+            )
+            return
+
+        output_dir = Path(config["output_dir"]).resolve()
+        input_file = Path(config["input_file"]).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        command_name = (
+            "protocol" if config["mode"] == "protocol_development" else "screen"
+        )
+        campaign_file = output_dir / f"dockmate_campaign.{command_name}.yml"
+        container_config = self._json_normalize(config)
+        # Mount host directories at identical container paths so stored pose
+        # paths remain valid when the run is loaded by the native GUI.
+        container_config["input_file"] = str(input_file)
+        container_config["output_dir"] = str(output_dir)
+        container_config["single"]["smina_binary"] = "smina"
+        container_config["single"]["vina_binary"] = "vina"
+        container_config["single"]["rdock_root"] = "/opt/conda"
+        container_config["rescore"]["smina_binary"] = "smina"
+        self._write_text_atomic(
+            campaign_file,
+            yaml.safe_dump(container_config, sort_keys=False),
+        )
+
+        command = self._docker_run_command(
+            image=image,
+            platform_name=platform_name,
+            input_file=input_file,
+            output_dir=output_dir,
+            campaign_file=campaign_file,
+            command_name=command_name,
+        )
+        self.progress_dialog = ProgressDialog(self, total_ligands=total_cases)
+        self._queue = queue.Queue()
+        self._worker = threading.Thread(
+            target=self._run_docker_worker,
+            args=(command, config, command_name),
+            daemon=True,
+        )
+        self._worker.start()
+        self.after(200, self._poll_queue)
+        self._set_status(f"Docker {command_name} campaign started")
+
+    def _run_docker_worker(
+        self, command: List[str], config: dict, command_name: str
+    ) -> None:
+        """Stream container logs without blocking cancellation checks."""
+        self._queue.put(("log", "Starting container: " + " ".join(command)))
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as exc:
+            self._queue.put(("docker_failed", str(exc)))
+            return
+
+        output_lines: queue.Queue = queue.Queue()
+
+        def read_output() -> None:
+            if process.stdout is None:
+                return
+            for line in process.stdout:
+                output_lines.put(line.rstrip())
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        progress_pattern = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)$")
+        cancelled = False
+        while process.poll() is None or reader.is_alive() or not output_lines.empty():
+            if self.progress_dialog and self.progress_dialog.cancelled and process.poll() is None:
+                cancelled = True
+                process.terminate()
+            try:
+                line = output_lines.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if not line:
+                continue
+            match = progress_pattern.match(line)
+            if match:
+                self._queue.put((
+                    "progress", int(match.group(1)), int(match.group(2)), match.group(3)
+                ))
+            else:
+                self._queue.put(("log", line))
+
+        return_code = process.wait()
+        output_dir = Path(config["output_dir"])
+        if command_name == "protocol":
+            results_path = output_dir / "protocol_development" / "protocol_development_results.csv"
+            report_path = output_dir / "protocol_development" / "protocol_development_summary.md"
+        else:
+            results_path = output_dir / "redock_results.json"
+            report_path = None
+        if cancelled:
+            self._queue.put(("cancelled", results_path))
+        elif return_code != 0:
+            self._queue.put((
+                "docker_failed",
+                f"Container exited with status {return_code}. Review the campaign log above.",
+            ))
+        elif not results_path.is_file():
+            self._queue.put((
+                "docker_failed", f"Container completed but did not create {results_path}"
+            ))
+        elif command_name == "protocol":
+            self._queue.put(("protocol_done", results_path, report_path))
+        else:
+            self._queue.put(("done", results_path))
 
     @staticmethod
     def _parse_positive_int_list(value: str, field: str) -> List[int]:
@@ -1807,6 +2189,17 @@ class DockMateVSApp(tk.Tk):
                     f"{error}\n\nNo docking calculations were started."
                 )
                 self._set_status("Input download failed; docking not started")
+                self._set_busy(False)
+                return
+            elif msg_type == "docker_failed":
+                _, error = msg
+                self.progress_dialog.destroy()
+                self.progress_dialog = None
+                messagebox.showerror(
+                    "Docker campaign failed",
+                    f"The Docker backend could not complete the campaign.\n\n{error}",
+                )
+                self._set_status("Docker campaign failed")
                 self._set_busy(False)
                 return
             elif msg_type == "cancelled":
@@ -2851,6 +3244,7 @@ class DockMateVSApp(tk.Tk):
             )
             return
         self.last_results_path = results_path
+        self._pose_viewer_loaded_path = None
         if results_path.name == "protocol_development_results.csv":
             report_path = results_path.with_name("protocol_development_summary.md")
             self._render_protocol_results(results_path, report_path)
@@ -2948,6 +3342,48 @@ class DockMateVSApp(tk.Tk):
             return
         self._load_results_selection(Path(selected))
 
+    def _load_pose_results_selection(self, selected_path: Path) -> None:
+        """Resolve a completed run and display its poses in the Pose Viewer tab."""
+        results_path = self._result_file_for_selection(
+            Path(selected_path), self.mode_var.get()
+        )
+        if results_path is None:
+            messagebox.showerror(
+                "Pose results not found",
+                "Select one completed run folder, or its redock/protocol-development "
+                "results CSV or JSON file.",
+            )
+            return
+        self.last_results_path = results_path
+        self._show_pose_viewer(results_path)
+
+    def _browse_pose_results_folder(self) -> None:
+        initial = Path(self.output_var.get()).expanduser()
+        initial_dir = initial if initial.is_dir() else initial.parent
+        selected = filedialog.askdirectory(
+            title="Select one completed docking run folder",
+            initialdir=str(initial_dir) if initial_dir.exists() else None,
+            mustexist=True,
+        )
+        if selected:
+            self._load_pose_results_selection(Path(selected))
+
+    def _browse_pose_results_file(self) -> None:
+        initial = Path(self.output_var.get()).expanduser()
+        initial_dir = initial if initial.is_dir() else initial.parent
+        selected = filedialog.askopenfilename(
+            title="Select docking results for pose inspection",
+            initialdir=str(initial_dir) if initial_dir.exists() else None,
+            filetypes=[
+                ("Docking results", ("*.json", "*.csv")),
+                ("JSON files", "*.json"),
+                ("CSV files", "*.csv"),
+                ("All files", "*.*"),
+            ],
+        )
+        if selected:
+            self._load_pose_results_selection(Path(selected))
+
     def _open_pose_viewer_from_last(self) -> None:
         results_path = self._resolve_results_path(allow_csv=True)
         if not results_path or not results_path.exists():
@@ -3041,10 +3477,15 @@ class DockMateVSApp(tk.Tk):
 
         actions = tk.Frame(content)
         actions.pack(fill="x", pady=(8, 0))
+
+        def _open_poses() -> None:
+            dialog.destroy()
+            self._show_pose_viewer(Path(results_path))
+
         tk.Button(
             actions,
-            text="Pose Viewer",
-            command=self._safe_call(lambda: self._show_pose_viewer(Path(results_path))),
+            text="View Poses",
+            command=self._safe_call(_open_poses),
         ).pack(side="left")
         tk.Button(actions, text="Close", command=dialog.destroy).pack(side="right")
         dialog.lift()
@@ -6945,23 +7386,25 @@ class DockMateVSApp(tk.Tk):
         case_labels = [f"{case['pdb_id']}_{case['display_name']}" for case in cases]
         case_label_map = {label.upper(): idx for idx, label in enumerate(case_labels)}
 
-        dialog = tk.Toplevel(self)
-        dialog.title("DockMate-VS Pose Viewer")
-        viewer_width = max(820, min(1250, dialog.winfo_screenwidth() - 120))
-        dialog.geometry(f"{viewer_width}x400")
-        dialog.minsize(min(900, viewer_width), 350)
-        dialog.transient(self)
+        results_path = Path(results_path)
+        self.last_results_path = results_path
+        self._pose_viewer_loaded_path = results_path
+        self.pose_viewer_source_var.set(f"Loaded: {results_path.parent}")
+        self.workflow_notebook.select(self.pose_viewer_tab)
+        self._clear_frame(self.pose_viewer_content)
+        viewer_session = object()
+        self._pose_viewer_session = viewer_session
+        viewer_width = 900
+        state = {"index": 0, "request_id": 0}
 
-        state = {"index": 0, "request_id": 0, "closed": False}
+        def _viewer_active() -> bool:
+            return (
+                self._pose_viewer_session is viewer_session
+                and bool(self.pose_viewer_content.winfo_exists())
+            )
 
-        def _on_close():
-            state["closed"] = True
-            dialog.destroy()
-
-        dialog.protocol("WM_DELETE_WINDOW", _on_close)
-
-        header = tk.Frame(dialog)
-        header.pack(fill="x", padx=10, pady=10)
+        header = tk.Frame(self.pose_viewer_content)
+        header.pack(fill="x", pady=(4, 8))
 
         info_var = tk.StringVar(value="Loading pose information...")
         tk.Label(header, textvariable=info_var, anchor="w").pack(
@@ -6977,8 +7420,8 @@ class DockMateVSApp(tk.Tk):
         for button in (prev_btn, next_btn, pymol_btn, ligplot_btn):
             button.pack(side="left", padx=4)
 
-        jump_frame = tk.Frame(dialog)
-        jump_frame.pack(fill="x", padx=10, pady=(0, 6))
+        jump_frame = tk.Frame(self.pose_viewer_content)
+        jump_frame.pack(fill="x", pady=(0, 6))
         jump_frame.grid_columnconfigure(1, weight=1)
         tk.Label(jump_frame, text="Jump to").grid(row=0, column=0, sticky="w")
         case_select_var = tk.StringVar(value=case_labels[0])
@@ -6993,12 +7436,12 @@ class DockMateVSApp(tk.Tk):
         jump_btn.grid(row=0, column=2, sticky="e")
 
         summary_frame = tk.LabelFrame(
-            dialog,
+            self.pose_viewer_content,
             text="Selected docking case",
             padx=12,
             pady=10,
         )
-        summary_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        summary_frame.pack(fill="both", expand=True, pady=8)
         summary_var = tk.StringVar(value="Loading selected poses...")
         tk.Label(
             summary_frame,
@@ -7015,13 +7458,13 @@ class DockMateVSApp(tk.Tk):
             )
         )
         tk.Label(
-            dialog,
+            self.pose_viewer_content,
             textvariable=guidance_var,
             anchor="w",
             justify="left",
             wraplength=viewer_width - 40,
             fg="#555555",
-        ).pack(fill="x", padx=10, pady=(0, 10))
+        ).pack(fill="x", pady=(0, 4))
 
         def _format_metric(value: object, suffix: str = "") -> str:
             if value is None or pd.isna(value):
@@ -7069,7 +7512,7 @@ class DockMateVSApp(tk.Tk):
                 return best_score, best_rmsd
 
             def _apply(payload):
-                if state["closed"] or request_id != state["request_id"]:
+                if not _viewer_active() or request_id != state["request_id"]:
                     return
                 info_var.set(
                     f"Case {idx + 1}/{len(cases)}: {case['pdb_id']}_{case['display_name']}"
@@ -7167,7 +7610,7 @@ class DockMateVSApp(tk.Tk):
                     return None
 
             def _apply(pml_path):
-                if state["closed"]:
+                if not _viewer_active():
                     return
                 if pml_path:
                     info_var.set(
@@ -7222,7 +7665,7 @@ class DockMateVSApp(tk.Tk):
                 return drawings, launched
 
             def _apply(result):
-                if state["closed"]:
+                if not _viewer_active():
                     return
                 if not result or result[1] == 0:
                     info_var.set("LigPlot+ generation or launch failed")
@@ -7243,6 +7686,7 @@ class DockMateVSApp(tk.Tk):
 
         ligplot_btn.config(command=_open_ligplot)
         _render_case(0)
+        self.after_idle(self._resize_workflow_notebook)
 
     def _pose_rmsd(self, ref_mol: Chem.Mol, pose_mol: Chem.Mol) -> Optional[float]:
         from dockmate_vs.utils.rmsd import coordinate_rmsd
@@ -8734,8 +9178,6 @@ class DockMateVSApp(tk.Tk):
         excel_path: Path,
         exclude_additives: bool = False,
         exclude_cofactors: bool = False,
-        use_smiles: bool = False,
-        include_controls: bool = False
     ) -> Tuple[List[Dict[str, str]], dict]:
         if not excel_path.exists():
             raise ValueError("Excel file not found")
@@ -8772,11 +9214,11 @@ class DockMateVSApp(tk.Tk):
                 pdb_col = df.columns[0]
             else:
                 raise ValueError("Could not detect PDB column in Excel file")
-        if ligand_col is None and not use_smiles:
+        if ligand_col is None and smiles_col is None:
             if len(df.columns) >= 2:
                 ligand_col = df.columns[1]
             else:
-                raise ValueError("Could not detect ligand column in Excel file")
+                raise ValueError("Could not detect a Ligand or SMILES column in Excel file")
 
         invalid_tokens = {"NAN", "NONE", "NA", "N/A", ""}
         pairs = []
@@ -8805,9 +9247,9 @@ class DockMateVSApp(tk.Tk):
             site_residues: Optional[str]
         ) -> None:
             is_control = control_label is not None
-            if site_ligand and exclude_additives and site_ligand in ADDITIVES_ONLY and not (include_controls and is_control):
+            if site_ligand and exclude_additives and site_ligand in ADDITIVES_ONLY and not is_control:
                 return
-            if site_ligand and exclude_cofactors and site_ligand in COFACTORS and not (include_controls and is_control):
+            if site_ligand and exclude_cofactors and site_ligand in COFACTORS and not is_control:
                 return
             key = (pdb_id, ligand, smiles, control_label, dock_name or "", site_ligand, pocket_center, site_residues)
             if key in seen:
@@ -8889,7 +9331,7 @@ class DockMateVSApp(tk.Tk):
                     if active_text and active_text.upper() not in invalid_tokens:
                         active_name = active_text
                 active_smiles = None
-                if use_smiles and smiles_col:
+                if smiles_col:
                     smiles_val = row[smiles_col]
                     if not pd.isna(smiles_val):
                         smiles_text = str(smiles_val).strip()
@@ -8947,7 +9389,7 @@ class DockMateVSApp(tk.Tk):
                 continue
 
             smiles = None
-            if use_smiles and smiles_col:
+            if smiles_col:
                 smiles_val = row[smiles_col]
                 if not pd.isna(smiles_val):
                     smiles_text = str(smiles_val).strip()
@@ -9157,56 +9599,48 @@ class DockMateVSApp(tk.Tk):
         pairs: List[Dict[str, str]],
         size: int,
         seed: Optional[int],
-        include_controls: bool = False
     ) -> List[Dict[str, str]]:
         rng = random.Random(seed)
-        if include_controls:
-            controls = [p for p in pairs if p.get("control_label") is not None]
-            non_controls = [p for p in pairs if p.get("control_label") is None]
-            remaining = min(size, len(non_controls))
-            if remaining == len(non_controls):
-                return pairs
-
-            # Sample receptor-compound cases in rounds across structures. This
-            # avoids concentrating a small global sample in one receptor.
-            grouped: Dict[tuple, List[Dict[str, str]]] = {}
-            for pair in non_controls:
-                key = (pair.get("pdb_id"), pair.get("ligand"))
-                grouped.setdefault(key, []).append(pair)
-            group_keys = list(grouped)
-            rng.shuffle(group_keys)
-            for group in grouped.values():
-                rng.shuffle(group)
-
-            selected = []
-            while len(selected) < remaining:
-                added = False
-                for key in group_keys:
-                    group = grouped[key]
-                    if group and len(selected) < remaining:
-                        selected.append(group.pop())
-                        added = True
-                if not added:
-                    break
-
-            selected_ids = {id(pair) for pair in selected}
-            sample = [
-                pair for pair in pairs
-                if pair.get("control_label") is not None or id(pair) in selected_ids
-            ]
-            logger.info(
-                "Stratified random sample selected: {} total "
-                "({} controls, {} non-controls across {} structures, seed={})",
-                len(sample),
-                len(controls),
-                remaining,
-                len({(p.get('pdb_id'), p.get('ligand')) for p in selected}),
-                seed
-            )
-            return sample
-
-        if size >= len(pairs):
+        controls = [p for p in pairs if p.get("control_label") is not None]
+        non_controls = [p for p in pairs if p.get("control_label") is None]
+        remaining = min(size, len(non_controls))
+        if remaining == len(non_controls):
             return pairs
-        sample = rng.sample(pairs, size)
-        logger.info("Random sample selected: {} of {} (seed={})", len(sample), len(pairs), seed)
+
+        # Sample receptor-compound cases in rounds across structures. This
+        # avoids concentrating a small global sample in one receptor.
+        grouped: Dict[tuple, List[Dict[str, str]]] = {}
+        for pair in non_controls:
+            key = (pair.get("pdb_id"), pair.get("ligand"))
+            grouped.setdefault(key, []).append(pair)
+        group_keys = list(grouped)
+        rng.shuffle(group_keys)
+        for group in grouped.values():
+            rng.shuffle(group)
+
+        selected = []
+        while len(selected) < remaining:
+            added = False
+            for key in group_keys:
+                group = grouped[key]
+                if group and len(selected) < remaining:
+                    selected.append(group.pop())
+                    added = True
+            if not added:
+                break
+
+        selected_ids = {id(pair) for pair in selected}
+        sample = [
+            pair for pair in pairs
+            if pair.get("control_label") is not None or id(pair) in selected_ids
+        ]
+        logger.info(
+            "Stratified random sample selected: {} total "
+            "({} controls, {} non-controls across {} structures, seed={})",
+            len(sample),
+            len(controls),
+            remaining,
+            len({(p.get('pdb_id'), p.get('ligand')) for p in selected}),
+            seed,
+        )
         return sample

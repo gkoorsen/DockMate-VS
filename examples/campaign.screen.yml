@@ -1,0 +1,36 @@
+# Paths are resolved relative to this file. Replace the workbook as needed.
+input_file: esr1_protocol_development_1XP1.xlsx
+output_dir: ../results/example_screen
+threshold: 2.0
+
+filters:
+  exclude_additives: false
+  exclude_cofactors: false
+
+sampling:
+  enabled: false
+  size: null
+  seed: 42
+
+single:
+  engine: smina
+  box_margin: 4.0
+  water_handling: remove_all
+  exhaustiveness: 8
+  num_modes: 20
+  energy_range: 3.0
+  cpu: 4
+  n_cpus: 4
+  seed: 42
+  scoring: vina
+  smina_binary: smina
+  vina_binary: vina
+  ligand_variant_mode: adaptive
+  variant_select_by: score
+  max_tautomers: 2
+  max_conformers: 2
+
+rescore:
+  enable: false
+  scoring: vinardo
+  smina_binary: smina

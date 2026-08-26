@@ -58,6 +58,25 @@ LigPlot+ is discovered through `LIGPLOT_BIN`, the executable `PATH`, or a
 LigPlus installation named by `LIGPLUS_ROOT`/`LIGPLOT_HOME`. Set
 `HET_GROUP_DICTIONARY` when `components.cif` is stored outside that installation.
 
+### Optional Docker backend
+
+Docker can provide the computation environment when installing all docking
+tools locally is inconvenient. From the repository root:
+
+```bash
+scripts/dockmate-docker build
+scripts/dockmate-docker doctor
+```
+
+The core image includes Vina, Smina, rDock, Open Babel, fpocket, OpenMM, and
+PDBFixer. It deliberately excludes PyMOL and LigPlot+: those remain optional
+host applications launched by the native GUI. LigPlot+ cannot be redistributed
+in the public image under its standard academic licence.
+
+The image currently targets `linux/amd64`. Apple Silicon systems can run it
+through Docker Desktop emulation by retaining the default platform setting.
+Docker Desktop must be running before a Docker-backed campaign starts.
+
 ## 3. Launching
 
 ```bash
@@ -72,6 +91,38 @@ python scripts/launch_dockmate_vs.py
 
 Select an input workbook and a dedicated output directory. Avoid reusing an
 unrelated run directory.
+
+The main notebook has four tabs: **Protocol Development**, **Screening**,
+**Filters**, and **Pose Viewer**. The first two select the workflow. Filters are
+shared input policies, while Pose Viewer inspects completed runs without changing
+the selected workflow.
+
+Choose **Local** under Execution backend to use binaries configured in the GUI.
+Choose **Docker** to run the campaign in the core image. The GUI mounts the input
+workbook read-only, mounts the selected output directory read/write, streams the
+container log into the normal progress window, and stores the generated campaign
+YAML with the run. Result paths remain valid for the native Pose Viewer.
+
+### Headless commands
+
+The GUI and command line call the same campaign implementation:
+
+```bash
+dockmate-vs protocol --config examples/campaign.protocol.yml
+dockmate-vs screen --config examples/campaign.screen.yml
+dockmate-vs report --run /path/to/completed/run
+dockmate-vs doctor
+```
+
+Configuration paths are resolved relative to the YAML file. The supplied files
+`examples/campaign.protocol.yml` and `examples/campaign.screen.yml` document all
+common settings. For container execution, keep the campaign file, workbook, and
+output path below the current working directory and run:
+
+```bash
+scripts/dockmate-docker protocol examples/campaign.protocol.yml
+scripts/dockmate-docker screen examples/campaign.screen.yml
+```
 
 ## 4. Spreadsheet schema
 
@@ -116,6 +167,18 @@ crystal ligand.
 A row with a compound SMILES but no label and no decoy is an unknown screening
 sample. It receives scores and ranks but is excluded from ROC AUC, average
 precision, enrichment factors, and RMSD success rates.
+
+DockMate-VS detects and uses populated SMILES columns automatically. There is no
+separate SMILES toggle because disabling SMILES would silently change a compound
+screen into a co-crystal redocking task.
+
+### Filters and random sampling
+
+The **Filters** tab can exclude configured additive and cofactor residue names.
+Controls are never removed by these filters. Random sampling applies only in the
+Screening workflow and its sample size counts unlabelled compounds only. Every
+labelled or matched active/decoy control is retained, while sampled unknowns are
+distributed across receptor structures using the supplied seed.
 
 ## 5. Protocol Development
 
@@ -197,7 +260,8 @@ Use **Load Results File...** only when selecting the exact
 `redock_results.json`, `redock_results.csv`, or
 `protocol_development_results.csv` file.
 
-The pose viewer can display:
+The **Pose Viewer** tab loads a completed run folder or exact results file and can
+display:
 
 - native co-crystal ligand;
 - best-scoring pose;

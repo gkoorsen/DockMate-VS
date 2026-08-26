@@ -24,3 +24,11 @@ score.
 
 The workbook does not redistribute LIT-PCBA assay compounds. Dataset downloads
 must follow the source provider's terms.
+
+## Headless campaign files
+
+- `campaign.protocol.yml` runs a small protocol sweep on the example workbook.
+- `campaign.screen.yml` demonstrates the frozen single-protocol schema.
+
+Run either with the local environment (`dockmate-vs protocol|screen --config`)
+or the optional core container (`scripts/dockmate-docker protocol|screen`).

@@ -36,6 +36,7 @@ dependencies = [
   "numpy",
   "pandas",
   "openpyxl",
+  "PyYAML",
   "rdkit",
   "loguru",
   "biopython",

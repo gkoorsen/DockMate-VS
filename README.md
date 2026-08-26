@@ -42,11 +42,28 @@ Alternatively, install into an existing compatible environment:
 python -m pip install -e ".[test]"
 ```
 
-AutoDock Vina or Smina must be installed separately and its executable selected
-in the GUI. rDock, Open Babel, PyMOL, and LigPlot+ are optional. Protein repair
-uses OpenMM/PDBFixer, Reduce, and PROPKA when available. See
+For local execution, AutoDock Vina or Smina must be installed separately and its
+executable selected in the GUI. rDock, Open Babel, PyMOL, and LigPlot+ are
+optional. Protein repair uses OpenMM/PDBFixer, Reduce, and PROPKA when available. See
 [`USER_GUIDE.md`](USER_GUIDE.md) for platform-specific setup and capability
 details.
+
+### Optional core container
+
+The core Docker image provides a reproducible headless environment containing
+DockMate-VS, Vina, Smina, rDock, Open Babel, fpocket, OpenMM, and PDBFixer:
+
+```bash
+scripts/dockmate-docker build
+scripts/dockmate-docker doctor
+scripts/dockmate-docker protocol examples/campaign.protocol.yml
+```
+
+The native GUI can select **Docker** as its execution backend while keeping
+results and the PyMOL/LigPlot+ launchers on the host. PyMOL and LigPlot+ are not
+redistributed in the image; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+The current image targets `linux/amd64` because the available Smina package is
+not published for every architecture.
 
 ## Launch
 
@@ -58,6 +75,15 @@ or, from a source checkout:
 
 ```bash
 python scripts/launch_dockmate_vs.py
+```
+
+Headless campaigns use YAML or JSON configuration files:
+
+```bash
+dockmate-vs protocol --config examples/campaign.protocol.yml
+dockmate-vs screen --config examples/campaign.screen.yml
+dockmate-vs report --run results/example_screen
+dockmate-vs doctor
 ```
 
 ## First reproducible example
@@ -85,6 +111,9 @@ The application accepts two complementary labelled-data models:
 
 A row without a decoy and without an explicit label is an unlabelled screening
 sample. It is ranked but never enters ROC AUC or enrichment calculations.
+SMILES columns are detected automatically. The **Filters** tab can exclude known
+additives/cofactors and optionally sample unlabelled screening compounds; all
+labelled or matched controls are always retained.
 
 ## Outputs
 

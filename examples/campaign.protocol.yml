@@ -1,0 +1,26 @@
+input_file: esr1_protocol_development_1XP1.xlsx
+output_dir: ../results/example_protocol
+threshold: 2.0
+
+single:
+  engine: smina
+  box_margin: 4.0
+  water_handling: remove_all
+  num_modes: 20
+  energy_range: 3.0
+  cpu: 4
+  n_cpus: 4
+  scoring: vina
+  smina_binary: smina
+  vina_binary: vina
+  ligand_variant_mode: adaptive
+  max_tautomers: 2
+  max_conformers: 2
+
+protocol_sweep:
+  engines: [smina]
+  box_definitions: ["margin:4"]
+  water_modes: [remove_all, retain_all, selective]
+  exhaustiveness: [8]
+  seeds: [42]
+  rescore_methods: [none, vinardo]

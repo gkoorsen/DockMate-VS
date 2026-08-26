@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE="${DOCKMATE_IMAGE:-dockmate-vs:local}"
+PLATFORM="${DOCKMATE_PLATFORM:-linux/amd64}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/dockmate-docker build
+  scripts/dockmate-docker doctor
+  scripts/dockmate-docker protocol path/to/campaign.yml
+  scripts/dockmate-docker screen path/to/campaign.yml
+  scripts/dockmate-docker report path/to/run-folder
+
+Campaign files and their input/output paths must be inside the current working
+directory. Use relative input_file and output_dir paths in campaign YAML.
+EOF
+}
+
+command="${1:-}"
+case "$command" in
+  build)
+    exec docker build --platform "$PLATFORM" -f "$REPO_ROOT/docker/Dockerfile" -t "$IMAGE" "$REPO_ROOT"
+    ;;
+  doctor)
+    exec docker run --rm --platform "$PLATFORM" "$IMAGE" doctor --strict
+    ;;
+  protocol|screen)
+    config="${2:-}"
+    if [[ -z "$config" || ! -f "$config" ]]; then
+      usage >&2
+      exit 2
+    fi
+    workspace="$(pwd -P)"
+    config_dir="$(cd "$(dirname "$config")" && pwd -P)"
+    config_abs="$config_dir/$(basename "$config")"
+    case "$config_abs" in
+      "$workspace"/*) ;;
+      *) echo "Config must be inside $workspace" >&2; exit 2 ;;
+    esac
+    exec docker run --rm --platform "$PLATFORM" \
+      --user "$(id -u):$(id -g)" \
+      -v "$workspace:$workspace" -w "$workspace" \
+      "$IMAGE" "$command" --config "$config_abs"
+    ;;
+  report)
+    run_path="${2:-}"
+    if [[ -z "$run_path" || ! -e "$run_path" ]]; then
+      usage >&2
+      exit 2
+    fi
+    workspace="$(pwd -P)"
+    run_dir="$(cd "$(dirname "$run_path")" && pwd -P)"
+    run_abs="$run_dir/$(basename "$run_path")"
+    case "$run_abs" in
+      "$workspace"/*) ;;
+      *) echo "Run path must be inside $workspace" >&2; exit 2 ;;
+    esac
+    exec docker run --rm --platform "$PLATFORM" \
+      --user "$(id -u):$(id -g)" \
+      -v "$workspace:$workspace" -w "$workspace" \
+      "$IMAGE" report --run "$run_abs"
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

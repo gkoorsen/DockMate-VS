@@ -40,9 +40,7 @@ def test_decoy_rows_expand_and_blank_decoy_rows_remain_samples(tmp_path: Path):
         ]
     ).to_excel(template, index=False)
 
-    pairs, _ = _app_without_tk()._load_pairs_from_excel(
-        template, use_smiles=True, include_controls=True
-    )
+    pairs, _ = _app_without_tk()._load_pairs_from_excel(template)
 
     assert [(p["dock_name"], p["control_label"]) for p in pairs] == [
         ("active", 1),
@@ -50,6 +48,8 @@ def test_decoy_rows_expand_and_blank_decoy_rows_remain_samples(tmp_path: Path):
         ("d2", 0),
         ("sample", None),
     ]
+    assert pairs[0]["smiles"] == "CCO"
+    assert pairs[-1]["smiles"] == "COC"
 
 
 def test_screening_always_selects_ligand_variants_by_score():
@@ -638,7 +638,7 @@ def test_control_preserving_sample_is_balanced_and_keeps_sheet_order():
         )
 
     sampled = _app_without_tk()._apply_random_sample(
-        pairs, size=4, seed=42, include_controls=True
+        pairs, size=4, seed=42
     )
     non_controls = [p for p in sampled if p["control_label"] is None]
 
@@ -666,19 +666,22 @@ def test_control_label_parser(value, expected):
     assert _app_without_tk()._parse_control_label(value) == expected
 
 
-def test_sampling_without_control_preservation_can_sample_any_case():
+def test_sampling_always_preserves_controls():
     pairs = [
         {"pdb_id": "1AAA", "ligand": "LIG", "control_label": 1},
         {"pdb_id": "1AAA", "ligand": "LIG", "control_label": 0},
         {"pdb_id": "1AAA", "ligand": "LIG", "control_label": None},
+        {"pdb_id": "1AAA", "ligand": "LIG", "control_label": None},
     ]
 
     sampled = _app_without_tk()._apply_random_sample(
-        pairs, size=1, seed=1, include_controls=False
+        pairs, size=1, seed=1
     )
 
-    assert len(sampled) == 1
-    assert sampled[0] in pairs
+    assert len(sampled) == 3
+    assert pairs[0] in sampled
+    assert pairs[1] in sampled
+    assert sum(pair["control_label"] is None for pair in sampled) == 1
 
 
 @pytest.mark.parametrize(

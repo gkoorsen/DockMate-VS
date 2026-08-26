@@ -1,0 +1,15 @@
+.git
+.github
+.pytest_cache
+**/__pycache__
+*.py[cod]
+*.egg-info
+.venv
+venv
+output
+results
+ligand_cache
+docking_platform_gui
+manuscript
+*.log
+.DS_Store

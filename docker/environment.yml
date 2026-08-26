@@ -1,9 +1,11 @@
-name: dockmate-vs
+name: base
 channels:
   - conda-forge
+  - bioconda
 dependencies:
-  - python>=3.9,<3.13
+  - python=3.11
   - pip
+  - pytest
   - tk
   - numpy
   - pandas
@@ -17,8 +19,8 @@ dependencies:
   - gemmi
   - scipy
   - scikit-learn
-  - matplotlib
-  - seaborn
-  - openmm
-  - pdbfixer
   - openbabel
+  - vina=1.2.7
+  - smina=2017.11.9
+  - rdock=24.04.204_legacy
+  - fpocket
