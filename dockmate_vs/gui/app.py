@@ -3267,10 +3267,18 @@ class DockMateVSApp(tk.Tk):
         for column in condition_columns:
             if column not in working:
                 working[column] = defaults[column]
-            working[column] = working[column].fillna(defaults[column])
+            # Protocol labels can mix numeric values with categorical sentinels
+            # such as "N/A"; keep them object-typed for current pandas releases.
+            working[column] = working[column].astype("object")
+            working[column] = working[column].where(
+                working[column].notna(), defaults[column]
+            )
         if "seed" not in working:
             working["seed"] = defaults["seed"]
-        working["seed"] = working["seed"].fillna(defaults["seed"])
+        working["seed"] = working["seed"].astype("object")
+        working["seed"] = working["seed"].where(
+            working["seed"].notna(), defaults["seed"]
+        )
 
         metric_columns = (
             "best_rmsd", "top1_rmsd", "top5_rmsd", "rescore_top1_rmsd",
