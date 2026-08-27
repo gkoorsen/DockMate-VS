@@ -11,7 +11,7 @@ from typing import Optional
 
 def check_gui_dependencies() -> None:
     """Fail early with an actionable message when GUI dependencies are absent."""
-    missing = []
+    unavailable = []
     checks = (
         ("tkinter", "tkinter"),
         ("pandas", "pandas"),
@@ -22,13 +22,13 @@ def check_gui_dependencies() -> None:
     for module, package in checks:
         try:
             __import__(module)
-        except ImportError:
-            missing.append(package)
+        except ImportError as exc:
+            unavailable.append((package, str(exc)))
 
-    if missing:
-        print("ERROR: Missing required GUI dependencies:", file=sys.stderr)
-        for dependency in missing:
-            print(f"  - {dependency}", file=sys.stderr)
+    if unavailable:
+        print("ERROR: Required GUI dependencies could not be imported:", file=sys.stderr)
+        for dependency, error in unavailable:
+            print(f"  - {dependency}: {error}", file=sys.stderr)
         print("\nInstall the DockMate-VS environment from environment.yml.", file=sys.stderr)
         raise SystemExit(1)
 

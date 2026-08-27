@@ -9,7 +9,8 @@ dependencies:
   - pandas
   - openpyxl
   - pyyaml
-  - rdkit
+  # Avoid the malformed conda-forge RDKit 2026.03.5 macOS ARM signature.
+  - rdkit<2026
   - loguru
   - biopython
   - pydantic<2

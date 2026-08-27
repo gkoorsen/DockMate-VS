@@ -1,3 +1,4 @@
+import builtins
 import json
 from pathlib import Path
 
@@ -5,7 +6,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from dockmate_vs.cli import main
+from dockmate_vs.cli import check_gui_dependencies, main
 from dockmate_vs.headless import (
     HeadlessDockMateRunner,
     load_campaign_config,
@@ -138,6 +139,23 @@ def test_cli_returns_nonzero_for_missing_campaign(tmp_path, capsys):
 
     assert status == 1
     assert "Campaign config not found" in capsys.readouterr().err
+
+
+def test_gui_dependency_error_preserves_native_import_failure(monkeypatch, capsys):
+    real_import = builtins.__import__
+
+    def fail_rdkit(name, *args, **kwargs):
+        if name == "rdkit":
+            raise ImportError("Library not loaded: malformed native signature")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_rdkit)
+
+    with pytest.raises(SystemExit):
+        check_gui_dependencies()
+
+    error = capsys.readouterr().err
+    assert "rdkit: Library not loaded: malformed native signature" in error
 
 
 def test_config_rejects_sampling_without_size(tmp_path):

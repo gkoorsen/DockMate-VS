@@ -29,16 +29,16 @@ package. On macOS, use a Python build that includes Tk support.
 
 ### External programs
 
-| Program | Role | Requirement |
-| --- | --- | --- |
-| AutoDock Vina or Smina | Docking | At least one is required |
-| Smina | Score-only rescoring | Required only when rescoring is enabled |
-| Open Babel (`obabel`) | Rigid receptor and ligand PDBQT conversion | Required by current Vina/Smina workflows |
-| OpenMM and PDBFixer | Protein repair | Optional but recommended |
-| Reduce and PROPKA | Hydrogen/protonation preparation | Optional pipeline components |
-| rDock | Alternative docking engine | Optional |
-| Meeko (`mk_prepare_receptor.py`) | Flexible-receptor PDBQT preparation | Optional |
-| PyMOL and LigPlot+ | Pose and interaction visualization | Optional |
+| Program | Role | Requirement | Installation instructions |
+| --- | --- | --- | --- |
+| AutoDock Vina or Smina | Docking | At least one is required | [Vina](https://autodock-vina.readthedocs.io/en/latest/installation.html) / [Smina](https://github.com/mwojcikowski/smina) |
+| Smina | Score-only rescoring | Required only when rescoring is enabled | [Smina](https://github.com/mwojcikowski/smina) |
+| Open Babel (`obabel`) | Rigid receptor and ligand PDBQT conversion | Required by current Vina/Smina workflows | [Open Babel](https://openbabel.org/docs/Installation/install.html) |
+| OpenMM and PDBFixer | Protein repair | Optional but recommended | [OpenMM](https://docs.openmm.org/latest/userguide/application/01_getting_started.html#installing-openmm) / [PDBFixer](https://github.com/openmm/pdbfixer#installation) |
+| Reduce and PROPKA | Hydrogen/protonation preparation | Optional pipeline components | [Reduce](https://github.com/rlabduke/reduce#building) / [PROPKA](https://propka.readthedocs.io/en/latest/installation.html) |
+| rDock | Alternative docking engine | Optional | [rDock](https://rdock.github.io/installation/) |
+| Meeko (`mk_prepare_receptor.py`) | Flexible-receptor PDBQT preparation | Optional | [Meeko](https://meeko.readthedocs.io/en/develop/installation.html) |
+| PyMOL and LigPlot+ | Pose and interaction visualization | Optional | [PyMOL](https://pymol.org/) / [LigPlot+](https://www.ebi.ac.uk/thornton-srv/software/LigPlus/) |
 
 Install tools according to their own documentation and licenses. DockMate-VS
 discovers `vina`, `smina`, and `rbdock` from the active executable `PATH` when
@@ -304,6 +304,23 @@ Before publishing a campaign, retain:
 Use the complete path and verify it from the same shell that launches the GUI.
 Conda-installed binaries can be located with `which vina` or `which smina` after
 activating the environment.
+
+### RDKit is reported as unavailable on Apple Silicon
+
+If startup reports an RDKit import failure containing `code signature invalid`,
+replace the affected conda-forge build with the tested release and retry:
+
+```bash
+conda install -n dockmate-vs -c conda-forge "rdkit=2025.03.3"
+conda activate dockmate-vs
+python -c "import rdkit; print(rdkit.__version__)"
+dockmate-vs
+```
+
+The supplied `environment.yml` excludes the affected RDKit 2026 series for new
+environments. A message saying RDKit cannot be imported does not necessarily
+mean that the package is absent; DockMate-VS also reports the underlying native
+library error to distinguish these cases.
 
 ### Multi-model rescoring error
 
