@@ -10,6 +10,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 from dockmate_vs.adaptive_docking import AdaptiveDockingPipeline
+from dockmate_vs.binding_site.cocrystal import BindingSiteDefinition
 import dockmate_vs.gui.app as redock_analysis_module
 from dockmate_vs.gui.app import DockMateVSApp, RedockResult
 from dockmate_vs.utils.rmsd import coordinate_rmsd
@@ -17,6 +18,37 @@ from dockmate_vs.utils.rmsd import coordinate_rmsd
 
 def _app_without_tk() -> DockMateVSApp:
     return object.__new__(DockMateVSApp)
+
+
+def test_executable_defaults_are_portable(monkeypatch, tmp_path):
+    discovered = tmp_path / "smina"
+
+    monkeypatch.setattr(
+        redock_analysis_module.shutil,
+        "which",
+        lambda command: str(discovered) if command == "smina" else None,
+    )
+
+    assert redock_analysis_module._executable_default(None, "smina") == str(discovered)
+    assert redock_analysis_module._executable_default(None, "vina") == "vina"
+    assert redock_analysis_module._executable_default("~/bin/vina", "vina") == str(
+        Path("~/bin/vina").expanduser()
+    )
+
+
+def test_rdock_root_default_prefers_environment_then_path(monkeypatch, tmp_path):
+    configured = tmp_path / "configured-rdock"
+    executable = tmp_path / "path-rdock" / "bin" / "rbdock"
+
+    monkeypatch.setenv("RBT_ROOT", str(configured))
+    monkeypatch.setattr(redock_analysis_module.shutil, "which", lambda _: str(executable))
+    assert redock_analysis_module._rdock_root_default() == str(configured)
+
+    monkeypatch.delenv("RBT_ROOT")
+    assert redock_analysis_module._rdock_root_default() == str(executable.parent.parent)
+
+    monkeypatch.setattr(redock_analysis_module.shutil, "which", lambda _: None)
+    assert redock_analysis_module._rdock_root_default() == ""
 
 
 def test_decoy_rows_expand_and_blank_decoy_rows_remain_samples(tmp_path: Path):
@@ -1571,6 +1603,16 @@ def test_coordinate_rmsd_does_not_superimpose_displaced_pose():
         conformer.SetAtomPosition(atom_index, (point.x + 6.0, point.y, point.z))
 
     assert coordinate_rmsd(reference, pose) == pytest.approx(6.0)
+
+
+def test_binding_site_self_docking_keeps_receptor_coordinate_frame():
+    crystal = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    docked = crystal + np.array([5.0, 0.0, 0.0])
+
+    result = BindingSiteDefinition().validate_self_docking(crystal, docked)
+
+    assert result.rmsd == pytest.approx(5.0)
+    assert result.success is False
 
 
 def test_coordinate_rmsd_handles_symmetric_atom_permutations():

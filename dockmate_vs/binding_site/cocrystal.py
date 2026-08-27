@@ -1,14 +1,10 @@
-"""
-Co-crystal ligand extraction and binding site definition.
-
-This module implements binding site definition from co-crystal structures,
-following best practices from the molecular docking literature.
+"""Co-crystal ligand extraction and binding-site definition.
 
 Key capabilities:
 - Extract ligand from PDB co-crystal structure
 - Calculate binding box center and size
-- RMSD calculation for self-docking validation
-- Support for validation that RMSD < 2.0Å (success criterion)
+- Coordinate-frame RMSD calculation for self-docking validation
+- Configurable RMSD success threshold
 
 References:
 - Binding site definition: Eberhardt et al., J. Chem. Inf. Model., 2021
@@ -347,7 +343,7 @@ class BindingSiteDefinition:
         self,
         coords1: np.ndarray,
         coords2: np.ndarray,
-        align: bool = True
+        align: bool = False
     ) -> float:
         """
         Calculate RMSD between two sets of coordinates.
@@ -355,8 +351,8 @@ class BindingSiteDefinition:
         Args:
             coords1: First coordinate set (Nx3)
             coords2: Second coordinate set (Nx3)
-            align: Whether to align structures before RMSD calculation
-                  (recommended for docking validation)
+            align: Whether to fit the second coordinate set before RMSD. Keep
+                this false for docking validation in a shared receptor frame.
 
         Returns:
             RMSD in Angstroms
@@ -434,7 +430,7 @@ class BindingSiteDefinition:
         """
         Validate self-docking by comparing docked pose to crystal pose.
 
-        Success criterion: RMSD < 2.0Å is standard in literature.
+        The caller supplies the RMSD threshold; 2.0 A is the default convention.
 
         Args:
             crystal_coords: Crystal ligand coordinates (Nx3)
@@ -444,12 +440,12 @@ class BindingSiteDefinition:
         Returns:
             SelfDockingResult with RMSD and success status
 
-        References:
-            Success criterion: Réau et al., J. Chem. Inf. Model., 2018
-            70% success rate is typical for modern docking engines
+        A docking pose is compared in the receptor coordinate frame. Fitting the
+        ligand onto its reference would remove displacement and can report a
+        misleadingly small RMSD.
         """
-        rmsd = self.calculate_rmsd(crystal_coords, docked_coords, align=True)
-        success = rmsd < threshold
+        rmsd = self.calculate_rmsd(crystal_coords, docked_coords, align=False)
+        success = bool(rmsd < threshold)
 
         result = SelfDockingResult(
             rmsd=rmsd,

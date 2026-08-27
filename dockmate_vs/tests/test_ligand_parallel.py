@@ -23,6 +23,17 @@ class _InlinePool:
         return [function(*batch) for batch in batches]
 
 
+def test_normalized_charge_state_is_not_duplicated():
+    preparation = LigandPreparation(LigandPreparationConfig(), n_cpus=1)
+    molecule = Chem.MolFromSmiles("CCN")
+
+    states = preparation._enumerate_protonation(molecule)
+
+    assert len(states) == 1
+    assert states[0][1] == "standardized"
+    assert Chem.MolToSmiles(states[0][0]) == Chem.MolToSmiles(molecule)
+
+
 def test_parallel_rmsd_batches_match_serial_calculation(monkeypatch):
     mol = Chem.AddHs(Chem.MolFromSmiles("CCCC"))
     params = AllChem.ETKDGv3()

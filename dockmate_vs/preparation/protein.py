@@ -1,13 +1,8 @@
-"""
-Protein preparation module.
+"""Configurable protein preparation for docking campaigns.
 
-Implements the scholarly-validated pipeline:
-PDB → PDBFixer → PROPKA → Reduce → Water Handling → Meeko
-
-References:
-- PDBFixer: Eastman et al., PLOS Computational Biology, 2017
-- PROPKA: Olsson et al., J. Chem. Theory Comput., 2011
-- Water handling: De Graaf et al., PMC3695863
+The pipeline uses PDBFixer/OpenMM when available, optional PROPKA and Reduce
+steps, configurable water handling, and Open Babel PDBQT conversion. Flexible
+receptor preparation additionally requires Meeko's ``mk_prepare_receptor.py``.
 """
 
 from typing import List, Optional, Tuple, Set
@@ -95,10 +90,11 @@ class ProteinPreparation:
     """
     Protein preparation pipeline with customizable water handling.
 
-    Implements scholarly-validated workflow with three water handling modes:
+    Provides three explicit water handling modes that must be validated for the
+    target-specific protocol:
     - remove_all: Remove all crystallographic waters (default, fastest)
     - retain_all: Keep all crystallographic waters
-    - selective: Intelligent retention based on structural criteria
+    - selective: Retention based on configured structural criteria
 
     Example:
         >>> config = ProteinPreparationConfig(
@@ -807,7 +803,7 @@ class ProteinPreparation:
         output_path: str
     ) -> str:
         """
-        Convert prepared protein to PDBQT format using Meeko.
+        Convert a prepared rigid protein to PDBQT format using Open Babel.
 
         Args:
             prepared_protein: Prepared protein object
@@ -924,9 +920,8 @@ class ProteinPreparation:
         Raises:
             ProteinPreparationError: If flexible preparation fails
 
-        References:
-            Flexible side-chains: Ravindranath et al., PLoS Comput Biol, 2015
-            Improves accuracy by 30-40% for residues near binding site
+        Flexible-receptor performance is target dependent and must be validated
+        against the campaign's own pose and enrichment controls.
         """
         logger.info(f"Preparing flexible receptor with {len(flexible_residues)} flexible residues")
         logger.info(f"Flexible residues: {', '.join(flexible_residues)}")

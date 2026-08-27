@@ -9,11 +9,18 @@ from Conda packages. These tools remain governed by their own licences:
 - fpocket: MIT License, https://github.com/Discngine/fpocket
 - Open Babel: GNU General Public License v2.0, https://github.com/openbabel/openbabel
 - OpenMM: MIT and LGPL components, https://github.com/openmm/openmm
+- PDBFixer: MIT License, https://github.com/openmm/pdbfixer
+
+The container is built from the `mambaorg/micromamba` image. Micromamba and the
+base-image components retain their own licences and notices:
+https://github.com/mamba-org/micromamba-docker
 
 The image does **not** contain PyMOL or LigPlot+. DockMate-VS launches those as
 optional host applications. LigPlot+ must be obtained separately under the
 licence offered by its authors; it must not be copied into a redistributed
 DockMate-VS image without permission.
 
-Conda package metadata and licence files inside the image provide the exact
-notices for the versions installed during a build.
+Python and Conda dependencies listed in `pyproject.toml`, `environment.yml`, and
+`docker/environment.yml` are not relicensed by DockMate-VS. Package metadata and
+licence files installed in the environment provide the exact notices for the
+versions resolved during a build.

@@ -47,5 +47,7 @@ ligand_cache/
 
 # Local SoftwareX manuscript and submission preparation
 /manuscript/
-/docking_platform_gui/manuscript/
 /dockmate_vs/manuscript/
+
+# Legacy package tree retained locally for manuscript evidence and old outputs
+/docking_platform_gui/

@@ -68,6 +68,24 @@ FILTERS_PATH = Path.home() / ".dockmate-vs" / "filters.json"
 LEGACY_FILTERS_PATH = Path.home() / ".docking_platform_gui" / "redock_filters.json"
 
 
+def _executable_default(explicit: Optional[str], command: str) -> str:
+    """Prefer an explicit path, then PATH discovery, then the command name."""
+    if explicit:
+        return str(Path(explicit).expanduser())
+    return shutil.which(command) or command
+
+
+def _rdock_root_default() -> str:
+    """Return a configured or PATH-derived rDock installation root."""
+    configured = os.environ.get("RBT_ROOT")
+    if configured:
+        return str(Path(configured).expanduser())
+    executable = shutil.which("rbdock")
+    if executable:
+        return str(Path(executable).resolve().parent.parent)
+    return ""
+
+
 @dataclass
 class RedockResult:
     pdb_id: str
@@ -174,15 +192,16 @@ class DockMateVSApp(tk.Tk):
         self.timeout_var = tk.StringVar(value="1200")
         self.scoring_var = tk.StringVar(value="vina")
         self.smina_bin_var = tk.StringVar(
-            value=smina_binary_default or str(Path.home() / "Documents/apps/smina/smina")
+            value=_executable_default(smina_binary_default, "smina")
         )
         self.vina_bin_var = tk.StringVar(
-            value=vina_binary_default or "/usr/local/bin/vina"
+            value=_executable_default(vina_binary_default, "vina")
         )
 
-        self.enable_rdock_var = tk.BooleanVar(value=True)
+        rdock_root_default = _rdock_root_default()
+        self.enable_rdock_var = tk.BooleanVar(value=bool(rdock_root_default))
         self.use_vina_var = tk.BooleanVar(value=use_vina_default)
-        self.rdock_root_var = tk.StringVar(value=str(Path.home() / "Documents/apps/rdock"))
+        self.rdock_root_var = tk.StringVar(value=rdock_root_default)
         self.rdock_runs_var = tk.StringVar(value="20")
         self.rdock_seed_var = tk.StringVar(value="42")
         self.rdock_radius_var = tk.StringVar()
@@ -2379,14 +2398,18 @@ class DockMateVSApp(tk.Tk):
         if not (1 <= max_conformers <= 30):
             messagebox.showerror("Input error", "Max conformers must be between 1 and 30.")
             return None
-        rdock_root = Path(self.rdock_root_var.get())
-        enable_rdock = self.enable_rdock_var.get() and rdock_root.exists()
-        if self.enable_rdock_var.get() and not rdock_root.exists():
+        rdock_root_text = self.rdock_root_var.get().strip()
+        rdock_root = Path(rdock_root_text).expanduser() if rdock_root_text else None
+        enable_rdock = bool(
+            self.enable_rdock_var.get() and rdock_root and rdock_root.exists()
+        )
+        if self.enable_rdock_var.get() and not enable_rdock:
             messagebox.showwarning(
                 "rDock not found",
-                f"rDock root not found: {rdock_root}\nAdaptive docking will run without rDock."
+                "Select a valid rDock root or set RBT_ROOT.\n"
+                "Adaptive docking will run without rDock."
             )
-            logger.warning("Adaptive config: rDock root not found: {}", rdock_root)
+            logger.warning("Adaptive config: rDock root not found: {}", rdock_root_text)
             enable_rdock = False
 
         return {
@@ -6547,6 +6570,7 @@ class DockMateVSApp(tk.Tk):
         roots.extend(
             [
                 repo_root / "tools" / "LigPlus",
+                # Preserve discovery for installations created by older releases.
                 Path.home() / "Desktop" / "docking_platform" / "tools" / "LigPlus",
                 Path.home() / "Desktop" / "LigPlus",
                 Path.home() / "Documents" / "apps" / "LigPlus",

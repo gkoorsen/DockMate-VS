@@ -108,7 +108,10 @@ class LigandPreparationConfig(BaseModel):
 
     ph_range: tuple[float, float] = Field(
         default=(7.0, 7.4),
-        description="pH range for protonation enumeration"
+        description=(
+            "Reserved target pH range; version 0.1 does not enumerate ligand "
+            "ionization states"
+        )
     )
     max_tautomers: int = Field(
         default=8,

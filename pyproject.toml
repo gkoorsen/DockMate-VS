@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9,<3.13"
 license = { file = "LICENSE" }
 authors = [
-  { name = "Gerrit Koorsen" }
+  { name = "Gerrit Koorsen", email = "gkoorsen@uj.ac.za" }
 ]
 keywords = [
   "molecular docking",

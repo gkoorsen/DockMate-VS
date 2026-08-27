@@ -21,7 +21,7 @@ Python 3.9-3.12 is supported. From the repository root:
 ```bash
 conda env create -f environment.yml
 conda activate dockmate-vs
-pip install -e ".[test]"
+python -m pip install -e .
 ```
 
 The GUI uses Tk. Linux users may need their distribution's `python3-tk`
@@ -33,14 +33,19 @@ package. On macOS, use a Python build that includes Tk support.
 | --- | --- | --- |
 | AutoDock Vina or Smina | Docking | At least one is required |
 | Smina | Score-only rescoring | Required only when rescoring is enabled |
-| Open Babel (`obabel`) | Format conversion | Required by conversion-dependent paths |
+| Open Babel (`obabel`) | Rigid receptor and ligand PDBQT conversion | Required by current Vina/Smina workflows |
 | OpenMM and PDBFixer | Protein repair | Optional but recommended |
 | Reduce and PROPKA | Hydrogen/protonation preparation | Optional pipeline components |
 | rDock | Alternative docking engine | Optional |
+| Meeko (`mk_prepare_receptor.py`) | Flexible-receptor PDBQT preparation | Optional |
 | PyMOL and LigPlot+ | Pose and interaction visualization | Optional |
 
-Install tools according to their own documentation and licenses. In the GUI,
-provide the complete executable path, for example:
+Install tools according to their own documentation and licenses. DockMate-VS
+discovers `vina`, `smina`, and `rbdock` from the active executable `PATH` when
+they are available. The GUI can override Vina/Smina executable paths and the
+rDock root (`RBT_ROOT`). Commands without dedicated GUI fields, including
+`obabel`, `reduce`, and `mk_prepare_receptor.py`, must be on `PATH`. Example
+Vina/Smina overrides are:
 
 ```text
 /usr/local/bin/vina
@@ -124,6 +129,9 @@ scripts/dockmate-docker protocol examples/campaign.protocol.yml
 scripts/dockmate-docker screen examples/campaign.screen.yml
 ```
 
+See `docs/architecture.md` for component ownership, campaign data flow, output
+contracts, and the supported extension points for engines and analyses.
+
 ## 4. Spreadsheet schema
 
 Column names are matched case-insensitively where supported. Recommended names
@@ -200,6 +208,12 @@ on every saved pose and compares baseline and rescored rankings.
 Set explicit maximum tautomer and conformer counts. Large values multiply the
 number of dockings. Begin with two tautomers and two conformers for exploration,
 then justify any increase. Screening must select variants by score, not RMSD.
+
+Version 0.1 applies RDKit largest-fragment selection and charge normalization,
+then enumerates tautomers and conformers. It does not perform pH-aware ligand
+ionization-state enumeration. Inspect prepared forms for charge-sensitive
+compounds and document any externally curated charge-state policy used to create
+the input library.
 
 ### Interpret pose recovery
 

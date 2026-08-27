@@ -28,7 +28,9 @@ python -m pytest dockmate_vs/tests -q
 
 Use a focused branch and keep each pull request limited to one concern. Add a
 regression test for behavioural changes. Preserve machine-readable output
-fields when possible; document any schema change in `CHANGELOG.md`.
+fields when possible; document any schema change in `CHANGELOG.md`. Consult
+`docs/architecture.md` before changing component boundaries, campaign flow, or
+output contracts.
 
 ## Pull-request checklist
 

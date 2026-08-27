@@ -33,17 +33,18 @@ git clone https://github.com/gkoorsen/DockMate-VS.git
 cd DockMate-VS
 conda env create -f environment.yml
 conda activate dockmate-vs
-pip install -e ".[test]"
+python -m pip install -e .
 ```
 
 Alternatively, install into an existing compatible environment:
 
 ```bash
-python -m pip install -e ".[test]"
+python -m pip install .
 ```
 
-For local execution, AutoDock Vina or Smina must be installed separately and its
-executable selected in the GUI. rDock, Open Babel, PyMOL, and LigPlot+ are
+For local execution, AutoDock Vina or Smina must be selected in the GUI or
+discoverable in the executable `PATH`; Open Babel's `obabel` command must be on
+that `PATH`. rDock, Meeko flexible-receptor preparation, PyMOL, and LigPlot+ are
 optional. Protein repair uses OpenMM/PDBFixer, Reduce, and PROPKA when available. See
 [`USER_GUIDE.md`](USER_GUIDE.md) for platform-specific setup and capability
 details.
@@ -97,7 +98,11 @@ dockmate-vs doctor
 
 The workbook contains one public PDB/native-ligand pair and downloads the
 structural input before docking. It contains no redistributed LIT-PCBA assay
-compounds.
+compounds. A successful run writes a protocol manifest, condition-level CSV,
+Markdown summary, recommendations, and charts below the selected output
+directory. Exact scores and poses can vary with the docking-engine build,
+preparation tools, hardware, and random seed; this example verifies workflow
+execution rather than a fixed numerical result.
 
 ## Input models
 
@@ -130,15 +135,20 @@ Each screening run writes:
 Protocol-development runs produce an analogous manifest, condition-level CSV,
 summary, recommendations, and plots.
 
+The component boundaries, campaign flow, output contracts, and extension points
+are described in [`docs/architecture.md`](docs/architecture.md).
+
 ## Testing
 
 ```bash
+python -m pip install -e ".[test]"
 python -m pytest dockmate_vs/tests -q
 ```
 
 GitHub Actions runs the focused suite on Python 3.9, 3.11, and 3.12 under Linux.
-External docking binaries are mocked in automated integration tests; release
-verification additionally uses real Vina/Smina smoke runs.
+External docking binaries are mocked in automated integration tests. Before a
+release, maintainers also verify the documented example with an installed
+docking engine and record the engine version in the generated manifest.
 
 ## Interpretation and limitations
 
@@ -159,6 +169,7 @@ SoftwareX article and archived release DOI are available, cite the versioned
 GitHub release and repository URL.
 
 - Problems and feature requests: [GitHub Issues](https://github.com/gkoorsen/DockMate-VS/issues)
+- Support contact: [gkoorsen@uj.ac.za](mailto:gkoorsen@uj.ac.za)
 - Contribution guide: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - Release history: [`CHANGELOG.md`](CHANGELOG.md)
 

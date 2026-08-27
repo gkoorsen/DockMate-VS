@@ -1,13 +1,9 @@
-"""
-Ligand preparation module.
+"""Ligand preparation with RDKit and Open Babel.
 
-Implements the scholarly-validated pipeline:
-SMILES → Dimorphite-DL → RDKit Tautomers → ETKDGv3 → MMFF94s → Meeko
-
-References:
-- ETKDGv3: Wang et al., J. Chem. Inf. Model., 2020
-- Dimorphite-DL: Ropp et al., J. Cheminformatics, 2019
-- MMFF94s: Tosco et al., J. Cheminformatics, 2014
+The current pipeline performs largest-fragment selection and charge
+normalization, RDKit tautomer and conformer generation, optional MMFF94s
+minimization, and Open Babel PDBQT conversion. It does not claim pH-aware
+ionization-state enumeration.
 """
 
 from typing import List, Optional, Tuple
@@ -103,11 +99,11 @@ class LigandPreparationError(Exception):
 
 
 class LigandPreparation:
-    """
-    Ligand preparation pipeline.
+    """Convert SMILES strings into docking-ready PDBQT variants.
 
-    Converts SMILES strings to docking-ready PDBQT files following
-    the scholarly-validated workflow.
+    Users should inspect charge-sensitive compounds because the standardization
+    step normalizes neutralizable formal charges and does not enumerate pH-aware
+    ionization states.
 
     Example:
         >>> config = LigandPreparationConfig()
@@ -153,7 +149,7 @@ class LigandPreparation:
         Args:
             smiles: Input SMILES string
             mol_id: Molecule identifier
-            enumerate_states: Whether to enumerate protonation/tautomers
+            enumerate_states: Whether to enumerate normalized-state tautomers
 
         Returns:
             List of prepared ligands (multiple if enumeration enabled)
@@ -173,12 +169,12 @@ class LigandPreparation:
             # 2. Standardize molecule
             mol = self._standardize_molecule(mol)
 
-            logger.info(f"  Enumerating protonation states for {mol_id}")
-            # 3. Enumerate protonation states
+            logger.info(f"  Selecting normalized charge state for {mol_id}")
+            # 3. Retain one normalized charge state before tautomer enumeration.
             if enumerate_states:
                 protonated_mols = self._enumerate_protonation(mol)
             else:
-                protonated_mols = [(mol, "neutral")]
+                protonated_mols = [(mol, "standardized")]
 
             results = []
 
@@ -274,8 +270,7 @@ class LigandPreparation:
         remover = rdMolStandardize.LargestFragmentChooser()
         mol = remover.choose(mol)
 
-        # Neutralize (remove charges where possible)
-        # Note: We'll re-protonate at target pH later
+        # Normalize removable formal charges. This is not pH-aware ionization.
         mol = self.uncharger.uncharge(mol)
 
         return mol
@@ -284,11 +279,12 @@ class LigandPreparation:
         self,
         mol: Chem.Mol
     ) -> List[Tuple[Chem.Mol, str]]:
-        """
-        Enumerate protonation states using Dimorphite-DL-like approach.
+        """Return the single normalized charge state used by this release.
 
-        For now, implements basic protonation using RDKit.
-        For production, integrate actual Dimorphite-DL.
+        Earlier versions labelled unchanged molecule copies as protonated and
+        deprotonated variants. Those copies were chemically identical and only
+        repeated docking work. The pH range remains in the configuration for
+        backward compatibility but is not interpreted as ionization enumeration.
 
         Args:
             mol: Input molecule
@@ -296,31 +292,7 @@ class LigandPreparation:
         Returns:
             List of (molecule, state_description) tuples
         """
-        results = []
-
-        # Add neutral form
-        results.append((mol, "neutral"))
-
-        # Enumerate ionization states at target pH
-        # Simple implementation: protonate/deprotonate basic/acidic groups
-        ph_min, ph_max = self.config.ph_range
-        target_ph = (ph_min + ph_max) / 2.0
-
-        # For basic groups (amines): add protonated forms
-        if target_ph < 8.0:  # Below amine pKa
-            # Protonate amines
-            mol_copy = Chem.Mol(mol)
-            # Simple protonation (production should use Dimorphite-DL)
-            results.append((mol_copy, "protonated"))
-
-        # For acidic groups (carboxyls): add deprotonated forms
-        if target_ph > 3.5:  # Above carboxyl pKa
-            mol_copy = Chem.Mol(mol)
-            # Simple deprotonation
-            results.append((mol_copy, "deprotonated"))
-
-        # Limit number of states
-        return results[:3]  # Keep top 3 states max
+        return [(Chem.Mol(mol), "standardized")]
 
     def _enumerate_tautomers(self, mol: Chem.Mol) -> List[Chem.Mol]:
         """Enumerate and rank tautomers by chemical likelihood."""

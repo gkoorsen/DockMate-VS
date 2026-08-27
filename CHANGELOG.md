@@ -19,5 +19,21 @@ uses semantic versioning after the initial public release.
   summaries, and provenance for code, dependencies, and external engines.
 - Offline docking after preflight retrieval of required public structures.
 - Automated unit and integration tests for the screening and reporting paths.
+- Optional linux/amd64 Docker backend with bundled headless docking tools.
+- Architecture, output-contract, third-party licensing, and release-validation
+  documentation.
+
+### Changed
+
+- Docking executables are discovered from the active `PATH` or explicit settings
+  instead of machine-specific default paths.
+- Ligand preparation now retains one normalized charge state rather than
+  redocking chemically identical copies labelled as different protonation states.
+  Version 0.1 explicitly does not provide pH-aware ionization-state enumeration.
+
+### Fixed
+
+- The binding-site self-docking helper now calculates RMSD in the receptor
+  coordinate frame instead of fitting a displaced pose onto the crystal ligand.
 
 [0.1.0]: https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.0

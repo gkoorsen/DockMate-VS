@@ -7,6 +7,9 @@ type: software
 authors:
   - family-names: Koorsen
     given-names: Gerrit
+    orcid: https://orcid.org/0000-0001-5159-1806
+    affiliation: Department of Biochemistry, University of Johannesburg
+    email: gkoorsen@uj.ac.za
 version: 0.1.0
 license: MIT
 repository-code: https://github.com/gkoorsen/DockMate-VS

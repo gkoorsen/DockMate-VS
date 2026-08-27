@@ -1,22 +1,9 @@
-"""
-Adaptive Docking Pipeline
+"""Adaptive redocking across an ordered set of explicit protocols.
 
-Implements intelligent cascading docking protocol based on investigation findings.
-Starts with "best guess" configuration, then tries alternatives if initial result
-doesn't meet RMSD threshold.
-
-Key Learnings Applied:
-1. Box size is THE critical parameter (4Å margin best)
-2. rDock outperforms Smina (86% improvement)
-3. Waters hurt pose prediction (remove all)
-4. Exhaustiveness plateaus at 16
-5. Scoring function has minimal impact
-
-Strategy:
-- Protocol 1: Smina + 4Å margin (fast, usually works)
-- Protocol 2: rDock + 4Å margin (if Smina fails, try better algorithm)
-- Protocol 3: Explore box sizes (if both fail, maybe wrong margin)
-- Protocol 4: Last resort options (flexible, higher exhaustiveness)
+The cascade explores alternative engines, box margins, and search effort until a
+pose meets the configured RMSD threshold or every enabled protocol has run. The
+order is a workflow default, not a claim that one condition is universally best;
+users should validate protocol choices for their own target and control set.
 """
 
 import logging
@@ -107,14 +94,11 @@ class DockingResult:
 
 
 class AdaptiveDockingPipeline:
-    """
-    Adaptive docking pipeline that tries multiple protocols in order.
+    """Try a documented protocol cascade until the RMSD criterion is met.
 
-    Cascading strategy:
-    1. Best guess (Smina + 4Å margin) - 90% success expected
-    2. rDock algorithm (if Smina fails) - 86% better
-    3. Explore margins (if both fail) - maybe wrong box size
-    4. Last resort (flexible, high exhaustiveness) - edge cases
+    The default order starts with Smina at a 4 A margin, optionally tries rDock,
+    explores larger margins, and finally increases search effort. No success rate
+    is assumed; all attempts and outcomes are recorded for inspection.
     """
 
     def __init__(
@@ -134,8 +118,8 @@ class AdaptiveDockingPipeline:
         max_tautomers: int = 8,
         max_conformers: int = 10,
         n_cpus: Optional[int] = None,
-        molecule_type: str = "active",  # ADD: 'active' or 'decoy'
-        skip_rmsd_for_decoys: bool = True  # ADD
+        molecule_type: str = "active",
+        skip_rmsd_for_decoys: bool = True
     ):
         """
         Initialize adaptive pipeline.
@@ -202,12 +186,9 @@ class AdaptiveDockingPipeline:
         """
         Build ordered list of protocols to try.
 
-        Based on investigation findings:
-        - Protocol 1: Smina + 4Å (best guess, fastest)
-        - Protocol 2: rDock + 4Å (better algorithm)
-        - Protocol 3: Smina + 6Å (maybe need more space)
-        - Protocol 4: Smina + 8Å (traditional default)
-        - Protocol 5: Smina + 4Å + higher exhaustiveness (last resort)
+        The sequence varies one major choice at a time where practical. It is a
+        deterministic search order rather than a target-independent performance
+        ranking of engines, margins, or scoring functions.
         """
         protocols = []
         base_exhaustiveness = self.smina_exhaustiveness
@@ -215,10 +196,10 @@ class AdaptiveDockingPipeline:
         base_scoring = "vina"
         alt_scoring = "vinardo" if self.allow_custom_scoring else "vina"
 
-        # PROTOCOL 1: Best Guess (Smina + optimal margin)
+        # Start with the smallest configured default search region.
         protocols.append(DockingProtocol(
             name="Protocol1_BestGuess",
-            description="Smina + 4Å margin + vina scoring (optimal configuration)",
+            description="Initial Smina search with 4 A margin and Vina scoring",
             engine="smina",
             margin=4.0,
             scoring=base_scoring,
@@ -226,11 +207,11 @@ class AdaptiveDockingPipeline:
             expected_runtime_min=1.5
         ))
 
-        # PROTOCOL 2: rDock (if available)
+        # Try an alternative engine when rDock is available.
         if self.rdock_available:
             protocols.append(DockingProtocol(
                 name="Protocol2_rDock",
-                description="rDock + 4Å margin (superior algorithm, 86% better)",
+                description="Alternative rDock search with 4 A margin",
                 engine="rdock",
                 margin=4.0,
                 scoring=base_scoring,  # Not used by rDock, but keep for consistency
@@ -238,7 +219,7 @@ class AdaptiveDockingPipeline:
                 expected_runtime_min=2.5
             ))
 
-        # PROTOCOL 3: Larger margin (maybe constrained too much)
+        # Increase the Smina search region.
         protocols.append(DockingProtocol(
             name="Protocol3_LargerMargin",
             description="Smina + 6Å margin (less constrained search)",
@@ -249,18 +230,18 @@ class AdaptiveDockingPipeline:
             expected_runtime_min=1.8
         ))
 
-        # PROTOCOL 4: Traditional default (8Å)
+        # Explore a larger region and alternative Smina scoring when supported.
         protocols.append(DockingProtocol(
             name="Protocol4_TraditionalDefault",
             description="Smina + 8Å margin + vinardo scoring",
             engine="smina",
             margin=8.0,
-            scoring=alt_scoring,  # Vinardo better with larger boxes
+            scoring=alt_scoring,
             exhaustiveness=base_exhaustiveness,
             expected_runtime_min=2.0
         ))
 
-        # PROTOCOL 5: High exhaustiveness (last resort)
+        # Increase search effort after the lower-cost conditions.
         protocols.append(DockingProtocol(
             name="Protocol5_HighExhaustiveness",
             description="Smina + 4Å margin + exhaustiveness=32 (thorough search)",
