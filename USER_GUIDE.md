@@ -49,6 +49,22 @@ package-manageable tools and keep their commands on the conda environment's
 scripts/install_external_tools.sh
 ```
 
+The installer supports Micromamba, Mamba, or Conda configured with the
+libmamba solver. It automatically prefers `micromamba`, then `mamba`, before
+using `conda`. This avoids prolonged dependency resolution with Conda's classic
+solver. macOS users can install Micromamba with:
+
+```bash
+brew install micromamba
+```
+
+See the [Micromamba installation
+instructions](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html)
+for other platforms. Use `--package-manager /path/to/micromamba` to select a
+specific executable. The installer stops before invoking Conda's classic
+solver by default; `--allow-classic-conda` overrides this guard when the delay
+is acceptable.
+
 Use `--with-pymol` to add open-source PyMOL. LigPlot+ must first be obtained
 under its own licence; register an extracted installation without copying it
 into the repository:
@@ -60,13 +76,19 @@ scripts/install_external_tools.sh --with-pymol \
 ```
 
 The script accepts `--vina-bin`, `--smina-bin`, `--rdock-root`, `--pymol-bin`,
-and `--ligplus-root` for existing installations. It links explicitly supplied
-binaries into the active environment and writes conda activation hooks for
-`RBT_ROOT` and LigPlot+ variables. It does not edit `.zshrc`, `.bashrc`, or other
-shell startup files. The installer supports macOS and Linux. The current
-bioconda rDock package is Linux-only; on macOS, provide an existing rDock root
-or use the Docker backend. Windows users should use Docker, WSL, or the linked
-manual installation instructions.
+and `--ligplus-root` for existing installations. It validates these paths
+before solving the environment, links explicitly supplied binaries into the
+active environment, and writes conda activation hooks for `RBT_ROOT` and
+LigPlot+ variables. It does not edit `.zshrc`, `.bashrc`, or other shell startup
+files. The installer supports macOS and Linux. The current bioconda rDock
+package is Linux-only; on macOS, provide an existing rDock root or use the
+Docker backend. Windows users should use Docker, WSL, or the linked manual
+installation instructions.
+
+If an older copy of the installer repeatedly displays `Solving environment`
+and mentions frozen or flexible solves, cancel it with `Ctrl+C`. Install
+Micromamba, update the repository, and rerun the installer. Do not run Conda and
+Micromamba transactions against the same environment concurrently.
 
 Install tools according to their own documentation and licenses. DockMate-VS
 discovers `vina`, `smina`, and `rbdock` from the active executable `PATH` when

@@ -21,7 +21,8 @@ uses semantic versioning after the initial public release.
 - Automated unit and integration tests for the screening and reporting paths.
 - Optional linux/amd64 Docker backend with bundled headless docking tools.
 - Active-environment installer for external docking, preparation,
-  pocket-detection, and optional visualization programs.
+  pocket-detection, and optional visualization programs, with automatic fast
+  solver selection and a guard against prolonged classic-Conda solves.
 - Architecture, output-contract, third-party licensing, and release-validation
   documentation.
 

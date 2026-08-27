@@ -10,6 +10,8 @@ Usage:
 
 Options:
   --with-pymol          Install open-source PyMOL from conda-forge.
+  --package-manager CMD Use this conda-compatible package manager.
+  --allow-classic-conda Allow Conda's slower classic solver.
   --vina-bin PATH       Register an existing Vina executable instead of installing it.
   --smina-bin PATH      Register an existing Smina executable instead of installing it.
   --rdock-root PATH     Register an existing rDock installation root.
@@ -40,6 +42,8 @@ shell_quote() {
 
 dry_run=0
 with_pymol=0
+allow_classic_conda=0
+package_manager_arg=""
 vina_bin=""
 smina_bin=""
 rdock_root=""
@@ -52,9 +56,14 @@ while [[ $# -gt 0 ]]; do
       with_pymol=1
       shift
       ;;
-    --vina-bin|--smina-bin|--rdock-root|--pymol-bin|--ligplus-root)
+    --allow-classic-conda)
+      allow_classic_conda=1
+      shift
+      ;;
+    --package-manager|--vina-bin|--smina-bin|--rdock-root|--pymol-bin|--ligplus-root)
       [[ $# -ge 2 ]] || die "$1 requires a path"
       case "$1" in
+        --package-manager) package_manager_arg="$2" ;;
         --vina-bin) vina_bin="$2" ;;
         --smina-bin) smina_bin="$2" ;;
         --rdock-root) rdock_root="$2" ;;
@@ -86,14 +95,40 @@ case "$(uname -s)" in
   *) die "this installer supports macOS and Linux; use Docker or install tools manually on this platform" ;;
 esac
 
-conda_exe="${CONDA_EXE:-}"
-if [[ -z "$conda_exe" ]]; then
-  conda_exe="$(command -v conda || true)"
-fi
-[[ -x "$conda_exe" ]] || die "conda executable not found"
-
 export PATH="$CONDA_PREFIX/bin:$PATH"
 note "target environment: $CONDA_PREFIX"
+
+resolve_command() {
+  local requested="$1"
+  if [[ "$requested" == */* ]]; then
+    [[ -x "$requested" ]] || return 1
+    printf '%s\n' "$requested"
+  else
+    command -v "$requested" 2>/dev/null
+  fi
+}
+
+if [[ -n "$package_manager_arg" ]]; then
+  package_manager="$(resolve_command "$package_manager_arg")" || \
+    die "package manager is not executable: $package_manager_arg"
+elif command -v micromamba >/dev/null 2>&1; then
+  package_manager="$(command -v micromamba)"
+elif command -v mamba >/dev/null 2>&1; then
+  package_manager="$(command -v mamba)"
+elif [[ -n "${CONDA_EXE:-}" && -x "$CONDA_EXE" ]]; then
+  package_manager="$CONDA_EXE"
+else
+  package_manager="$(command -v conda || true)"
+fi
+[[ -x "$package_manager" ]] || die "no conda-compatible package manager was found"
+note "package manager: $package_manager"
+
+# Validate supplied locations before starting a potentially expensive solve.
+[[ -z "$vina_bin" || -f "$vina_bin" ]] || die "Vina executable was not found: $vina_bin"
+[[ -z "$smina_bin" || -f "$smina_bin" ]] || die "Smina executable was not found: $smina_bin"
+[[ -z "$pymol_bin" || -f "$pymol_bin" ]] || die "PyMOL executable was not found: $pymol_bin"
+[[ -z "$rdock_root" || -d "$rdock_root" ]] || die "rDock root was not found: $rdock_root"
+[[ -z "$ligplus_root" || -d "$ligplus_root" ]] || die "LigPlot+ root was not found: $ligplus_root"
 
 command_missing() {
   ! command -v "$1" >/dev/null 2>&1
@@ -152,8 +187,17 @@ if [[ -n "$ligplus_root" ]]; then
 fi
 
 if [[ ${#package_specs[@]} -gt 0 ]]; then
+  if [[ "$(basename "$package_manager")" == "conda" ]]; then
+    solver_setting="$("$package_manager" config --show solver 2>/dev/null || true)"
+    if [[ "$solver_setting" != *"libmamba"* ]]; then
+      if [[ $allow_classic_conda -eq 0 ]]; then
+        die "Conda is not configured for the libmamba solver. Install Micromamba or Mamba, configure Conda to use libmamba, or rerun with --allow-classic-conda."
+      fi
+      note "WARNING: using Conda's classic solver; dependency resolution may take a long time."
+    fi
+  fi
   install_command=(
-    "$conda_exe" install --yes --prefix "$CONDA_PREFIX" --override-channels
+    "$package_manager" install --yes --prefix "$CONDA_PREFIX" --override-channels
     --channel conda-forge --channel bioconda "rdkit<2026"
   )
   install_command+=("${package_specs[@]}")

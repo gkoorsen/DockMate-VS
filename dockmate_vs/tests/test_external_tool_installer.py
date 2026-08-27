@@ -21,6 +21,7 @@ def test_external_tool_installer_has_valid_syntax_and_help():
     )
 
     assert "--ligplus-root PATH" in result.stdout
+    assert "--package-manager CMD" in result.stdout
     assert "does not edit shell startup files" in result.stdout
 
 
@@ -34,7 +35,11 @@ def test_external_tool_installer_dry_run_does_not_modify_environment(tmp_path):
     python.write_text("#!/usr/bin/env bash\nexit 1\n")
     python.chmod(0o755)
     conda = tmp_path / "conda"
-    conda.write_text("#!/usr/bin/env bash\nexit 0\n")
+    conda.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "${1:-}" == "config" ]]; then echo "solver: libmamba"; fi\n'
+        "exit 0\n"
+    )
     conda.chmod(0o755)
 
     environment = os.environ.copy()
@@ -58,3 +63,74 @@ def test_external_tool_installer_dry_run_does_not_modify_environment(tmp_path):
     assert "rdkit\\<2026" in result.stdout
     assert "no files or environments were changed" in result.stdout
     assert not (prefix / "etc").exists()
+
+
+@pytest.mark.skipif(BASH is None, reason="external-tool installer requires bash")
+def test_external_tool_installer_prefers_micromamba(tmp_path):
+    prefix = tmp_path / "dockmate-vs"
+    bin_dir = prefix / "bin"
+    bin_dir.mkdir(parents=True)
+
+    python = bin_dir / "python"
+    python.write_text("#!/usr/bin/env bash\nexit 1\n")
+    python.chmod(0o755)
+    micromamba = bin_dir / "micromamba"
+    micromamba.write_text("#!/usr/bin/env bash\nexit 0\n")
+    micromamba.chmod(0o755)
+    conda = tmp_path / "conda"
+    conda.write_text("#!/usr/bin/env bash\nexit 0\n")
+    conda.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "CONDA_PREFIX": str(prefix),
+            "CONDA_DEFAULT_ENV": "dockmate-vs",
+            "CONDA_EXE": str(conda),
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+        }
+    )
+    result = subprocess.run(
+        [BASH, str(INSTALLER), "--dry-run"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert f"package manager: {micromamba}" in result.stdout
+    assert str(micromamba) in result.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="external-tool installer requires bash")
+def test_external_tool_installer_rejects_classic_conda(tmp_path):
+    prefix = tmp_path / "dockmate-vs"
+    bin_dir = prefix / "bin"
+    bin_dir.mkdir(parents=True)
+
+    python = bin_dir / "python"
+    python.write_text("#!/usr/bin/env bash\nexit 1\n")
+    python.chmod(0o755)
+    conda = tmp_path / "conda"
+    conda.write_text("#!/usr/bin/env bash\nexit 0\n")
+    conda.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "CONDA_PREFIX": str(prefix),
+            "CONDA_DEFAULT_ENV": "dockmate-vs",
+            "CONDA_EXE": str(conda),
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+        }
+    )
+    result = subprocess.run(
+        [BASH, str(INSTALLER), "--dry-run"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "not configured for the libmamba solver" in result.stderr

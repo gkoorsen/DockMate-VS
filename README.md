@@ -44,8 +44,11 @@ scripts/install_external_tools.sh
 ```
 
 Conda activation automatically places these executables on `PATH`. The script
-can also register existing Smina, rDock, PyMOL, and separately licensed LigPlot+
-installations; run `scripts/install_external_tools.sh --help` for those options.
+automatically prefers Micromamba or Mamba over Conda for dependency resolution.
+On macOS, install Micromamba with `brew install micromamba` if Conda is using its
+slow classic solver. The script can also register existing Smina, rDock, PyMOL,
+and separately licensed LigPlot+ installations; run
+`scripts/install_external_tools.sh --help` for those options.
 
 Alternatively, install into an existing compatible environment:
 
