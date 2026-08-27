@@ -36,6 +36,17 @@ conda activate dockmate-vs
 python -m pip install -e .
 ```
 
+Install the package-manageable docking and preparation programs into the active
+environment with:
+
+```bash
+scripts/install_external_tools.sh
+```
+
+Conda activation automatically places these executables on `PATH`. The script
+can also register existing Smina, rDock, PyMOL, and separately licensed LigPlot+
+installations; run `scripts/install_external_tools.sh --help` for those options.
+
 Alternatively, install into an existing compatible environment:
 
 ```bash

@@ -38,7 +38,35 @@ package. On macOS, use a Python build that includes Tk support.
 | Reduce and PROPKA | Hydrogen/protonation preparation | Optional pipeline components | [Reduce](https://github.com/rlabduke/reduce#building) / [PROPKA](https://propka.readthedocs.io/en/latest/installation.html) |
 | rDock | Alternative docking engine | Optional | [rDock](https://rdock.github.io/installation/) |
 | Meeko (`mk_prepare_receptor.py`) | Flexible-receptor PDBQT preparation | Optional | [Meeko](https://meeko.readthedocs.io/en/develop/installation.html) |
+| fpocket | Apo binding-site prediction | Optional | [fpocket](https://github.com/Discngine/fpocket#installing) |
 | PyMOL and LigPlot+ | Pose and interaction visualization | Optional | [PyMOL](https://pymol.org/) / [LigPlot+](https://www.ebi.ac.uk/thornton-srv/software/LigPlus/) |
+
+After activating `dockmate-vs`, the bundled installer can install all
+package-manageable tools and keep their commands on the conda environment's
+`PATH`:
+
+```bash
+scripts/install_external_tools.sh
+```
+
+Use `--with-pymol` to add open-source PyMOL. LigPlot+ must first be obtained
+under its own licence; register an extracted installation without copying it
+into the repository:
+
+```bash
+scripts/install_external_tools.sh --with-pymol \
+  --smina-bin /path/to/smina \
+  --ligplus-root /path/to/LigPlus
+```
+
+The script accepts `--vina-bin`, `--smina-bin`, `--rdock-root`, `--pymol-bin`,
+and `--ligplus-root` for existing installations. It links explicitly supplied
+binaries into the active environment and writes conda activation hooks for
+`RBT_ROOT` and LigPlot+ variables. It does not edit `.zshrc`, `.bashrc`, or other
+shell startup files. The installer supports macOS and Linux. The current
+bioconda rDock package is Linux-only; on macOS, provide an existing rDock root
+or use the Docker backend. Windows users should use Docker, WSL, or the linked
+manual installation instructions.
 
 Install tools according to their own documentation and licenses. DockMate-VS
 discovers `vina`, `smina`, and `rbdock` from the active executable `PATH` when
