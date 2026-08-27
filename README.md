@@ -8,7 +8,7 @@ recording, and applying molecular-docking protocols. It keeps native-pose
 recovery, active/inactive enrichment, and score-only screening as separate
 questions while producing resumable, machine-readable campaigns.
 
-![DockMate-VS workflow](docs/images/softwarex_workflow.png)
+![DockMate-VS workflow](docs/images/dockmate_vs_workflow.png)
 
 ## Why use it?
 
