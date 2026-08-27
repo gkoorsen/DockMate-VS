@@ -23,6 +23,8 @@ uses semantic versioning after the initial public release.
 - Active-environment installer for external docking, preparation,
   pocket-detection, and optional visualization programs, with automatic fast
   solver selection and a guard against prolonged classic-Conda solves.
+- Separate public protocol-development and labelled enrichment smoke-test
+  workbooks, with matching headless campaign configurations.
 - Architecture, output-contract, third-party licensing, and release-validation
   documentation.
 

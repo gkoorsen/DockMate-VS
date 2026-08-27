@@ -118,6 +118,13 @@ directory. Exact scores and poses can vary with the docking-engine build,
 preparation tools, hardware, and random seed; this example verifies workflow
 execution rather than a fixed numerical result.
 
+For an enrichment smoke test, select
+`examples/esr1_enrichment_smoke_test_1XP1.xlsx` in the **Screening** tab or run
+`dockmate-vs screen --config examples/campaign.screen.yml`. Its labelled native
+positive and six illustrative controls exercise ranking, ROC AUC, and
+enrichment reporting without redistributing LIT-PCBA assay records. The test
+labels verify software behavior and are not biological activity claims.
+
 ## Input models
 
 The application accepts two complementary labelled-data models:

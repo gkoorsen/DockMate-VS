@@ -171,8 +171,13 @@ dockmate-vs doctor
 
 Configuration paths are resolved relative to the YAML file. The supplied files
 `examples/campaign.protocol.yml` and `examples/campaign.screen.yml` document all
-common settings. For container execution, keep the campaign file, workbook, and
-output path below the current working directory and run:
+common settings. The protocol campaign uses
+`examples/esr1_protocol_development_1XP1.xlsx`; the screening campaign uses the
+separate `examples/esr1_enrichment_smoke_test_1XP1.xlsx` workbook. Its explicit
+software-test labels exercise enrichment reporting but must not be interpreted
+as biological activity annotations or protocol validation. For container
+execution, keep the campaign file, workbook, and output path below the current
+working directory and run:
 
 ```bash
 scripts/dockmate-docker protocol examples/campaign.protocol.yml

@@ -1,5 +1,5 @@
 # Paths are resolved relative to this file. Replace the workbook as needed.
-input_file: esr1_protocol_development_1XP1.xlsx
+input_file: esr1_enrichment_smoke_test_1XP1.xlsx
 output_dir: ../results/example_screen
 threshold: 2.0
 
