@@ -1,6 +1,7 @@
-# Paths are resolved relative to this file. Replace the workbook as needed.
-input_file: esr1_enrichment_smoke_test_1XP1.xlsx
-output_dir: ../results/example_screen
+# Paths are resolved relative to this file. This frozen starter protocol can be
+# amended after reviewing the supplied protocol-development sweep.
+input_file: dude_aces_screening_subset_1E66_seed42.xlsx
+output_dir: ../results/dude_aces_screen
 threshold: 2.0
 
 filters:

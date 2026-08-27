@@ -257,6 +257,32 @@ def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):
     assert "## Recommended protocol per target" in report
 
 
+def test_protocol_report_marks_disabled_rescoring_as_not_applicable(tmp_path: Path):
+    rows = [{
+        "status": "complete", "pdb_id": "1ABC", "ligand_resname": "LIG",
+        "engine": "smina", "box_definition": "margin:4",
+        "rescore_method": "none", "water_handling": "remove_all",
+        "exhaustiveness": 8, "seed": 42, "best_rmsd": 1.0,
+        "top1_rmsd": 1.2, "top5_rmsd": 1.0, "top10_rmsd": 1.0,
+        "best_rmsd_rank": 2, "best_score": -8.0,
+        "score_rmsd_spearman": 0.4, "success": True, "runtime_sec": 10.0,
+        # Legacy files copied these baseline values into rescoring columns.
+        "rescore_top1_rmsd": 1.2, "rescore_top5_rmsd": 1.0,
+        "rescore_top10_rmsd": 1.0, "rescore_best_rmsd_rank": 2,
+        "rescore_score": -8.0, "rescore_score_rmsd_spearman": 0.4,
+    }]
+
+    report = DockMateVSApp._write_protocol_report(rows, tmp_path).read_text()
+    comparison_row = next(
+        line for line in report.splitlines()
+        if line.startswith("| smina | margin:4 | none |")
+    )
+
+    assert "| 1.20/1.00/1.00 | N/A/N/A/N/A |" in comparison_row
+    assert "| 2.00 / N/A | -8.00 / N/A | 0.40 / N/A |" in comparison_row
+    assert "| remove_all | none | 1 | 100.0% | 100.0% | N/A | 100.0% | N/A |" in report
+
+
 def test_protocol_conditions_do_not_repeat_rdock_for_exhaustiveness():
     actives = [{"pdb_id": "1ABC", "site_ligand": "LIG"}]
     sweep = {
@@ -469,6 +495,37 @@ def test_protocol_chart_data_uses_every_rescored_condition():
     assert data["condition_count"] == 20
     assert len(data["pose_ranking_points"]) == 20
     assert len(data["rescore_points"]) == 20
+
+
+def test_protocol_chart_data_switches_all_metrics_to_selected_top_n():
+    frame = pd.DataFrame([{
+        "status": "complete", "pdb_id": "1ABC", "ligand_resname": "LIG",
+        "engine": "smina", "box_definition": "margin:4",
+        "rescore_method": "vinardo", "water_handling": "remove_all",
+        "exhaustiveness": 8, "seed": 42, "best_rmsd": 0.7,
+        "top1_rmsd": 4.0, "top5_rmsd": 2.5, "top10_rmsd": 1.1,
+        "rescore_top1_rmsd": 5.0, "rescore_top5_rmsd": 1.8,
+        "rescore_top10_rmsd": 0.8, "runtime_sec": 20.0,
+    }])
+
+    top1 = DockMateVSApp._protocol_chart_data(frame, top_n=1)
+    top5 = DockMateVSApp._protocol_chart_data(frame, top_n=5)
+    top10 = DockMateVSApp._protocol_chart_data(frame, top_n=10)
+
+    assert top1["pose_ranking_points"][0]["y"] == 5.0
+    assert top5["pose_ranking_points"][0]["y"] == 1.8
+    assert top10["pose_ranking_points"][0]["y"] == 0.8
+    assert top10["rescore_points"][0]["x"] == 1.1
+    assert top10["rescore_points"][0]["y"] == 0.8
+    assert top10["runtime_points"][0]["y"] == 0.8
+    assert {row["median"] for row in top10["factor_effects"]} == {0.8}
+    assert top10["selected_success"] == 1
+    assert top10["top1_success"] == 0
+    assert top10["top5_success"] == 1
+    assert top10["top10_success"] == 1
+
+    with pytest.raises(ValueError, match="Top-1, Top-5, or Top-10"):
+        DockMateVSApp._protocol_chart_data(frame, top_n=20)
 
 
 def test_protocol_chart_data_collapses_legacy_rdock_exhaustiveness_duplicates():

@@ -1,5 +1,6 @@
-input_file: esr1_protocol_development_1XP1.xlsx
-output_dir: ../results/example_protocol
+# Paths are resolved relative to this file.
+input_file: dude_aces_protocol_development_1E66.xlsx
+output_dir: ../results/dude_aces_protocol
 threshold: 2.0
 
 single:
@@ -19,8 +20,8 @@ single:
 
 protocol_sweep:
   engines: [smina]
-  box_definitions: ["margin:4"]
+  box_definitions: ["margin:4", "margin:6"]
   water_modes: [remove_all, retain_all, selective]
-  exhaustiveness: [8]
+  exhaustiveness: [8, 16]
   seeds: [42]
   rescore_methods: [none, vinardo]

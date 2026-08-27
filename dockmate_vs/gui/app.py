@@ -1872,18 +1872,7 @@ class DockMateVSApp(tk.Tk):
                     docking_cache[docking_key] = copy.deepcopy(result)
                 result.target_name = pair.get("target_name")
                 row.update(asdict(result))
-                if rescore_method == "none":
-                    result.rescore_score = result.best_score
-                    result.rescore_pose_count = result.pose_count
-                    result.rescore_top1_rmsd = result.top1_rmsd
-                    result.rescore_top5_rmsd = result.top5_rmsd
-                    result.rescore_top10_rmsd = result.top10_rmsd
-                    result.rescore_best_rmsd_rank = result.best_rmsd_rank
-                    result.rescore_rmsd_best_score = result.rmsd_best_score
-                    result.rescore_score_rmsd_pearson = result.score_rmsd_pearson
-                    result.rescore_score_rmsd_spearman = result.score_rmsd_spearman
-                    row.update(asdict(result))
-                else:
+                if rescore_method != "none":
                     if not rescore_binary:
                         result.rescore_error = "Smina binary not found"
                     elif result.output_file:
@@ -1958,15 +1947,26 @@ class DockMateVSApp(tk.Tk):
             complete["rescore_method"] = complete["rescore_method"].fillna("none")
             if "rescore_error" not in complete:
                 complete["rescore_error"] = None
+            rescore_columns = (
+                "rescore_score", "rescore_pose_count", "rescore_top1_rmsd",
+                "rescore_top5_rmsd", "rescore_top10_rmsd",
+                "rescore_best_rmsd_rank", "rescore_rmsd_best_score",
+                "rescore_score_rmsd_pearson", "rescore_score_rmsd_spearman",
+            )
             for column in (
                 "top1_rmsd", "top5_rmsd", "top10_rmsd", "best_rmsd_rank",
                 "best_score", "score_rmsd_pearson", "score_rmsd_spearman",
-                "rescore_score", "rescore_top1_rmsd", "rescore_top5_rmsd",
-                "rescore_top10_rmsd", "rescore_best_rmsd_rank",
-                "rescore_score_rmsd_pearson", "rescore_score_rmsd_spearman",
+                *rescore_columns,
             ):
                 if column not in complete:
                     complete[column] = np.nan
+            no_rescore = complete["rescore_method"].astype(str).str.strip().str.lower().isin(
+                {"", "none", "nan", "n/a"}
+            )
+            # Legacy runs copied baseline metrics into the rescored fields when
+            # rescoring was disabled. Treat those values as not applicable.
+            complete.loc[no_rescore, list(rescore_columns)] = np.nan
+            complete.loc[no_rescore, "rescore_error"] = None
             # Missing/unmappable RMSDs use 999.9 internally; never average the
             # sentinel into protocol-quality statistics.
             rmsd_columns = [
@@ -2031,7 +2031,7 @@ class DockMateVSApp(tk.Tk):
                 "",
                 "A protocol condition is one parameter/ranking combination evaluated against a crystal complex. Multiple conditions for the same complex are not independent validation cases.",
                 "",
-                "The baseline columns use the docking engine's original ranking. When Smina/Vina docks with Vina scoring, these are the Vina results; the rescored columns show the selected Smina scoring function on the same poses.",
+                "The baseline columns use the docking engine's original ranking. When Smina/Vina docks with Vina scoring, these are the Vina results; the rescored columns show the selected Smina scoring function on the same poses. Rescored values are N/A when rescoring is none.",
                 "",
                 "| Engine | Box | Rescoring | Water | Exhaust. | Conditions (with RMSD) | Mean best RMSD | Baseline Top-1/5/10 | Rescored Top-1/5/10 | Baseline / rescored best-RMSD rank | Baseline / rescored score | Baseline / rescored Spearman | Failures | Runtime (s) |",
                 "| --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | ---: | ---: |",
@@ -3580,6 +3580,14 @@ class DockMateVSApp(tk.Tk):
 
     @staticmethod
     def _populate_protocol_report(parent: tk.Widget, results_path: Path, report_path: Path) -> None:
+        if results_path.is_file():
+            try:
+                rows = pd.read_csv(results_path).to_dict("records")
+                report_path = DockMateVSApp._write_protocol_report(
+                    rows, report_path.parent
+                )
+            except Exception as exc:
+                logger.warning("Could not refresh protocol report for display: {}", exc)
         if report_path.exists():
             report = report_path.read_text()
         else:
@@ -3703,14 +3711,17 @@ class DockMateVSApp(tk.Tk):
 
     @staticmethod
     def _protocol_chart_data(
-        frame: pd.DataFrame, threshold: float = 2.0
+        frame: pd.DataFrame, threshold: float = 2.0, top_n: int = 1
     ) -> dict:
         """Build continuous-metric chart data for a factorial protocol sweep."""
+        if top_n not in {1, 5, 10}:
+            raise ValueError("Protocol charts support Top-1, Top-5, or Top-10.")
         empty = {
             "pose_ranking_points": [], "rescore_points": [],
             "runtime_points": [], "factor_effects": [],
             "source_rows": len(frame), "condition_count": 0,
             "complex_count": 0, "top1_success": 0, "top5_success": 0,
+            "top10_success": 0, "selected_success": 0, "top_n": top_n,
             "best_pose_success": 0, "rescore_improved": 0,
             "rescore_unchanged": 0, "rescore_worse": 0,
             "median_rescore_delta": None,
@@ -3745,8 +3756,9 @@ class DockMateVSApp(tk.Tk):
         )
 
         metric_columns = (
-            "best_rmsd", "top1_rmsd", "top5_rmsd", "rescore_top1_rmsd",
-            "rescore_top5_rmsd", "runtime_sec",
+            "best_rmsd", "top1_rmsd", "top5_rmsd", "top10_rmsd",
+            "rescore_top1_rmsd", "rescore_top5_rmsd", "rescore_top10_rmsd",
+            "runtime_sec",
         )
         for column in metric_columns:
             if column not in working:
@@ -3809,16 +3821,25 @@ class DockMateVSApp(tk.Tk):
             complete = all_rows[all_rows["_status"] == "complete"]
             method = str(key[2]).strip().lower()
             has_rescore = method not in {"", "none", "nan", "n/a"}
-            selected_top1 = "rescore_top1_rmsd" if has_rescore else "top1_rmsd"
-            selected_top5 = "rescore_top5_rmsd" if has_rescore else "top5_rmsd"
+            selected_columns = {
+                cutoff: (
+                    f"rescore_top{cutoff}_rmsd" if has_rescore
+                    else f"top{cutoff}_rmsd"
+                )
+                for cutoff in (1, 5, 10)
+            }
+            baseline_column = f"top{top_n}_rmsd"
+            rescore_column = f"rescore_top{top_n}_rmsd"
             runtime_values = complete["runtime_sec"].dropna()
             seeds = sorted({_compact(value) for value in all_rows["seed"].dropna().tolist()})
             seed_label = f"s{seeds[0]}" if len(seeds) == 1 else f"{len(seeds)} seeds"
-            selected_top1_values = complete[selected_top1].dropna()
+            selected_values = {
+                cutoff: complete[column].dropna()
+                for cutoff, column in selected_columns.items()
+            }
             best_values = complete["best_rmsd"].dropna()
-            baseline_values = complete["top1_rmsd"].dropna()
-            rescored_values = complete["rescore_top1_rmsd"].dropna()
-            selected_top5_values = complete[selected_top5].dropna()
+            baseline_values = complete[baseline_column].dropna()
+            rescored_values = complete[rescore_column].dropna()
             label = _condition_label(key, seed_label)
             records.append({
                 "key": key,
@@ -3827,19 +3848,21 @@ class DockMateVSApp(tk.Tk):
                 "has_rescore": has_rescore,
                 "rows": complete,
                 "completion": 100.0 * len(complete) / len(all_rows),
-                "top1_rmsd": (
-                    float(selected_top1_values.median())
-                    if not selected_top1_values.empty else None
-                ),
-                "top5_rmsd": (
-                    float(selected_top5_values.median())
-                    if not selected_top5_values.empty else None
+                **{
+                    f"top{cutoff}_rmsd": (
+                        float(values.median()) if not values.empty else None
+                    )
+                    for cutoff, values in selected_values.items()
+                },
+                "selected_rmsd": (
+                    float(selected_values[top_n].median())
+                    if not selected_values[top_n].empty else None
                 ),
                 "best_rmsd": float(best_values.median()) if not best_values.empty else None,
-                "baseline_top1_rmsd": (
+                "baseline_rmsd": (
                     float(baseline_values.median()) if not baseline_values.empty else None
                 ),
-                "rescored_top1_rmsd": (
+                "rescored_rmsd": (
                     float(rescored_values.median())
                     if has_rescore and not rescored_values.empty else None
                 ),
@@ -3854,37 +3877,38 @@ class DockMateVSApp(tk.Tk):
                 "engine": row["engine"], "rescore": row["has_rescore"],
                 "label": row["label"],
             }
-            if row["best_rmsd"] is not None and row["top1_rmsd"] is not None:
+            if row["best_rmsd"] is not None and row["selected_rmsd"] is not None:
                 pose_ranking_points.append({
-                    **common, "x": row["best_rmsd"], "y": row["top1_rmsd"],
+                    **common, "x": row["best_rmsd"], "y": row["selected_rmsd"],
                     "tooltip": (
                         f"{row['label']}\nBest pose: {row['best_rmsd']:.2f} A; "
-                        f"selected Top-1: {row['top1_rmsd']:.2f} A"
+                        f"selected Top-{top_n}: {row['selected_rmsd']:.2f} A"
                     ),
                 })
             if (
                 row["has_rescore"]
-                and row["baseline_top1_rmsd"] is not None
-                and row["rescored_top1_rmsd"] is not None
+                and row["baseline_rmsd"] is not None
+                and row["rescored_rmsd"] is not None
             ):
-                delta = row["rescored_top1_rmsd"] - row["baseline_top1_rmsd"]
+                delta = row["rescored_rmsd"] - row["baseline_rmsd"]
                 rescore_points.append({
                     **common,
-                    "x": row["baseline_top1_rmsd"],
-                    "y": row["rescored_top1_rmsd"],
+                    "x": row["baseline_rmsd"],
+                    "y": row["rescored_rmsd"],
                     "delta": delta,
                     "tooltip": (
-                        f"{row['label']}\nDocking: {row['baseline_top1_rmsd']:.2f} A; "
-                        f"rescored: {row['rescored_top1_rmsd']:.2f} A; "
+                        f"{row['label']}\nDocking Top-{top_n}: "
+                        f"{row['baseline_rmsd']:.2f} A; rescored Top-{top_n}: "
+                        f"{row['rescored_rmsd']:.2f} A; "
                         f"change: {delta:+.2f} A"
                     ),
                 })
-            if row["runtime"] is not None and row["top1_rmsd"] is not None:
+            if row["runtime"] is not None and row["selected_rmsd"] is not None:
                 runtime_points.append({
-                    **common, "x": row["runtime"], "y": row["top1_rmsd"],
+                    **common, "x": row["runtime"], "y": row["selected_rmsd"],
                     "tooltip": (
                         f"{row['label']}\nRuntime: {row['runtime']:.1f} s; "
-                        f"selected Top-1: {row['top1_rmsd']:.2f} A"
+                        f"selected Top-{top_n}: {row['selected_rmsd']:.2f} A"
                     ),
                 })
 
@@ -3902,7 +3926,7 @@ class DockMateVSApp(tk.Tk):
         )
         factor_values: Dict[Tuple[str, str], List[float]] = {}
         for row in records:
-            if row["top1_rmsd"] is None:
+            if row["selected_rmsd"] is None:
                 continue
             for factor, key_index in factor_specs:
                 raw_level = row["key"][key_index]
@@ -3912,7 +3936,7 @@ class DockMateVSApp(tk.Tk):
                     level = "rescored" if row["has_rescore"] else "docking"
                 else:
                     level = _compact(raw_level)
-                factor_values.setdefault((factor, level), []).append(row["top1_rmsd"])
+                factor_values.setdefault((factor, level), []).append(row["selected_rmsd"])
 
         factor_effects = []
         preferred_order = {
@@ -3968,12 +3992,22 @@ class DockMateVSApp(tk.Tk):
             "source_rows": len(frame),
             "condition_count": len(records),
             "complex_count": complex_count,
+            "top_n": top_n,
+            "selected_success": sum(
+                row["selected_rmsd"] is not None
+                and row["selected_rmsd"] < threshold
+                for row in records
+            ),
             "top1_success": sum(
                 row["top1_rmsd"] is not None and row["top1_rmsd"] < threshold
                 for row in records
             ),
             "top5_success": sum(
                 row["top5_rmsd"] is not None and row["top5_rmsd"] < threshold
+                for row in records
+            ),
+            "top10_success": sum(
+                row["top10_rmsd"] is not None and row["top10_rmsd"] < threshold
                 for row in records
             ),
             "best_pose_success": sum(
@@ -3996,26 +4030,27 @@ class DockMateVSApp(tk.Tk):
         except Exception as exc:
             tk.Label(parent, text=f"Could not load chart data: {exc}").pack(anchor="w", padx=10, pady=10)
             return
-        data = self._protocol_chart_data(frame)
-        condition_count = data["condition_count"]
-        note = (
-            f"{data['source_rows']} saved rows represent {condition_count} distinct "
-            f"protocol conditions across {data['complex_count']} crystal complex(es). "
-            f"At 2 A: Top-1 {data['top1_success']}/{condition_count}, "
-            f"Top-5 {data['top5_success']}/{condition_count}, and a generated pose "
-            f"{data['best_pose_success']}/{condition_count}."
+
+        state = {"top_n": 1, "data": self._protocol_chart_data(frame, top_n=1)}
+        note_var = tk.StringVar(master=parent)
+        top_n_var = tk.IntVar(master=parent, value=1)
+        # Keep Tk variables alive for as long as this results tab exists.
+        parent._protocol_top_n_var = top_n_var
+        parent._protocol_note_var = note_var
+
+        header = tk.Frame(parent)
+        header.grid(
+            row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0)
         )
-        if data["rescore_points"]:
-            note += (
-                f" Rescoring improved {data['rescore_improved']}, left "
-                f"{data['rescore_unchanged']} unchanged, and worsened "
-                f"{data['rescore_worse']} conditions; median Top-1 change "
-                f"{data['median_rescore_delta']:+.2f} A."
-            )
+        header.grid_columnconfigure(0, weight=1)
         tk.Label(
-            parent, text=note, anchor="w", justify="left", wraplength=1050,
-            fg="#555555",
-        ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))
+            header, textvariable=note_var, anchor="w", justify="left",
+            wraplength=850, fg="#555555",
+        ).grid(row=0, column=0, sticky="ew")
+        selector = tk.Frame(header)
+        selector.grid(row=0, column=1, sticky="ne", padx=(12, 0))
+        tk.Label(selector, text="Ranking cutoff:").pack(side="left", padx=(0, 4))
+
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_columnconfigure(1, weight=1)
         parent.grid_rowconfigure(1, weight=1)
@@ -4023,66 +4058,109 @@ class DockMateVSApp(tk.Tk):
 
         pose_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
         pose_canvas.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
-        self._install_chart(
-            pose_canvas,
-            lambda: self._draw_protocol_scatter(
+        rescore_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
+        rescore_canvas.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
+        runtime_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
+        runtime_canvas.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
+        effects_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
+        effects_canvas.grid(row=2, column=1, sticky="nsew", padx=10, pady=10)
+
+        def _update_note() -> None:
+            data = state["data"]
+            top_n = state["top_n"]
+            condition_count = data["condition_count"]
+            note = (
+                f"{data['source_rows']} saved rows represent {condition_count} distinct "
+                f"protocol conditions across {data['complex_count']} crystal complex(es). "
+                f"At 2 A: Top-1 {data['top1_success']}/{condition_count}, "
+                f"Top-5 {data['top5_success']}/{condition_count}, Top-10 "
+                f"{data['top10_success']}/{condition_count}, and a generated pose "
+                f"{data['best_pose_success']}/{condition_count}."
+            )
+            if data["rescore_points"]:
+                note += (
+                    f" At Top-{top_n}, rescoring improved {data['rescore_improved']}, "
+                    f"left {data['rescore_unchanged']} unchanged, and worsened "
+                    f"{data['rescore_worse']} conditions; median change "
+                    f"{data['median_rescore_delta']:+.2f} A."
+                )
+            note_var.set(note)
+
+        def _draw_pose() -> None:
+            top_n = state["top_n"]
+            self._draw_protocol_scatter(
                 pose_canvas,
-                "Pose generation vs selected ranking",
-                data["pose_ranking_points"],
+                f"Pose generation vs selected Top-{top_n} ranking",
+                state["data"]["pose_ranking_points"],
                 "Best generated-pose RMSD (A)",
-                "Selected Top-1 RMSD (A)",
+                f"Selected Top-{top_n} RMSD (A)",
                 x_threshold=2.0,
                 y_threshold=2.0,
                 aggregate_points=True,
                 quadrant_labels=True,
-            ),
-        )
+                recovery_label=f"Top-{top_n} recovered",
+            )
 
-        rescore_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
-        rescore_canvas.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
-        self._install_chart(
-            rescore_canvas,
-            lambda: self._draw_protocol_scatter(
+        def _draw_rescore() -> None:
+            top_n = state["top_n"]
+            self._draw_protocol_scatter(
                 rescore_canvas,
-                "Paired Top-1 RMSD: docking vs rescoring",
-                data["rescore_points"],
-                "Docking-ranked Top-1 RMSD (A)",
-                "Rescored Top-1 RMSD (A)",
+                f"Paired Top-{top_n} RMSD: docking vs rescoring",
+                state["data"]["rescore_points"],
+                f"Docking-ranked Top-{top_n} RMSD (A)",
+                f"Rescored Top-{top_n} RMSD (A)",
                 x_threshold=2.0,
                 y_threshold=2.0,
                 diagonal=True,
                 equal_axes=True,
                 aggregate_points=True,
-            ),
-        )
+            )
 
-        runtime_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
-        runtime_canvas.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
-        self._install_chart(
-            runtime_canvas,
-            lambda: self._draw_protocol_scatter(
+        def _draw_runtime() -> None:
+            top_n = state["top_n"]
+            self._draw_protocol_scatter(
                 runtime_canvas,
-                "Accuracy-runtime trade-off",
-                data["runtime_points"],
+                f"Top-{top_n} accuracy-runtime trade-off",
+                state["data"]["runtime_points"],
                 "Recorded docking runtime (s, log scale)",
-                "Selected Top-1 RMSD (A)",
+                f"Selected Top-{top_n} RMSD (A)",
                 y_threshold=2.0,
                 pareto=True,
                 log_x=True,
-            ),
-        )
+            )
 
-        effects_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
-        effects_canvas.grid(row=2, column=1, sticky="nsew", padx=10, pady=10)
-        self._install_chart(
-            effects_canvas,
-            lambda: self._draw_factor_effect_chart(
+        def _draw_effects() -> None:
+            top_n = state["top_n"]
+            self._draw_factor_effect_chart(
                 effects_canvas,
-                "Top-1 RMSD by protocol factor",
-                data["factor_effects"],
+                f"Top-{top_n} RMSD by protocol factor",
+                state["data"]["factor_effects"],
                 threshold=2.0,
-            ),
-        )
+                x_label=f"Selected Top-{top_n} RMSD (A)",
+            )
+
+        draw_callbacks = (_draw_pose, _draw_rescore, _draw_runtime, _draw_effects)
+
+        def _select_top_n() -> None:
+            top_n = int(top_n_var.get())
+            state["top_n"] = top_n
+            state["data"] = self._protocol_chart_data(frame, top_n=top_n)
+            _update_note()
+            for draw in draw_callbacks:
+                draw()
+
+        for cutoff in (1, 5, 10):
+            ttk.Radiobutton(
+                selector, text=f"Top-{cutoff}", variable=top_n_var,
+                value=cutoff, command=_select_top_n,
+            ).pack(side="left", padx=2)
+
+        _update_note()
+        for canvas, draw in zip(
+            (pose_canvas, rescore_canvas, runtime_canvas, effects_canvas),
+            draw_callbacks,
+        ):
+            self._install_chart(canvas, draw)
 
     def _render_results(self, summary: dict, rmsd_values: List[float]) -> None:
         self._clear_frame(self.results_summary_tab)
@@ -4630,6 +4708,7 @@ class DockMateVSApp(tk.Tk):
         aggregate_points: bool = False,
         quadrant_labels: bool = False,
         log_x: bool = False,
+        recovery_label: str = "Top-1 recovered",
     ) -> None:
         """Render a responsive condition-level scatter plot with hover details."""
         canvas.delete("all")
@@ -4786,7 +4865,7 @@ class DockMateVSApp(tk.Tk):
                 anchor="nw", fill="#666666", font=("TkDefaultFont", 8),
             )
             canvas.create_text(
-                left + 8, _y(y_threshold) + 8, text="Top-1 recovered",
+                left + 8, _y(y_threshold) + 8, text=recovery_label,
                 anchor="nw", fill="#356B39", font=("TkDefaultFont", 8),
             )
             canvas.create_text(
@@ -4887,6 +4966,7 @@ class DockMateVSApp(tk.Tk):
         title: str,
         rows: List[dict],
         threshold: float = 2.0,
+        x_label: str = "Selected Top-1 RMSD (A)",
     ) -> None:
         """Show median, IQR, and range for each protocol factor level."""
         canvas.delete("all")
@@ -4980,7 +5060,7 @@ class DockMateVSApp(tk.Tk):
                 fill="#333333", font=("TkDefaultFont", 7),
             )
         canvas.create_text(
-            left + plot_width / 2, height - 4, text="Selected Top-1 RMSD (A)",
+            left + plot_width / 2, height - 4, text=x_label,
             anchor="s", font=("TkDefaultFont", 8),
         )
 
@@ -9206,7 +9286,9 @@ class DockMateVSApp(tk.Tk):
         if not excel_path.exists():
             raise ValueError("Excel file not found")
 
-        df = pd.read_excel(excel_path)
+        # Keep PDB identifiers such as 1E66 as text instead of allowing pandas
+        # to interpret them as scientific notation.
+        df = pd.read_excel(excel_path, dtype=object)
         if df.empty:
             raise ValueError("Excel file is empty")
 

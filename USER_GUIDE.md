@@ -172,12 +172,14 @@ dockmate-vs doctor
 Configuration paths are resolved relative to the YAML file. The supplied files
 `examples/campaign.protocol.yml` and `examples/campaign.screen.yml` document all
 common settings. The protocol campaign uses
-`examples/esr1_protocol_development_1XP1.xlsx`; the screening campaign uses the
-separate `examples/esr1_enrichment_smoke_test_1XP1.xlsx` workbook. Its explicit
-software-test labels exercise enrichment reporting but must not be interpreted
-as biological activity annotations or protocol validation. For container
-execution, keep the campaign file, workbook, and output path below the current
-working directory and run:
+`examples/dude_aces_protocol_development_1E66.xlsx`; the screening campaign
+uses `examples/dude_aces_screening_subset_1E66_seed42.xlsx`. The latter contains
+20 DUD-E clustered ACES actives and 200 property-matched decoys selected with a
+fixed seed before docking. DUD-E matched decoys are presumed non-binders rather
+than experimentally confirmed inactive compounds. The compact subset exercises
+assay-benchmark reporting and must not be presented as a new scoring-function
+validation. For container execution, keep the campaign file, workbook, and
+output path below the current working directory and run:
 
 ```bash
 scripts/dockmate-docker protocol examples/campaign.protocol.yml

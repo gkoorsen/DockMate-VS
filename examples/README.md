@@ -1,49 +1,68 @@
 # Examples
 
-## ESR1 native-pose protocol development
+The public examples use the DUD-E acetylcholinesterase target (ACES) and the
+1E66/HUX co-crystal structure. They demonstrate protocol development followed
+by labelled active/decoy screening without presenting DockMate-VS as a new
+scoring function.
 
-`esr1_protocol_development_1XP1.xlsx` is a minimal public example for the
-Protocol Development tab. It contains the ESR1 structure 1XP1 and its native
-ligand AIH. The application retrieves the public structure during preflight.
+## ACES protocol development
 
-Suggested exploratory settings:
+`dude_aces_protocol_development_1E66.xlsx` contains the native 1E66/HUX
+pose-recovery control. `campaign.protocol.yml` evaluates 24 conditions:
 
-- engine: Vina;
-- box: 6 A margin around AIH;
-- water handling: retain all;
-- exhaustiveness: 8;
-- modes: 20;
-- seed: 42;
-- maximum tautomers: 2;
-- maximum conformers: 2.
+- Smina with Vina docking scores;
+- 4 A and 6 A co-crystal box margins;
+- remove-all, retain-all, and selective water handling;
+- exhaustiveness 8 and 16;
+- original Vina ranking and Vinardo score-only rescoring;
+- seed 42, 20 modes, and at most two tautomers and conformers.
+
+Run locally or with the core container:
+
+```bash
+dockmate-vs protocol --config examples/campaign.protocol.yml
+scripts/dockmate-docker protocol examples/campaign.protocol.yml
+```
+
+The run writes to `results/dude_aces_protocol/`. Use the Summary and Charts
+tabs to compare pose recovery, ranking, runtime, and protocol-factor effects.
+The chart selector switches all four plots between Top-1, Top-5, and Top-10.
+
+## ACES screening benchmark
+
+`dude_aces_screening_subset_1E66_seed42.xlsx` contains 20 clustered DUD-E ACES
+actives and 200 DUD-E property-matched decoys. The compounds were selected with
+a fixed random seed before docking and were not selected using DockMate-VS
+scores. All compounds share the 1E66 receptor and HUX-defined site, so the GUI
+recognizes this as a single-receptor assay benchmark and displays ROC,
+precision-recall, score-distribution, and cumulative-recovery charts.
+
+Run locally or with the core container:
+
+```bash
+dockmate-vs screen --config examples/campaign.screen.yml
+scripts/dockmate-docker screen examples/campaign.screen.yml
+```
+
+The starter screening protocol uses Smina, Vina scoring, a 4 A co-crystal
+margin, removed waters, exhaustiveness 8, 20 modes, and seed 42. It can be
+amended after inspecting the protocol-development results. The run writes to
+`results/dude_aces_screen/`.
+
+## Source and interpretation
+
+- Target page: <https://dude.docking.org/targets/aces>
+- DUD-E publication: <https://doi.org/10.1021/jm300687e>
+- Receptor structure: <https://www.rcsb.org/structure/1E66>
+- Rebuild command: `python scripts/prepare_dude_aces_examples.py`
+
+The workbook Metadata sheets record source checksums, selection parameters,
+label semantics, and interpretation limits. DUD-E matched decoys are
+physicochemically matched, topologically dissimilar presumed non-binders; they
+are not experimentally confirmed inactive compounds. This compact subset is a
+reproducible software-workflow example rather than a definitive assessment of
+Vina, Smina, Vinardo, DUD-E, or ACES virtual-screening performance.
 
 Scores and exact poses can vary with docking-engine version, dependency builds,
-CPU architecture, and preparation tools. The example is intended to verify the
-workflow and inspect pose-recovery outputs, not to reproduce a bit-identical
-score.
-
-The workbook does not redistribute LIT-PCBA assay compounds. Dataset downloads
-must follow the source provider's terms.
-
-## ESR1 enrichment smoke test
-
-`esr1_enrichment_smoke_test_1XP1.xlsx` is a separate, runnable example for the
-Screening tab. It docks the native 1XP1 ligand as one positive control and six
-illustrative negative controls whose structures and PubChem CIDs are recorded
-in the workbook. Their explicit `label` values exercise control
-classification, ranking, ROC AUC, and enrichment reporting.
-
-This deliberately small workbook is a software smoke test, not a docking-
-protocol validation benchmark. The negative labels are illustrative test
-labels and are not claims of biological inactivity at ESR1. Results therefore
-show that the enrichment workflow operates, not that the selected protocol is
-scientifically validated. The workbook contains no LIT-PCBA assay records.
-
-## Headless campaign files
-
-- `campaign.protocol.yml` runs a small protocol sweep on the example workbook.
-- `campaign.screen.yml` runs the enrichment smoke-test workbook with a frozen
-  single protocol.
-
-Run either with the local environment (`dockmate-vs protocol|screen --config`)
-or the optional core container (`scripts/dockmate-docker protocol|screen`).
+protein preparation, CPU architecture, and random seed. The generated run
+manifest records the local execution environment.

@@ -97,33 +97,35 @@ Headless campaigns use YAML or JSON configuration files:
 ```bash
 dockmate-vs protocol --config examples/campaign.protocol.yml
 dockmate-vs screen --config examples/campaign.screen.yml
-dockmate-vs report --run results/example_screen
+dockmate-vs report --run results/dude_aces_screen
 dockmate-vs doctor
 ```
 
 ## First reproducible example
 
 1. Open the **Protocol Development** tab.
-2. Select `examples/esr1_protocol_development_1XP1.xlsx`.
-3. Choose Vina, a 6 A co-crystal margin, retained waters, exhaustiveness 8,
-   20 modes, and seed 42.
+2. Select `examples/dude_aces_protocol_development_1E66.xlsx`.
+3. Use the settings in `examples/campaign.protocol.yml`, or run that campaign
+   directly with the headless command shown above.
 4. Select a clean output directory and start the run.
-5. Review best-pose, Top-1/5/10, and best-pose-rank results.
+5. Review best-pose, Top-1/5/10, best-pose-rank, rescoring, and factor-effect
+   results.
 
-The workbook contains one public PDB/native-ligand pair and downloads the
-structural input before docking. It contains no redistributed LIT-PCBA assay
-compounds. A successful run writes a protocol manifest, condition-level CSV,
-Markdown summary, recommendations, and charts below the selected output
-directory. Exact scores and poses can vary with the docking-engine build,
-preparation tools, hardware, and random seed; this example verifies workflow
-execution rather than a fixed numerical result.
+The protocol workbook contains the public DUD-E ACES 1E66/HUX native-pose
+control. A successful run writes a protocol manifest, condition-level CSV,
+Markdown summary, recommendations, and interactive charts below the selected
+output directory.
 
-For an enrichment smoke test, select
-`examples/esr1_enrichment_smoke_test_1XP1.xlsx` in the **Screening** tab or run
-`dockmate-vs screen --config examples/campaign.screen.yml`. Its labelled native
-positive and six illustrative controls exercise ranking, ROC AUC, and
-enrichment reporting without redistributing LIT-PCBA assay records. The test
-labels verify software behavior and are not biological activity claims.
+For enrichment, select
+`examples/dude_aces_screening_subset_1E66_seed42.xlsx` in the **Screening** tab
+or run `dockmate-vs screen --config examples/campaign.screen.yml`. It contains a
+fixed, score-independent subset of 20 DUD-E clustered actives and 200 DUD-E
+property-matched decoys at one receptor. Matched decoys are presumed
+non-binders, not experimentally confirmed inactives. This compact campaign
+demonstrates the complete workflow rather than establishing a new scoring-
+function benchmark. Exact scores and poses can vary with docking-engine and
+preparation-tool builds, hardware, and random seed. See `examples/README.md` for
+source checksums, reconstruction, and interpretation guidance.
 
 ## Input models
 

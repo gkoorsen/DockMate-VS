@@ -24,3 +24,12 @@ Python and Conda dependencies listed in `pyproject.toml`, `environment.yml`, and
 `docker/environment.yml` are not relicensed by DockMate-VS. Package metadata and
 licence files installed in the environment provide the exact notices for the
 versions resolved during a build.
+
+The two ACES example workbooks contain a compact, deterministically selected
+subset of active and matched-decoy structures from DUD-E. DUD-E describes the
+database as free to use; the source data remain attributable to the Irwin and
+Shoichet Laboratories and are not relicensed under DockMate-VS's MIT licence.
+See https://dude.docking.org/targets/aces and cite Mysinger MM, Carchia M, Irwin
+JJ, Shoichet BK, *J. Med. Chem.* 2012, https://doi.org/10.1021/jm300687e. The
+workbook Metadata sheets and `scripts/prepare_dude_aces_examples.py` record the
+source checksums and deterministic subset procedure.
