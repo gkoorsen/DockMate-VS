@@ -254,7 +254,9 @@ class EnrichmentAnalysis:
             fpr_partial = np.append(fpr_partial, fraction)
             tpr_partial = np.append(tpr_partial, tpr_at_fraction)
         
-        pauc = np.trapz(tpr_partial, fpr_partial)
+        # NumPy 2.x provides trapezoid; retain trapz support for older releases.
+        _trap = getattr(np, "trapezoid", None) or np.trapz
+        pauc = _trap(tpr_partial, fpr_partial)
         
         # Normalize: random = 0.5, perfect = 1.0
         pauc_max = fraction  # Max possible pAUC
