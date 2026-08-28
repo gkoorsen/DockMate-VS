@@ -125,7 +125,13 @@ def test_external_tool_installer_rejects_classic_conda(tmp_path):
         }
     )
     result = subprocess.run(
-        [BASH, str(INSTALLER), "--dry-run"],
+        [
+            BASH,
+            str(INSTALLER),
+            "--package-manager",
+            str(conda),
+            "--dry-run",
+        ],
         check=False,
         capture_output=True,
         text=True,
