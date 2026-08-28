@@ -32,6 +32,18 @@ than choosing a winner from negligible RMSD differences. Compare those
 candidates in separate labelled enrichment runs; do not pool their scores into
 one AUC.
 
+### Example protocol-development charts
+
+![DockMate-VS ACES protocol-development charts](images/dude_aces_protocol_development_e8_charts.png)
+
+This illustrative GUI result is from a reduced 12-condition repeat of the ACES
+workflow using exhaustiveness 8: two engines, two box margins, three water
+treatments, and Vinardo score-only rescoring. All conditions recovered the
+native pose below 2 A. Because most conditions returned fewer than five
+non-redundant poses, the Top-5 and Top-10 views should not be interpreted as
+independent evidence of ranking performance. The bundled configuration also
+tests exhaustiveness 16 and therefore evaluates 24 conditions.
+
 ## ACES screening benchmark
 
 `dude_aces_screening_subset_1E66_seed42.xlsx` contains 20 clustered DUD-E ACES
