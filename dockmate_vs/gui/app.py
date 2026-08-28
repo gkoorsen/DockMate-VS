@@ -67,6 +67,10 @@ ADDITIVES_ONLY = KNOWN_ADDITIVES - COFACTORS
 FILTERS_PATH = Path.home() / ".dockmate-vs" / "filters.json"
 LEGACY_FILTERS_PATH = Path.home() / ".docking_platform_gui" / "redock_filters.json"
 
+PROTOCOL_RMSD_EQUIVALENCE_TOLERANCE = 0.25
+PROTOCOL_SUCCESS_EQUIVALENCE_TOLERANCE = 0.10
+PROTOCOL_CANDIDATE_LIMIT = 8
+
 
 def _executable_default(explicit: Optional[str], command: str) -> str:
     """Prefer an explicit path, then PATH discovery, then the command name."""
@@ -159,7 +163,9 @@ class DockMateVSApp(tk.Tk):
         self.resizable(True, True)
 
         self.file_var = tk.StringVar()
-        self.output_var = tk.StringVar(value=str(Path("output/dockmate_vs").resolve()))
+        default_output = Path("output/dockmate_vs").resolve()
+        self.output_var = tk.StringVar(value=str(default_output))
+        self._output_user_selected = False
         self.execution_backend_var = tk.StringVar(value="local")
         self.docker_image_var = tk.StringVar(value="dockmate-vs:local")
         self.docker_platform_var = tk.StringVar(value="linux/amd64")
@@ -300,6 +306,9 @@ class DockMateVSApp(tk.Tk):
         tk.Label(container, text="Output directory:").grid(row=row, column=0, sticky="w")
         output_entry = tk.Entry(container, textvariable=self.output_var)
         output_entry.grid(row=row, column=1, sticky="ew", padx=5)
+        output_entry.bind(
+            "<KeyRelease>", lambda _event: setattr(self, "_output_user_selected", True)
+        )
         self._register_busy_widget(output_entry)
         output_btn = tk.Button(container, text="Browse", command=self._safe_call(self._browse_output))
         output_btn.grid(row=row, column=2, padx=5)
@@ -466,7 +475,10 @@ class DockMateVSApp(tk.Tk):
         self._build_pose_viewer_tab()
         tk.Label(
             self.protocol_tab,
-            text="Benchmark protocol combinations on control actives only; completed conditions resume automatically.",
+            text=(
+                "Qualify near-equivalent pose-recovery candidates on control actives. "
+                "Compare candidates in labelled enrichment runs before freezing one protocol."
+            ),
             anchor="w"
         ).grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
         tk.Label(self.protocol_tab, text="Water handling:").grid(row=1, column=0, sticky="w")
@@ -529,8 +541,9 @@ class DockMateVSApp(tk.Tk):
 
         tk.Label(
             self.screening_tab,
-            text=("Dock controls and screening samples with one validated protocol. "
-                  "Controls are used for enrichment; unlabelled samples are excluded from AUC."),
+            text=("Dock a labelled enrichment set or unknown compounds with one protocol. "
+                  "Compare candidate protocols in separate labelled runs, then freeze one "
+                  "protocol for unknown screening. Unlabelled samples are excluded from AUC."),
             anchor="w", justify="left", wraplength=850
         ).pack(anchor="w")
 
@@ -995,6 +1008,10 @@ class DockMateVSApp(tk.Tk):
         )
         if path:
             self.file_var.set(path)
+            if not self._output_user_selected:
+                stem = self._safe_case_id(Path(path).stem).lower()
+                suggested = (Path("output") / f"dockmate_vs_{stem}").resolve()
+                self.output_var.set(str(suggested))
             self._update_pair_count()
             self._set_status(f"Loaded: {Path(path).name}")
 
@@ -1002,6 +1019,7 @@ class DockMateVSApp(tk.Tk):
         path = filedialog.askdirectory(title="Select output directory")
         if path:
             self.output_var.set(path)
+            self._output_user_selected = True
             self._set_status("Output directory updated")
 
     def _browse_rdock(self) -> None:
@@ -1694,14 +1712,125 @@ class DockMateVSApp(tk.Tk):
         self.after(200, self._poll_queue)
         self._set_status(f"Protocol sweep started ({total} conditions)")
 
+    @classmethod
+    def _protocol_resume_signature(
+        cls, actives: List[Dict[str, str]], config: dict
+    ) -> dict:
+        """Describe inputs that must remain fixed when extending a sweep."""
+        single = config.get("single", {})
+        invariant_single_keys = (
+            "num_modes", "energy_range", "scoring", "apo_site_mode",
+            "site_definition_mode", "site_residues", "size_override",
+            "ligand_variant_mode", "max_tautomers", "max_conformers",
+        )
+        active_cases = sorted(
+            (
+                str(pair.get("pdb_id") or ""),
+                str(pair.get("site_ligand") or ""),
+                str(pair.get("chain") or ""),
+                str(pair.get("dock_name") or ""),
+                str(pair.get("smiles") or ""),
+                str(pair.get("target_name") or ""),
+            )
+            for pair in actives
+        )
+        return cls._json_normalize({
+            "input_file": str(Path(config["input_file"]).expanduser().resolve()),
+            "threshold": config.get("threshold"),
+            "active_cases": active_cases,
+            "single": {
+                key: single.get(key) for key in invariant_single_keys
+            },
+        })
+
+    @classmethod
+    def _protocol_resume_incompatibility(
+        cls,
+        manifest_path: Path,
+        results_path: Path,
+        manifest: dict,
+        actives: List[Dict[str, str]],
+    ) -> Optional[str]:
+        """Return a reason when existing protocol results belong to another run."""
+        if not results_path.exists():
+            return None
+
+        current_pairs = {
+            (str(pair.get("pdb_id") or ""), str(pair.get("site_ligand") or ""))
+            for pair in actives
+        }
+        try:
+            existing = cls._read_results_csv(results_path)
+            if {"pdb_id", "ligand_resname"}.issubset(existing.columns):
+                existing_pairs = {
+                    (str(row.pdb_id), str(row.ligand_resname))
+                    for row in existing[["pdb_id", "ligand_resname"]].itertuples(index=False)
+                    if pd.notna(row.pdb_id) and pd.notna(row.ligand_resname)
+                }
+                foreign_pairs = existing_pairs - current_pairs
+                if foreign_pairs:
+                    labels = ", ".join(
+                        f"{pdb}/{ligand}" for pdb, ligand in sorted(foreign_pairs)
+                    )
+                    return f"existing results contain other crystal complexes: {labels}"
+        except Exception as exc:
+            return f"existing protocol results could not be validated: {exc}"
+
+        if not manifest_path.exists():
+            return "existing protocol results have no manifest and cannot be validated"
+        try:
+            previous = json.loads(manifest_path.read_text())
+        except Exception as exc:
+            return f"existing protocol manifest could not be read: {exc}"
+
+        current_input = str(Path(manifest["input_file"]).expanduser().resolve())
+        previous_input = previous.get("input_file")
+        if previous_input:
+            previous_input = str(Path(previous_input).expanduser().resolve())
+            if previous_input != current_input:
+                return (
+                    "existing results were created from a different workbook: "
+                    f"{previous_input}"
+                )
+
+        previous_signature = previous.get("resume_signature")
+        current_signature = manifest.get("resume_signature")
+        if previous_signature is None:
+            return "existing protocol manifest predates safe resume metadata"
+        if cls._json_normalize(
+            previous_signature
+        ) != cls._json_normalize(current_signature):
+            return "the workbook cases or non-swept docking settings have changed"
+        return None
+
     def _run_protocol_worker(self, actives: List[Dict[str, str]], config: dict) -> None:
         output_dir = config["output_dir"] / "protocol_development"
         output_dir.mkdir(parents=True, exist_ok=True)
         results_path = output_dir / "protocol_development_results.csv"
         manifest_path = output_dir / "protocol_development_manifest.json"
-        rows = pd.read_csv(results_path).to_dict("records") if results_path.exists() else []
-
         sweep = config["protocol_sweep"]
+        manifest = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "software": self._software_provenance(config),
+            "input_file": config["input_file"],
+            "protocol_sweep": sweep,
+            "single_protocol": config["single"],
+            "active_count": len(actives),
+            "resume_signature": self._protocol_resume_signature(actives, config),
+        }
+        incompatible = self._protocol_resume_incompatibility(
+            manifest_path, results_path, manifest, actives
+        )
+        if incompatible:
+            self._queue.put((
+                "protocol_incompatible", str(output_dir), incompatible
+            ))
+            return
+        rows = (
+            self._read_results_csv(results_path).to_dict("records")
+            if results_path.exists() else []
+        )
+
         default_box = sweep["box_definitions"][0]["label"]
 
         def condition_identity(row: dict) -> Tuple[str, str, str, str, str, str, int, int]:
@@ -1758,14 +1887,7 @@ class DockMateVSApp(tk.Tk):
             except Exception as exc:
                 self._queue.put(("preflight_failed", str(exc)))
                 return
-        self._write_json_atomic(manifest_path, {
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "software": self._software_provenance(config),
-            "input_file": config["input_file"],
-            "protocol_sweep": sweep,
-            "single_protocol": config["single"],
-            "active_count": len(actives),
-        })
+        self._write_json_atomic(manifest_path, manifest)
 
         needs_rescore = any(method != "none" for method in sweep["rescore_methods"])
         rescore_binary = (
@@ -1920,6 +2042,181 @@ class DockMateVSApp(tk.Tk):
         self._queue.put(("protocol_done", results_path, report_path))
 
     @staticmethod
+    def _select_pose_recovery_candidates(
+        recommendations: List[dict],
+        threshold: float,
+        rmsd_tolerance: float = PROTOCOL_RMSD_EQUIVALENCE_TOLERANCE,
+        success_tolerance: float = PROTOCOL_SUCCESS_EQUIVALENCE_TOLERANCE,
+        candidate_limit: int = PROTOCOL_CANDIDATE_LIMIT,
+    ) -> Dict[str, dict]:
+        """Return near-equivalent pose-recovery candidates for each target."""
+        selected_by_target: Dict[str, dict] = {}
+        targets = sorted(
+            {str(item["target"]) for item in recommendations}, key=str
+        )
+
+        def _number(item: dict, key: str, default: float = float("inf")) -> float:
+            try:
+                value = float(item.get(key))
+            except (TypeError, ValueError):
+                return default
+            return value if np.isfinite(value) else default
+
+        def _ranking_key(item: dict) -> tuple:
+            return (
+                -_number(item, "top1_success", 0.0),
+                -_number(item, "top5_success", 0.0),
+                _number(item, "mean_rank"),
+                _number(item, "mean_best"),
+                _number(item, "mean_top1"),
+                _number(item, "mean_runtime"),
+                0 if item.get("ranking") == "baseline" else 1,
+                str(item.get("engine")), str(item.get("box")),
+                str(item.get("water")), str(item.get("rescore")),
+            )
+
+        for target in targets:
+            target_items = [
+                dict(item) for item in recommendations
+                if str(item["target"]) == target
+                and np.isfinite(_number(item, "top1_success"))
+                and np.isfinite(_number(item, "mean_top1"))
+                and np.isfinite(_number(item, "mean_best"))
+                and np.isfinite(_number(item, "mean_rank"))
+            ]
+            if not target_items:
+                continue
+
+            # Baseline and rescored rankings remain separate enrichment
+            # candidates even when redocking produced only one pose. Their
+            # scores can rank different compounds differently in the next stage.
+            effective_groups: Dict[tuple, List[dict]] = {}
+            for item in target_items:
+                is_rescored = item.get("ranking") == "rescored"
+                item["apply_rescore"] = is_rescored
+                item["effective_scoring"] = (
+                    f"rescore:{item.get('rescore')}" if is_rescored else "original"
+                )
+                item["screening_settings"] = {
+                    "engine": item.get("engine"),
+                    "box_definition": item.get("box"),
+                    "water_handling": item.get("water"),
+                    "exhaustiveness": item.get("exhaustiveness"),
+                    "rescore_enabled": is_rescored,
+                    "rescore_method": item.get("rescore") if is_rescored else "none",
+                }
+                effective_key = (
+                    item.get("engine"), item.get("box"), item.get("water"),
+                    item.get("exhaustiveness"), item["effective_scoring"],
+                )
+                effective_groups.setdefault(effective_key, []).append(item)
+            target_items = []
+            for duplicates in effective_groups.values():
+                representative = min(duplicates, key=_ranking_key)
+                representative["source_rescore_methods"] = sorted({
+                    str(item.get("rescore") or "none") for item in duplicates
+                })
+                target_items.append(representative)
+
+            best_top1_success = max(_number(item, "top1_success", 0.0) for item in target_items)
+            success_pool = [
+                item for item in target_items
+                if _number(item, "top1_success", 0.0)
+                >= best_top1_success - success_tolerance
+            ]
+            best_top5_success = max(
+                _number(item, "top5_success", 0.0) for item in success_pool
+            )
+            success_pool = [
+                item for item in success_pool
+                if _number(item, "top5_success", 0.0)
+                >= best_top5_success - success_tolerance
+            ]
+            best_mean_top1 = min(_number(item, "mean_top1") for item in success_pool)
+            best_mean_best = min(_number(item, "mean_best") for item in success_pool)
+            best_mean_rank = min(_number(item, "mean_rank") for item in success_pool)
+            equivalent = [
+                item for item in success_pool
+                if _number(item, "mean_top1") <= best_mean_top1 + rmsd_tolerance
+                and _number(item, "mean_best") <= best_mean_best + rmsd_tolerance
+                and _number(item, "mean_rank") <= best_mean_rank + 1.0
+            ]
+            if not equivalent:
+                equivalent = [min(target_items, key=_ranking_key)]
+
+            equivalent.sort(key=_ranking_key)
+
+            # Keep the shortlist manageable while preserving the best eligible
+            # representative for each scoring, water, engine, box, and sampling
+            # level. Scoring is considered first so original and rescored
+            # alternatives can be compared during labelled enrichment.
+            shortlist = [equivalent[0]]
+            represented = {
+                factor: {equivalent[0].get(factor)}
+                for factor in (
+                    "effective_scoring", "water", "engine", "box",
+                    "exhaustiveness",
+                )
+            }
+            for factor in represented:
+                factor_values = sorted(
+                    {item.get(factor) for item in equivalent}, key=lambda value: str(value)
+                )
+                for value in factor_values:
+                    if value in represented[factor] or len(shortlist) >= candidate_limit:
+                        continue
+                    choice = min(
+                        (item for item in equivalent if item.get(factor) == value),
+                        key=_ranking_key,
+                    )
+                    if choice not in shortlist:
+                        shortlist.append(choice)
+                        for name in represented:
+                            represented[name].add(choice.get(name))
+            shortlist.sort(key=_ranking_key)
+            coverage_complete = all(
+                represented[factor]
+                == {item.get(factor) for item in equivalent}
+                for factor in represented
+            )
+
+            qualified = best_top1_success >= 0.80
+            status = "qualified" if qualified else "exploratory"
+            for index, item in enumerate(shortlist, 1):
+                item["candidate_id"] = f"C{index}"
+                item["candidate_status"] = status
+                item["top1_rmsd_delta"] = (
+                    _number(item, "mean_top1") - best_mean_top1
+                )
+
+            evidence_cases = max(int(item.get("cases") or 0) for item in shortlist)
+            complex_count = max(int(item.get("complexes") or 0) for item in shortlist)
+            seed_count = max(int(item.get("seeds") or 0) for item in shortlist)
+            if evidence_cases >= 6 and complex_count >= 2 and seed_count >= 2:
+                confidence = "high"
+            elif evidence_cases >= 3:
+                confidence = "moderate"
+            else:
+                confidence = "low"
+            selected_by_target[target] = {
+                "target": target,
+                "status": status,
+                "confidence": confidence,
+                "evidence_cases": evidence_cases,
+                "complexes": complex_count,
+                "seeds": seed_count,
+                "best_top1_success": best_top1_success,
+                "eligible_protocol_count": len(equivalent),
+                "candidate_limit": candidate_limit,
+                "factor_coverage_complete": coverage_complete,
+                "candidates": shortlist,
+                "rmsd_equivalence_tolerance": rmsd_tolerance,
+                "success_equivalence_tolerance": success_tolerance,
+                "rmsd_threshold": threshold,
+            }
+        return selected_by_target
+
+    @staticmethod
     def _write_protocol_report(
         rows: List[dict], output_dir: Path, threshold: float = 2.0
     ) -> Path:
@@ -1936,7 +2233,27 @@ class DockMateVSApp(tk.Tk):
                     "",
                 ])
         if complete.empty:
+            failed = (
+                frame[frame["status"] == "failed"].copy()
+                if not frame.empty and "status" in frame.columns else frame.iloc[0:0]
+            )
             lines.append("No protocol conditions completed successfully.")
+            if not failed.empty:
+                lines.extend([
+                    f"- Failed conditions: {len(failed)}",
+                    "",
+                    "| Failure | Conditions |",
+                    "| --- | ---: |",
+                ])
+                if "error_message" in failed.columns:
+                    failures = (
+                        failed["error_message"].fillna("Unspecified failure")
+                        .astype(str).str.strip().replace("", "Unspecified failure")
+                        .value_counts()
+                    )
+                    for error, count in failures.items():
+                        compact_error = " ".join(str(error).split()).replace("|", "\\|")
+                        lines.append(f"| {compact_error} | {int(count)} |")
         else:
             if "engine" not in complete:
                 complete["engine"] = "unknown"
@@ -2112,50 +2429,125 @@ class DockMateVSApp(tk.Tk):
                     top5 = group[top5_column].dropna()
                     if top1.empty:
                         continue
+                    recommendation_complex_columns = [
+                        column for column in (
+                            "pdb_id", "ligand_resname", "ligand_chain"
+                        ) if column in group.columns
+                    ]
+                    recommendation_complexes = (
+                        group[recommendation_complex_columns].drop_duplicates().shape[0]
+                        if recommendation_complex_columns else len(top1)
+                    )
+                    recommendation_seeds = (
+                        int(group["seed"].dropna().nunique())
+                        if "seed" in group.columns else 0
+                    )
                     recommendations.append({
                         "target": protocol_key[0], "engine": protocol_key[1],
                         "box": protocol_key[2], "rescore": protocol_key[3],
-                        "water": protocol_key[4], "exhaustiveness": protocol_key[5],
+                        "water": protocol_key[4],
+                        "exhaustiveness": (
+                            None if pd.isna(protocol_key[5])
+                            else int(protocol_key[5])
+                        ),
                         "ranking": ranking, "cases": len(top1),
+                        "complexes": recommendation_complexes,
+                        "seeds": recommendation_seeds,
                         "top1_success": float((top1 < threshold).mean()),
                         "top5_success": float((top5 < threshold).mean()) if not top5.empty else 0.0,
                         "mean_top1": float(top1.mean()),
                         "mean_best": float(group["best_rmsd"].mean()),
                         "mean_rank": float(group[rank_column].mean()),
+                        "mean_runtime": float(group["runtime_sec"].mean()),
                     })
 
-            best_by_target = {}
-            for candidate in recommendations:
-                key = (
-                    -candidate["top1_success"], -candidate["top5_success"],
-                    candidate["mean_rank"], candidate["mean_best"], candidate["mean_top1"],
-                )
-                current = best_by_target.get(candidate["target"])
-                if current is None or key < current[0]:
-                    best_by_target[candidate["target"]] = (key, candidate)
-
+            candidate_targets = DockMateVSApp._select_pose_recovery_candidates(
+                recommendations, threshold
+            )
             lines.extend([
                 "",
-                "## Recommended protocol per target",
+                "## Pose-recovery candidate protocols per target",
                 "",
-                "Recommendations prioritize Top-1 success, Top-5 success, best-pose rank, mean best RMSD, and then mean Top-1 RMSD. This prevents tiny differences between failed Top-1 poses from outranking a protocol that places the native-like pose earlier. Recommendations validate pose recovery only; confirm enrichment with matched decoys before screening.",
+                (
+                    "Protocol Development qualifies a candidate set; it does not force a "
+                    "single winner from negligible RMSD differences. Candidates retain "
+                    f"near-best success and are within {PROTOCOL_RMSD_EQUIVALENCE_TOLERANCE:.2f} A "
+                    "of the best mean Top-1 and best-pose RMSD, with a best-pose rank no "
+                    "more than one place worse."
+                ),
+                (
+                    f"The shortlist contains at most {PROTOCOL_CANDIDATE_LIMIT} protocols "
+                    "and preserves the best eligible representatives of alternative scoring, "
+                    "water, engine, box, and exhaustiveness levels. Original and rescored "
+                    "scores remain separate because they can rank compounds differently even "
+                    "when they rank redocked poses identically."
+                ),
                 "",
-                "| Target | Engine | Box | Water | Exhaust. | Ranking | Rescorer | Conditions | Top-1 success | Top-5 success | Mean Top-1 RMSD | Mean best RMSD | Mean best-pose rank |",
-                "| --- | --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+                (
+                    "Qualified candidates should be compared in separate labelled enrichment "
+                    "runs. The final protocol is frozen only after considering ROC AUC, "
+                    "average precision, early enrichment, failures, score pathologies, and "
+                    "runtime. Do not pool scores from different candidate protocols into one AUC."
+                ),
+                "",
             ])
-            for target in sorted(best_by_target, key=lambda value: str(value)):
-                item = best_by_target[target][1]
-                rescorer = item["rescore"] if item["ranking"] == "rescored" else "original score"
-                exhaustiveness_label = (
-                    "N/A" if pd.isna(item["exhaustiveness"])
-                    else str(int(item["exhaustiveness"]))
+            for target, payload in candidate_targets.items():
+                coverage = (
+                    "all eligible factor levels represented"
+                    if payload["factor_coverage_complete"]
+                    else "candidate limit reached before all factor levels were represented"
                 )
                 lines.append(
-                    f"| {target} | {item['engine']} | {item['box']} | {item['water']} | "
-                    f"{exhaustiveness_label} | {item['ranking']} | {rescorer} | "
-                    f"{item['cases']} | {item['top1_success']:.1%} | {item['top5_success']:.1%} | "
-                    f"{item['mean_top1']:.2f} | {item['mean_best']:.2f} | {item['mean_rank']:.2f} |"
+                    f"- {target}: {len(payload['candidates'])} {payload['status']} "
+                    f"candidate(s) shortlisted from {payload['eligible_protocol_count']} "
+                    f"eligible protocol(s); {coverage}; selection confidence "
+                    f"{payload['confidence']} "
+                    f"({payload['complexes']} complex(es), {payload['seeds']} seed(s), "
+                    f"{payload['evidence_cases']} condition case(s))."
                 )
+            lines.extend([
+                "",
+                "| Candidate | Status | Target | Engine | Box | Water | Exhaust. | Ranking | Rescorer | Conditions | Top-1 success | Top-5 success | Mean Top-1 RMSD | Delta from best | Mean best RMSD | Mean best-pose rank |",
+                "| --- | --- | --- | --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ])
+            for target, payload in candidate_targets.items():
+                for item in payload["candidates"]:
+                    rescorer = (
+                        item["rescore"]
+                        if item["apply_rescore"] else "disabled"
+                    )
+                    exhaustiveness_label = (
+                        "N/A" if pd.isna(item["exhaustiveness"])
+                        else str(int(item["exhaustiveness"]))
+                    )
+                    lines.append(
+                        f"| {item['candidate_id']} | {item['candidate_status']} | "
+                        f"{target} | {item['engine']} | {item['box']} | {item['water']} | "
+                        f"{exhaustiveness_label} | {item['ranking']} | {rescorer} | "
+                        f"{item['cases']} | {item['top1_success']:.1%} | "
+                        f"{item['top5_success']:.1%} | {item['mean_top1']:.2f} | "
+                        f"+{item['top1_rmsd_delta']:.2f} | {item['mean_best']:.2f} | "
+                        f"{item['mean_rank']:.2f} |"
+                    )
+
+            candidate_payload = {
+                "schema_version": 1,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "purpose": "pose_recovery_candidates_for_labelled_enrichment",
+                "rmsd_threshold": threshold,
+                "rmsd_equivalence_tolerance": PROTOCOL_RMSD_EQUIVALENCE_TOLERANCE,
+                "success_equivalence_tolerance": PROTOCOL_SUCCESS_EQUIVALENCE_TOLERANCE,
+                "candidate_limit": PROTOCOL_CANDIDATE_LIMIT,
+                "targets": list(candidate_targets.values()),
+                "guidance": (
+                    "Run candidates separately on the same labelled enrichment set, then "
+                    "freeze one protocol before screening unknown compounds."
+                ),
+            }
+            DockMateVSApp._write_json_atomic(
+                output_dir / "protocol_development_candidates.json",
+                candidate_payload,
+            )
         report_path.write_text("\n".join(lines) + "\n")
         return report_path
 
@@ -2208,6 +2600,20 @@ class DockMateVSApp(tk.Tk):
                     f"{error}\n\nNo docking calculations were started."
                 )
                 self._set_status("Input download failed; docking not started")
+                self._set_busy(False)
+                return
+            elif msg_type == "protocol_incompatible":
+                _, output_dir, reason = msg
+                self.progress_dialog.destroy()
+                self.progress_dialog = None
+                messagebox.showerror(
+                    "Protocol output already in use",
+                    "This Protocol Development folder belongs to a different "
+                    "campaign and cannot be resumed safely.\n\n"
+                    f"Folder: {output_dir}\nReason: {reason}\n\n"
+                    "Choose a new output directory. Existing results were not modified."
+                )
+                self._set_status("Select a new output directory for this protocol campaign")
                 self._set_busy(False)
                 return
             elif msg_type == "docker_failed":
@@ -3092,6 +3498,21 @@ class DockMateVSApp(tk.Tk):
     def _json_normalize(cls, value: object):
         return json.loads(json.dumps(value, default=cls._json_default))
 
+    @staticmethod
+    def _read_results_csv(path: Path) -> pd.DataFrame:
+        """Read identifiers as text so PDB IDs such as 1E66 stay intact."""
+        return pd.read_csv(
+            path,
+            dtype={
+                "pdb_id": str,
+                "ligand_resname": str,
+                "ligand_chain": str,
+                "target_name": str,
+                "dock_name": str,
+                "case_id": str,
+            },
+        )
+
     @classmethod
     def _write_json_atomic(cls, path: Path, payload: object) -> None:
         temporary = path.with_name(f".{path.name}.tmp")
@@ -3427,7 +3848,7 @@ class DockMateVSApp(tk.Tk):
             return
         rmsd_values = []
         if csv_path.exists():
-            df = pd.read_csv(csv_path)
+            df = self._read_results_csv(csv_path)
             if "best_rmsd" in df.columns:
                 rmsd_values = [v for v in df["best_rmsd"].tolist() if isinstance(v, (int, float)) and v < 900]
 
@@ -3582,7 +4003,7 @@ class DockMateVSApp(tk.Tk):
     def _populate_protocol_report(parent: tk.Widget, results_path: Path, report_path: Path) -> None:
         if results_path.is_file():
             try:
-                rows = pd.read_csv(results_path).to_dict("records")
+                rows = DockMateVSApp._read_results_csv(results_path).to_dict("records")
                 report_path = DockMateVSApp._write_protocol_report(
                     rows, report_path.parent
                 )
@@ -3669,7 +4090,7 @@ class DockMateVSApp(tk.Tk):
             return
         rmsd_values = []
         if csv_path.exists():
-            df = pd.read_csv(csv_path)
+            df = self._read_results_csv(csv_path)
             if "best_rmsd" in df.columns:
                 rmsd_values = [
                     v for v in df["best_rmsd"].tolist()
@@ -4026,7 +4447,7 @@ class DockMateVSApp(tk.Tk):
             tk.Label(parent, text="Protocol results CSV not found.").pack(anchor="w", padx=10, pady=10)
             return
         try:
-            frame = pd.read_csv(results_path)
+            frame = self._read_results_csv(results_path)
         except Exception as exc:
             tk.Label(parent, text=f"Could not load chart data: {exc}").pack(anchor="w", padx=10, pady=10)
             return
@@ -7444,7 +7865,7 @@ class DockMateVSApp(tk.Tk):
             messagebox.showwarning("Pose viewer", "Results CSV not found.")
             return
 
-        df = pd.read_csv(csv_path)
+        df = self._read_results_csv(csv_path)
         if df.empty or "output_file" not in df.columns:
             messagebox.showwarning("Pose viewer", "No docked poses found in results.")
             return

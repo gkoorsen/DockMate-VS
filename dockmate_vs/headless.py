@@ -258,8 +258,10 @@ class _EventSink:
             if marker != self._last_progress:
                 print(f"[{current}/{total}] {label}", flush=True)
                 self._last_progress = marker
-        elif kind == "preflight_failed":
+        elif kind in {"preflight_failed", "protocol_incompatible"}:
             self.error = str(event[1])
+            if kind == "protocol_incompatible":
+                self.error = f"{event[2]} ({event[1]})"
             self.terminal_event = event
         elif kind in {"done", "protocol_done", "cancelled"}:
             self.terminal_event = event
@@ -324,7 +326,7 @@ def run_campaign(config_path: Path, mode: str) -> Path:
     if not expected.is_file():
         raise RuntimeError(f"Campaign ended without producing {expected}")
     if mode == "protocol":
-        frame = pd.read_csv(expected)
+        frame = DockMateVSApp._read_results_csv(expected)
         if frame.empty or "status" not in frame or not (frame["status"] == "complete").any():
             raise RuntimeError(
                 "Protocol campaign produced no successfully completed conditions; "
@@ -374,14 +376,14 @@ def regenerate_report(run_path: Path, threshold: Optional[float] = None) -> Path
 
     runner = HeadlessDockMateRunner()
     if result_path.name == "protocol_development_results.csv":
-        rows = pd.read_csv(result_path).to_dict("records")
+        rows = DockMateVSApp._read_results_csv(result_path).to_dict("records")
         return runner._write_protocol_report(rows, result_path.parent, threshold or 2.0)
 
     if result_path.suffix.lower() == ".json":
         payload = json.loads(result_path.read_text())
         rows = payload.get("results", [])
     else:
-        rows = pd.read_csv(result_path).to_dict("records")
+        rows = DockMateVSApp._read_results_csv(result_path).to_dict("records")
     results = _results_from_rows(rows)
 
     summary_path = result_path.with_name("redock_summary.json")

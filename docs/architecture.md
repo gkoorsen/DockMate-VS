@@ -79,6 +79,8 @@ The `protocol_development/` directory contains:
 
 - `protocol_development_manifest.json` with the sweep and software provenance;
 - `protocol_development_results.csv` with one row per expanded condition;
+- `protocol_development_candidates.json` with near-equivalent pose-recovery
+  candidates for subsequent labelled enrichment runs;
 - the generated Markdown summary, recommendations, and charts.
 
 Baseline columns describe the docking engine's original pose ordering. Rescored
@@ -93,7 +95,10 @@ release; incompatible schema changes must be documented in `CHANGELOG.md`.
 A campaign resumes only when its saved manifest is compatible with the current
 input and settings. Completed cases with their expected output files are skipped;
 failed or incomplete cases are retried. Changing a preparation, docking, or
-scoring condition invalidates reuse for the affected campaign.
+scoring condition invalidates reuse for the affected campaign. Changing a
+non-swept Protocol Development setting also invalidates reuse. Protocol
+campaigns reject result files containing crystal complexes from another
+workbook rather than merging unrelated targets.
 
 For publication, retain the input checksum, manifest, raw results, summaries,
 external-tool versions, git revision, seed, CPU count, failures, and data-source

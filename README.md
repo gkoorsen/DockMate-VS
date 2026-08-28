@@ -108,13 +108,14 @@ dockmate-vs doctor
 3. Use the settings in `examples/campaign.protocol.yml`, or run that campaign
    directly with the headless command shown above.
 4. Select a clean output directory and start the run.
-5. Review best-pose, Top-1/5/10, best-pose-rank, rescoring, and factor-effect
-   results.
+5. Review best-pose, Top-1/5/10, best-pose-rank, rescoring, factor effects, and
+   the near-equivalent pose-recovery candidate set.
 
 The protocol workbook contains the public DUD-E ACES 1E66/HUX native-pose
 control. A successful run writes a protocol manifest, condition-level CSV,
-Markdown summary, recommendations, and interactive charts below the selected
-output directory.
+Markdown summary, machine-readable candidate protocols, and interactive charts
+below the selected output directory. Compare qualified candidates in separate
+labelled enrichment runs and freeze one protocol before screening unknowns.
 
 For enrichment, select
 `examples/dude_aces_screening_subset_1E66_seed42.xlsx` in the **Screening** tab

@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 
 import dockmate_vs.gui.app as redock_module
@@ -343,6 +344,138 @@ def test_changed_scoring_configuration_disables_resume(tmp_path):
     )
 
     assert resumed == []
+
+
+def _protocol_resume_config(tmp_path, workbook, num_modes=20):
+    return {
+        "input_file": str(workbook),
+        "threshold": 2.0,
+        "single": {
+            "num_modes": num_modes,
+            "energy_range": 3.0,
+            "scoring": "vina",
+            "apo_site_mode": "auto",
+            "site_definition_mode": "auto",
+            "site_residues": "",
+            "size_override": None,
+            "ligand_variant_mode": "best",
+            "max_tautomers": 2,
+            "max_conformers": 2,
+        },
+    }
+
+
+def test_protocol_resume_rejects_rows_from_another_crystal_complex(tmp_path):
+    app = object.__new__(DockMateVSApp)
+    workbook = tmp_path / "aces.xlsx"
+    workbook.write_text("placeholder")
+    actives = [{"pdb_id": "1E66", "site_ligand": "HUX"}]
+    config = _protocol_resume_config(tmp_path, workbook)
+    manifest = {
+        "input_file": str(workbook),
+        "resume_signature": app._protocol_resume_signature(actives, config),
+    }
+    results = tmp_path / "protocol_development_results.csv"
+    pd.DataFrame([{
+        "pdb_id": "1XP1", "ligand_resname": "AIH", "status": "complete"
+    }]).to_csv(results, index=False)
+
+    reason = app._protocol_resume_incompatibility(
+        tmp_path / "protocol_development_manifest.json",
+        results,
+        manifest,
+        actives,
+    )
+
+    assert "other crystal complexes: 1XP1/AIH" in reason
+
+
+def test_protocol_resume_allows_same_campaign_to_extend_sweep(tmp_path):
+    app = object.__new__(DockMateVSApp)
+    workbook = tmp_path / "aces.xlsx"
+    workbook.write_text("placeholder")
+    actives = [{"pdb_id": "1E66", "site_ligand": "HUX"}]
+    config = _protocol_resume_config(tmp_path, workbook)
+    manifest = {
+        "input_file": str(workbook),
+        "resume_signature": app._protocol_resume_signature(actives, config),
+    }
+    app._write_json_atomic(tmp_path / "protocol_development_manifest.json", manifest)
+    results = tmp_path / "protocol_development_results.csv"
+    pd.DataFrame([{
+        "pdb_id": "1E66", "ligand_resname": "HUX", "status": "complete"
+    }]).to_csv(results, index=False)
+
+    reason = app._protocol_resume_incompatibility(
+        tmp_path / "protocol_development_manifest.json",
+        results,
+        manifest,
+        actives,
+    )
+
+    assert reason is None
+
+
+def test_protocol_resume_rejects_changed_non_swept_settings(tmp_path):
+    app = object.__new__(DockMateVSApp)
+    workbook = tmp_path / "aces.xlsx"
+    workbook.write_text("placeholder")
+    actives = [{"pdb_id": "1E66", "site_ligand": "HUX"}]
+    old_config = _protocol_resume_config(tmp_path, workbook, num_modes=10)
+    new_config = _protocol_resume_config(tmp_path, workbook, num_modes=20)
+    old_manifest = {
+        "input_file": str(workbook),
+        "resume_signature": app._protocol_resume_signature(actives, old_config),
+    }
+    current_manifest = {
+        "input_file": str(workbook),
+        "resume_signature": app._protocol_resume_signature(actives, new_config),
+    }
+    app._write_json_atomic(
+        tmp_path / "protocol_development_manifest.json", old_manifest
+    )
+    results = tmp_path / "protocol_development_results.csv"
+    pd.DataFrame([{
+        "pdb_id": "1E66", "ligand_resname": "HUX", "status": "complete"
+    }]).to_csv(results, index=False)
+
+    reason = app._protocol_resume_incompatibility(
+        tmp_path / "protocol_development_manifest.json",
+        results,
+        current_manifest,
+        actives,
+    )
+
+    assert reason == "the workbook cases or non-swept docking settings have changed"
+
+
+def test_protocol_resume_rejects_legacy_manifest_without_signature(tmp_path):
+    app = object.__new__(DockMateVSApp)
+    workbook = tmp_path / "aces.xlsx"
+    workbook.write_text("placeholder")
+    actives = [{"pdb_id": "1E66", "site_ligand": "HUX"}]
+    config = _protocol_resume_config(tmp_path, workbook)
+    current_manifest = {
+        "input_file": str(workbook),
+        "resume_signature": app._protocol_resume_signature(actives, config),
+    }
+    app._write_json_atomic(
+        tmp_path / "protocol_development_manifest.json",
+        {"input_file": str(workbook)},
+    )
+    results = tmp_path / "protocol_development_results.csv"
+    pd.DataFrame([{
+        "pdb_id": "1E66", "ligand_resname": "HUX", "status": "complete"
+    }]).to_csv(results, index=False)
+
+    reason = app._protocol_resume_incompatibility(
+        tmp_path / "protocol_development_manifest.json",
+        results,
+        current_manifest,
+        actives,
+    )
+
+    assert reason == "existing protocol manifest predates safe resume metadata"
 
 
 @pytest.mark.parametrize("completed,has_output", [(False, True), (True, False)])

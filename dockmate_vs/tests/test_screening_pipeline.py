@@ -254,7 +254,7 @@ def test_protocol_report_groups_engine_and_box_definition(tmp_path: Path):
     assert "| smina | margin:4 | none | remove_all | 8 |" in report
     assert "| vina | 20x20x20 | none | retain_all | 16 |" in report
     assert "## Pose recovery across conditions" in report
-    assert "## Recommended protocol per target" in report
+    assert "## Pose-recovery candidate protocols per target" in report
 
 
 def test_protocol_report_marks_disabled_rescoring_as_not_applicable(tmp_path: Path):
@@ -344,9 +344,99 @@ def test_protocol_recommendation_prefers_native_pose_rank_over_failed_top1_delta
     ]
 
     report = DockMateVSApp._write_protocol_report(rows, tmp_path).read_text()
-    recommendation = report.split("## Recommended protocol per target", 1)[1]
+    recommendation = report.split(
+        "## Pose-recovery candidate protocols per target", 1
+    )[1]
 
-    assert "| ESR1 | vina | margin:6 | retain_all | 8 | baseline |" in recommendation
+    assert (
+        "| C1 | exploratory | ESR1 | vina | margin:6 | retain_all | 8 | baseline |"
+        in recommendation
+    )
+
+
+def test_protocol_report_keeps_near_equivalent_conditions_as_candidates(tmp_path: Path):
+    common = {
+        "status": "complete", "pdb_id": "1E66", "ligand_resname": "HUX",
+        "target_name": "DUD-E ACES", "engine": "vina",
+        "box_definition": "margin:6", "rescore_method": "none",
+        "exhaustiveness": 8, "seed": 42, "success": True,
+        "runtime_sec": 8.0, "top5_rmsd": 0.42, "best_rmsd_rank": 1,
+    }
+    rows = [
+        {
+            **common, "water_handling": "retain_all", "best_rmsd": 0.415,
+            "top1_rmsd": 0.415,
+        },
+        {
+            **common, "water_handling": "selective", "best_rmsd": 0.509,
+            "top1_rmsd": 0.509,
+        },
+        {
+            **common, "water_handling": "remove_all", "best_rmsd": 0.564,
+            "top1_rmsd": 0.564,
+        },
+    ]
+
+    report = DockMateVSApp._write_protocol_report(rows, tmp_path).read_text()
+    candidates = json.loads(
+        (tmp_path / "protocol_development_candidates.json").read_text()
+    )
+
+    assert (
+        "3 qualified candidate(s) shortlisted from 3 eligible protocol(s)"
+        in report
+    )
+    assert "| C1 | qualified | DUD-E ACES |" in report
+    assert "| C2 | qualified | DUD-E ACES |" in report
+    assert "| C3 | qualified | DUD-E ACES |" in report
+    assert len(candidates["targets"][0]["candidates"]) == 3
+    assert candidates["targets"][0]["confidence"] == "low"
+    assert candidates["guidance"].startswith("Run candidates separately")
+
+
+def test_protocol_candidates_keep_original_and_rescored_scoring_separate(tmp_path: Path):
+    rows = [{
+        "status": "complete", "pdb_id": "1E66", "ligand_resname": "HUX",
+        "target_name": "DUD-E ACES", "engine": "smina",
+        "box_definition": "margin:4", "rescore_method": "vinardo",
+        "water_handling": "retain_all", "exhaustiveness": 8, "seed": 42,
+        "success": True, "runtime_sec": 8.0, "best_rmsd": 0.5,
+        "top1_rmsd": 0.5, "top5_rmsd": 0.5, "top10_rmsd": 0.5,
+        "best_rmsd_rank": 1, "best_score": -8.0,
+        "rescore_score": -8.2, "rescore_pose_count": 1,
+        "rescore_top1_rmsd": 0.5, "rescore_top5_rmsd": 0.5,
+        "rescore_top10_rmsd": 0.5, "rescore_best_rmsd_rank": 1,
+    }]
+
+    DockMateVSApp._write_protocol_report(rows, tmp_path)
+    candidates = json.loads(
+        (tmp_path / "protocol_development_candidates.json").read_text()
+    )["targets"][0]["candidates"]
+
+    assert len(candidates) == 2
+    assert {item["effective_scoring"] for item in candidates} == {
+        "original", "rescore:vinardo"
+    }
+    assert {item["apply_rescore"] for item in candidates} == {False, True}
+
+
+def test_protocol_report_explains_failed_only_campaign(tmp_path: Path):
+    rows = [
+        {
+            "status": "failed", "pdb_id": "1E66", "ligand_resname": "HUX",
+            "error_message": "Smina binary not found: smina",
+        },
+        {
+            "status": "failed", "pdb_id": "1E66", "ligand_resname": "HUX",
+            "error_message": "Smina binary not found: smina",
+        },
+    ]
+
+    report = DockMateVSApp._write_protocol_report(rows, tmp_path).read_text()
+
+    assert "No protocol conditions completed successfully." in report
+    assert "- Failed conditions: 2" in report
+    assert "| Smina binary not found: smina | 2 |" in report
 
 
 def test_protocol_markdown_parser_extracts_renderable_table():

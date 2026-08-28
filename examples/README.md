@@ -27,6 +27,10 @@ scripts/dockmate-docker protocol examples/campaign.protocol.yml
 The run writes to `results/dude_aces_protocol/`. Use the Summary and Charts
 tabs to compare pose recovery, ranking, runtime, and protocol-factor effects.
 The chart selector switches all four plots between Top-1, Top-5, and Top-10.
+The summary can retain several near-equivalent pose-recovery candidates rather
+than choosing a winner from negligible RMSD differences. Compare those
+candidates in separate labelled enrichment runs; do not pool their scores into
+one AUC.
 
 ## ACES screening benchmark
 

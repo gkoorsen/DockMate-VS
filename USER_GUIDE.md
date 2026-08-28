@@ -283,14 +283,32 @@ the input library.
 A low best RMSD with a poor Top-1 RMSD means sampling found a native-like pose
 but scoring did not prioritize it. Do not report this as Top-1 validation.
 
+Protocol Development reports **pose-recovery candidate protocols**, not an
+artificial single winner. Conditions with near-best success and RMSD values
+within 0.25 A of the best result are retained as an equivalence group. The
+report builds a shortlist of up to eight protocols while preserving eligible
+alternatives in scoring, water handling, engine, box, and exhaustiveness. It
+keeps original and rescored scoring as separate candidates because enrichment
+rankings can differ even when pose rankings do not. The report records selection
+confidence; one crystal complex and one seed provide low-confidence evidence
+even when RMSD is excellent. The machine-readable
+`protocol_development_candidates.json` contains the same shortlist.
+
+Run near-equivalent candidates as separate campaigns against the same labelled
+active/inactive or active/decoy enrichment set. Keep the compound set fixed and
+compare ROC AUC, average precision, EF1/5/10, failures, score pathologies, and
+runtime. Do not pool scores from different candidate protocols into one AUC.
+
 ## 6. Screening
 
 ### Freeze the protocol
 
-Record the selected receptor, binding site, water treatment, engine, scoring,
-box, exhaustiveness, random seed, number of modes, energy range, ligand-variant
-limits, and CPU count before screening. Do not select a favourable receptor or
-seed after examining screening labels.
+Labelled enrichment is the second protocol-selection stage. Freeze one protocol
+only after comparing the pose-recovery candidates on the labelled set. Record
+the selected receptor, binding site, water treatment, engine, scoring, box,
+exhaustiveness, random seed, number of modes, energy range, ligand-variant
+limits, and CPU count before screening unknown compounds. Do not select a
+favourable receptor or seed after examining unknown-compound outcomes.
 
 ### Run and resume
 
@@ -300,7 +318,10 @@ continuous network connectivity.
 
 Progress is saved incrementally. Restart with the same input and compatible
 settings to skip completed cases. Changed docking or scoring settings invalidate
-reuse. Failed cases and missing output files are retried.
+reuse. Failed cases and missing output files are retried. Protocol Development
+also verifies workbook identity, crystal complexes, and non-swept settings
+before resuming; an incompatible output directory is refused rather than mixed
+with the new campaign.
 
 ### Interpret enrichment
 
