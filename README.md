@@ -19,6 +19,8 @@ questions while producing resumable, machine-readable campaigns.
   docking pose onto its native ligand.
 - Evaluate labelled controls per receptor structure and target while keeping
   unlabelled compounds out of enrichment statistics.
+- Describe a complete batch campaign in one reviewable spreadsheet, including
+  explicit compound-receptor pairings for multi-receptor docking.
 - Resume compatible campaigns and retry missing or failed outputs.
 - Inspect native, best-score, and best-RMSD poses and export CSV, JSON, Markdown,
   charts, and viewer files.
@@ -129,6 +131,14 @@ preparation-tool builds, hardware, and random seed. See `examples/README.md` for
 source checksums, reconstruction, and interpretation guidance.
 
 ## Input models
+
+The spreadsheet is a campaign definition rather than a one-compound form. Each
+row identifies a receptor structure, binding-site reference, compound, and
+optional experimental class. This makes large batches auditable and allows the
+same library to be applied to several receptor structures by listing each
+compound-receptor pairing explicitly. Reports retain the receptor and target
+grouping instead of assuming that scores from different structures are directly
+comparable.
 
 The application accepts two complementary labelled-data models:
 

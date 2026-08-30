@@ -34,8 +34,8 @@ package. On macOS, use a Python build that includes Tk support.
 | AutoDock Vina or Smina | Docking | At least one is required | [Vina](https://autodock-vina.readthedocs.io/en/latest/installation.html) / [Smina](https://github.com/mwojcikowski/smina) |
 | Smina | Score-only rescoring | Required only when rescoring is enabled | [Smina](https://github.com/mwojcikowski/smina) |
 | Open Babel (`obabel`) | Rigid receptor and ligand PDBQT conversion | Required by current Vina/Smina workflows | [Open Babel](https://openbabel.org/docs/Installation/install.html) |
-| OpenMM and PDBFixer | Protein repair | Optional but recommended | [OpenMM](https://docs.openmm.org/latest/userguide/application/01_getting_started.html#installing-openmm) / [PDBFixer](https://github.com/openmm/pdbfixer#installation) |
-| Reduce and PROPKA | Hydrogen/protonation preparation | Optional pipeline components | [Reduce](https://github.com/rlabduke/reduce#building) / [PROPKA](https://propka.readthedocs.io/en/latest/installation.html) |
+| OpenMM and PDBFixer | Missing-atom and missing-loop repair | Optional but recommended | [OpenMM](https://docs.openmm.org/latest/userguide/application/01_getting_started.html#installing-openmm) / [PDBFixer](https://github.com/openmm/pdbfixer#installation) |
+| Reduce and PROPKA | Optional H-bond optimization and pKa diagnostics | Optional pipeline components; see molecular preparation below | [Reduce](https://github.com/rlabduke/reduce#building) / [PROPKA](https://propka.readthedocs.io/en/latest/installation.html) |
 | rDock | Alternative docking engine | Optional | [rDock](https://rdock.github.io/installation/) |
 | Meeko (`mk_prepare_receptor.py`) | Flexible-receptor PDBQT preparation | Optional | [Meeko](https://meeko.readthedocs.io/en/develop/installation.html) |
 | fpocket | Apo binding-site prediction | Optional | [fpocket](https://github.com/Discngine/fpocket#installing) |
@@ -194,6 +194,30 @@ contracts, and the supported extension points for engines and analyses.
 Column names are matched case-insensitively where supported. Recommended names
 are shown below.
 
+### Why a spreadsheet?
+
+The workbook is an explicit campaign manifest, not merely a convenient way to
+enter one ligand. Each row associates a compound with a receptor structure,
+binding-site definition, optional experimental label, and provenance notes.
+This supports reproducible batch experiments without requiring users to write
+Python code:
+
+- hundreds or thousands of docking cases can be queued in one reviewed file;
+- one compound library can be docked against several conformations, structures,
+  sites, or targets;
+- matched controls and assay labels remain attached to the receptor against
+  which they are valid; and
+- the original workbook can be archived with the manifest and results as an
+  independently inspectable description of the campaign.
+
+Multi-receptor docking is explicit rather than implicit: repeat a compound on
+one row for every `PDB_ID`/site-ligand combination to be evaluated. This avoids
+an accidental Cartesian product and makes the intended jobs visible before the
+run. DockMate-VS expands those rows into cases, reuses compatible repeated
+native controls, and reports results by receptor structure and target. Raw
+scores from different receptor structures are not assumed to share a common
+scale.
+
 ### Shared receptor columns
 
 | Column | Meaning |
@@ -245,7 +269,106 @@ Screening workflow and its sample size counts unlabelled compounds only. Every
 labelled or matched active/decoy control is retained, while sampled unknowns are
 distributed across receptor structures using the supplied seed.
 
-## 5. Protocol Development
+## 5. Molecular preparation
+
+This section documents the version 0.1 implementation, not a generic docking
+preparation recipe. The implementation is in
+[`dockmate_vs/preparation/protein.py`](dockmate_vs/preparation/protein.py) and
+[`dockmate_vs/preparation/ligand.py`](dockmate_vs/preparation/ligand.py).
+User-selected preparation settings and external-tool versions are captured in
+the run manifest; its git commit identifies fixed implementation defaults.
+Prepared files are retained inside each case directory for inspection.
+
+### Receptor preparation
+
+For a co-crystal campaign, preflight obtains the requested PDB structure before
+docking begins. The receptor pipeline then performs the following operations:
+
+1. BioPython parses the PDB file. PDBFixer attempts to identify missing
+   residues, add missing heavy atoms, and model missing loops when supported.
+   If this optional repair fails, the event is logged and the original parsed
+   structure is retained rather than silently aborting the whole campaign.
+2. The selected crystallographic-water policy is applied to `HOH` and `WAT`
+   residues. **Remove all** deletes them; **retain all** preserves them;
+   **selective** retains waters satisfying protein-contact, occupancy, and
+   optional B-factor criteria. Current campaign defaults require a water oxygen
+   to be within 3.0 A of protein atoms, make at least two such contacts, and
+   have occupancy at least 0.5. The lower-level API can additionally require a
+   water to be within 3.0 A of a supplied site centre; the standard GUI/headless
+   co-crystal path does not currently pass that optional centre to receptor
+   preparation.
+3. The co-crystal ligand named in the workbook's `Ligand` column is removed from
+   the receptor before docking. The original ligand is extracted separately to
+   define the box and, in Protocol Development, provide the RMSD reference.
+4. The pipeline attempts PROPKA analysis at pH 7.4, PDBFixer hydrogen addition,
+   and Reduce H-bond optimization when those optional tools are available.
+   Missing optional tools and non-fatal failures are written to the run log.
+5. Open Babel converts the cleaned receptor to a rigid PDBQT. Only the first
+   model and blank/`A` alternate locations are retained for this conversion.
+   The current rigid conversion deliberately uses the heavy-atom-cleaned
+   structure to avoid Open Babel valence failures; PROPKA output is therefore
+   diagnostic and must not be interpreted as an explicitly curated PDBQT
+   protonation-state assignment.
+
+The selected site ligand is stripped automatically, but unrelated hetero groups
+and additional protein chains are not universally deleted. The **Filters** tab
+controls which workbook cases are admitted; it is not a general receptor-cleaning
+editor. Inspect `receptor_prepared.pdbqt`, especially for metals, cofactors,
+alternate sites, unusual residues, or systems requiring a specific protonation
+state. Such choices are target-specific protocol variables and should be
+validated rather than assumed.
+
+### Ligand preparation
+
+DockMate-VS prepares each populated SMILES with RDKit and Open Babel:
+
+1. RDKit parses the SMILES, keeps the largest disconnected fragment, and applies
+   its charge normalizer. This can remove salts and neutralize removable formal
+   charges.
+2. RDKit enumerates tautomers and retains at most **Max tautomers** after a
+   deterministic heuristic ranking that favours aromatic, carbonyl, and amide
+   forms and penalizes charge separation and selected enol/iminol patterns.
+3. Explicit hydrogens and three-dimensional coordinates are generated with
+   ETKDGv3 using preparation seed 42. Rigid molecules produce one conformer;
+   flexible molecules are oversampled, MMFF94s-minimized, and reduced to at most
+   **Max conformers** by greedy 0.5 A RMSD-diversity selection beginning with
+   the lowest-energy conformer.
+4. Each retained tautomer/conformer is minimized with MMFF94s when parameters
+   are available and converted from SDF to PDBQT by Open Babel. The normal
+   partial-charge order is Gasteiger, MMFF94, then an explicitly warned
+   charge-model-free fallback. Metal-containing ligands skip tautomer
+   enumeration and use the Open Babel `qeq`, `qtpie`, and `eem` charge fallbacks.
+5. The selected ligand-variant policy determines how many prepared variants are
+   docked. Adaptive selection uses rotatable-bond and heavy-atom counts; the
+   fast option uses the lowest MMFF-energy variant; thorough/all modes dock a
+   larger subset. Screening always chooses the final retained result by docking
+   score, never by native-pose RMSD.
+
+Version 0.1 does **not** enumerate ligand ionization states as a function of pH.
+The configured pH range is reserved for future use, and the normalized SMILES
+charge state is the starting state. Curate input charge states externally when
+ionization is important, and inspect the saved `ligand_variants/*.pdbqt` files.
+The ligand cache key includes the molecule identifier, input SMILES, and relevant
+preparation limits, so repeated compatible compounds can avoid regeneration.
+
+### Preparation records
+
+Useful case-level files include:
+
+| Path | Meaning |
+| --- | --- |
+| `receptor_prepared.pdbqt` | Rigid receptor supplied to Vina/Smina |
+| `receptor_prepared.pdb` | PDB representation used by viewers and other engines |
+| `crystal_ligand.pdb` | Extracted site ligand and RMSD reference when applicable |
+| `ligand_variants/*.pdbqt` | Prepared tautomer/conformer candidates |
+| `variants/<variant>/docked.pdbqt` | Engine poses for a docked variant |
+| `run_manifest.json` | Frozen settings, versions, paths, and case identities |
+
+Always inspect representative prepared receptors and ligands before a large
+campaign. A completed conversion proves file compatibility, not chemical
+correctness.
+
+## 6. Protocol Development
 
 ### Select conditions
 
@@ -260,15 +383,14 @@ The protocol sweep can vary:
 Rescoring does not redock the ligand. It evaluates the selected scoring function
 on every saved pose and compares baseline and rescored rankings.
 
-### Ligand variants
+### Ligand variant limits
 
 Set explicit maximum tautomer and conformer counts. Large values multiply the
 number of dockings. Begin with two tautomers and two conformers for exploration,
 then justify any increase. Screening must select variants by score, not RMSD.
 
-Version 0.1 applies RDKit largest-fragment selection and charge normalization,
-then enumerates tautomers and conformers. It does not perform pH-aware ligand
-ionization-state enumeration. Inspect prepared forms for charge-sensitive
+The detailed preparation and variant-selection rules are described in
+**Molecular preparation** above. Inspect prepared forms for charge-sensitive
 compounds and document any externally curated charge-state policy used to create
 the input library.
 
@@ -299,7 +421,7 @@ active/inactive or active/decoy enrichment set. Keep the compound set fixed and
 compare ROC AUC, average precision, EF1/5/10, failures, score pathologies, and
 runtime. Do not pool scores from different candidate protocols into one AUC.
 
-## 6. Screening
+## 7. Screening
 
 ### Freeze the protocol
 
@@ -338,7 +460,7 @@ with the new campaign.
 Unknown compounds have no experimental pose and therefore no RMSD. Assay
 benchmark labels support enrichment but do not create reference poses.
 
-## 7. Results and inspection
+## 8. Results and inspection
 
 The Results window renders summary sections and charts from the raw result
 records. Reopening a run regenerates the summary with current reporting logic.
@@ -363,7 +485,7 @@ LigPlot+ interaction diagrams use the pose identified by the selected metric.
 For screening compounds, inspect the selected best-score or rescored pose rather
 than a nonexistent best-RMSD pose.
 
-## 8. Reproducibility checklist
+## 9. Reproducibility checklist
 
 Before publishing a campaign, retain:
 
@@ -375,7 +497,7 @@ Before publishing a campaign, retain:
 - hardware, CPU count, campaign wall time, and random seed;
 - data-source DOI, cleaning script, and redistribution terms.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### Docking executable not found
 
