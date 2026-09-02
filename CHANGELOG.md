@@ -3,7 +3,7 @@
 All notable changes to DockMate-VS are documented here. The project
 uses semantic versioning after the initial public release.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-09-01
 
 ### Added
 
@@ -39,6 +39,14 @@ uses semantic versioning after the initial public release.
   Version 0.1 explicitly does not provide pH-aware ionization-state enumeration.
 - Protocol Development suggests a workbook-specific output directory and
   refuses to merge campaigns with incompatible inputs or non-swept settings.
+- Screening and Protocol Development now prepare each unique receptor/water
+  condition once and materialize identical case-local copies for deterministic
+  multi-compound campaigns.
+- PDBFixer missing-atom placement uses a fixed preparation seed when supported.
+- Ligand caches are keyed by the complete preparation configuration,
+  state-enumeration policy, cache schema, and RDKit/Open Babel identities.
+- The public ACES screening configuration now matches the documented frozen
+  Vina/selective-water benchmark condition.
 
 ### Fixed
 
@@ -46,5 +54,7 @@ uses semantic versioning after the initial public release.
   coordinate frame instead of fitting a displaced pose onto the crystal ligand.
 - CSV result loading preserves alphanumeric PDB identifiers such as `1E66`
   instead of interpreting them as scientific notation.
+- Restart metadata invalidates pre-0.1 campaign progress that could mix
+  independently prepared receptor copies.
 
 [0.1.0]: https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.0

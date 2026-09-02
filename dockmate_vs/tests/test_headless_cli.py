@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from dockmate_vs.cli import check_gui_dependencies, main
+from dockmate_vs import __version__
 from dockmate_vs.headless import (
     HeadlessDockMateRunner,
     load_campaign_config,
@@ -139,6 +140,14 @@ def test_cli_returns_nonzero_for_missing_campaign(tmp_path, capsys):
 
     assert status == 1
     assert "Campaign config not found" in capsys.readouterr().err
+
+
+def test_cli_reports_package_version(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--version"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == f"dockmate-vs {__version__}"
 
 
 def test_gui_dependency_error_preserves_native_import_failure(monkeypatch, capsys):

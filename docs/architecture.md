@@ -43,8 +43,10 @@ not implement a new docking score.
    assay labels remain attached to their compounds; unlabelled compounds remain
    screening samples.
 3. Preflight downloads all required public structures before docking starts.
-4. Protein and ligand preparation create the receptor and enumerated ligand
-   variants for each case.
+4. Protein preparation creates one signature-validated receptor per unique
+   source/site/chain/water condition and materializes identical case-local
+   copies. Ligand preparation creates or safely reuses tool- and
+   configuration-versioned enumerated variants.
 5. Protocol Development expands the requested engine, box, water, search, seed,
    and rescoring combinations. Screening applies one frozen condition.
 6. Each completed case is written to restart state before the next case runs.
@@ -67,6 +69,9 @@ generation do not require continuous connectivity.
 - `redock_results.csv` provides the same case-level fields in tabular form.
 - `redock_summary.json` is the machine-readable aggregate report.
 - `redock_summary.md` is generated from the same aggregate report.
+- `prepared_receptors/` stores campaign-level receptor preparations and the
+  signatures used to validate safe reuse; each case still receives local
+  receptor files for inspection and pose viewing.
 
 Case records distinguish run status, scores, control labels, RMSD metrics,
 rescoring metrics, preparation descriptors, output paths, and error messages.
@@ -92,13 +97,15 @@ release; incompatible schema changes must be documented in `CHANGELOG.md`.
 
 ## Restart and provenance
 
-A campaign resumes only when its saved manifest is compatible with the current
-input and settings. Completed cases with their expected output files are skipped;
-failed or incomplete cases are retried. Changing a preparation, docking, or
-scoring condition invalidates reuse for the affected campaign. Changing a
-non-swept Protocol Development setting also invalidates reuse. Protocol
-campaigns reject result files containing crystal complexes from another
-workbook rather than merging unrelated targets.
+A campaign resumes only when its saved manifest and restart-schema version are
+compatible with the current input and settings. Completed cases with their
+expected output files are skipped; failed or incomplete cases are retried.
+Changing a preparation, docking, or scoring condition invalidates reuse for the
+affected campaign. Receptor and ligand caches additionally include source,
+policy, schema, and preparation-tool identities. Changing a non-swept Protocol
+Development setting also invalidates reuse. Protocol campaigns reject result
+files containing crystal complexes from another workbook rather than merging
+unrelated targets.
 
 For publication, retain the input checksum, manifest, raw results, summaries,
 external-tool versions, git revision, seed, CPU count, failures, and data-source

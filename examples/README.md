@@ -60,10 +60,19 @@ dockmate-vs screen --config examples/campaign.screen.yml
 scripts/dockmate-docker screen examples/campaign.screen.yml
 ```
 
-The starter screening protocol uses Smina, Vina scoring, a 4 A co-crystal
-margin, removed waters, exhaustiveness 8, 20 modes, and seed 42. It can be
-amended after inspecting the protocol-development results. The run writes to
-`results/dude_aces_screen/`.
+The frozen example uses AutoDock Vina with Vina scoring, a 4 A co-crystal
+margin, selective crystallographic-water retention, exhaustiveness 8, 20
+requested modes, seed 42, and thorough score-based selection from at most two
+tautomers and two conformers. It writes to `results/dude_aces_screen/`.
+
+A reference execution with Vina 1.2.7 completed all 220 cases and produced ROC
+AUC 0.708, average precision 0.190 at an active prevalence of 0.091, LogAUC
+9.73, and EF1/5/10% values of 3.67/2.00/2.00. The best active ranked second.
+These are descriptive results for one fixed subset and software workflow, not
+an independent validation of a scoring function. Exact values may differ on
+another supported toolchain, and users should interpret their generated
+manifest and raw result table rather than treating these numbers as acceptance
+thresholds.
 
 ## Source and interpretation
 
@@ -81,4 +90,7 @@ Vina, Smina, Vinardo, DUD-E, or ACES virtual-screening performance.
 
 Scores and exact poses can vary with docking-engine version, dependency builds,
 protein preparation, CPU architecture, and random seed. The generated run
-manifest records the local execution environment.
+manifest records the local execution environment. The screening condition was
+chosen after pose-recovery protocol development; the enrichment result is a
+single illustrative evaluation on the fixed public subset and was not used to
+train or modify DockMate-VS.

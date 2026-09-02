@@ -1,5 +1,5 @@
-# Paths are resolved relative to this file. This frozen starter protocol can be
-# amended after reviewing the supplied protocol-development sweep.
+# Paths are resolved relative to this file. This is the frozen condition used
+# for the documented compact ACES enrichment example.
 input_file: dude_aces_screening_subset_1E66_seed42.xlsx
 output_dir: ../results/dude_aces_screen
 threshold: 2.0
@@ -14,19 +14,20 @@ sampling:
   seed: 42
 
 single:
-  engine: smina
+  engine: vina
   box_margin: 4.0
-  water_handling: remove_all
+  water_handling: selective
   exhaustiveness: 8
   num_modes: 20
   energy_range: 3.0
-  cpu: 4
-  n_cpus: 4
+  cpu: 6
+  n_cpus: 6
   seed: 42
+  timeout: 1200
   scoring: vina
   smina_binary: smina
   vina_binary: vina
-  ligand_variant_mode: adaptive
+  ligand_variant_mode: thorough
   variant_select_by: score
   max_tautomers: 2
   max_conformers: 2

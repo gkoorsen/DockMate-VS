@@ -126,9 +126,12 @@ fixed, score-independent subset of 20 DUD-E clustered actives and 200 DUD-E
 property-matched decoys at one receptor. Matched decoys are presumed
 non-binders, not experimentally confirmed inactives. This compact campaign
 demonstrates the complete workflow rather than establishing a new scoring-
-function benchmark. Exact scores and poses can vary with docking-engine and
-preparation-tool builds, hardware, and random seed. See `examples/README.md` for
-source checksums, reconstruction, and interpretation guidance.
+function benchmark. The frozen example uses Vina scoring, a 4 A margin,
+selective water retention, exhaustiveness 8, 20 requested modes, seed 42, and
+thorough score-based ligand-variant selection. Exact scores and poses can vary
+with docking-engine and preparation-tool builds, hardware, and random seed. See
+`examples/README.md` for reference results, source checksums, reconstruction,
+and interpretation guidance.
 
 ## Input models
 

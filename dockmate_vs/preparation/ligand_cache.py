@@ -1,16 +1,56 @@
 """Caching system for prepared ligands to avoid expensive re-computation."""
 
 import hashlib
+import json
 import pickle
+import shutil
+import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 from loguru import logger
+from rdkit import rdBase
 
 from dockmate_vs.preparation.ligand import (
     PreparedLigand,
     LigandPreparation,
     LigandPreparationConfig
 )
+
+
+LIGAND_CACHE_SCHEMA_VERSION = "ligand-preparation-v2"
+
+
+@lru_cache(maxsize=1)
+def _preparation_tool_signature() -> dict:
+    """Return stable identities for tools that affect ligand preparation."""
+    obabel = shutil.which("obabel")
+    obabel_signature = None
+    if obabel:
+        executable = Path(obabel).resolve()
+        stat = executable.stat()
+        version = None
+        try:
+            completed = subprocess.run(
+                [str(executable), "-V"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            version = (completed.stdout or completed.stderr).strip() or None
+        except (OSError, subprocess.SubprocessError):
+            pass
+        obabel_signature = {
+            "path": str(executable),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "version": version,
+        }
+    return {
+        "rdkit_version": rdBase.rdkitVersion,
+        "obabel": obabel_signature,
+    }
 
 
 class LigandCache:
@@ -40,9 +80,15 @@ class LigandCache:
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
+        self._tool_signature = _preparation_tool_signature()
         logger.info(f"Ligand cache initialized: {self.cache_dir.absolute()}")
     
-    def _get_cache_key(self, smiles: str, config: LigandPreparationConfig) -> str:
+    def _get_cache_key(
+        self,
+        smiles: str,
+        config: LigandPreparationConfig,
+        enumerate_states: bool = True,
+    ) -> str:
         """
         Generate unique cache key from SMILES and configuration.
         
@@ -53,15 +99,23 @@ class LigandCache:
         Returns:
             12-character hash string
         """
-        # Include all relevant config parameters that affect output
-        cache_input = (
-            f"{smiles}|"
-            f"{config.ph_range}|"
-            f"{config.max_tautomers}|"
-            f"{config.max_conformers}|"
-            f"{config.mmff_minimize}"
+        if hasattr(config, "model_dump"):
+            config_payload = config.model_dump(mode="json")
+        else:
+            config_payload = config.dict()
+        cache_input = json.dumps(
+            {
+                "schema_version": LIGAND_CACHE_SCHEMA_VERSION,
+                "smiles": smiles,
+                "enumerate_states": bool(enumerate_states),
+                "config": config_payload,
+                "tools": self._tool_signature,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
         )
-        return hashlib.md5(cache_input.encode()).hexdigest()[:12]
+        return hashlib.sha256(cache_input.encode("utf-8")).hexdigest()[:16]
     
     def get(
         self,
@@ -88,7 +142,7 @@ class LigandCache:
             List of prepared ligands
         """
         # Generate cache key
-        cache_key = self._get_cache_key(smiles, config)
+        cache_key = self._get_cache_key(smiles, config, enumerate_states)
         cache_file = self.cache_dir / f"{mol_id}_{cache_key}.pkl"
         
         # Try to load from cache

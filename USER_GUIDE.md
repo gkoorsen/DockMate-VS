@@ -277,7 +277,11 @@ preparation recipe. The implementation is in
 [`dockmate_vs/preparation/ligand.py`](dockmate_vs/preparation/ligand.py).
 User-selected preparation settings and external-tool versions are captured in
 the run manifest; its git commit identifies fixed implementation defaults.
-Prepared files are retained inside each case directory for inspection.
+Prepared files are retained inside each case directory for inspection. Within
+a campaign, cases that use the same receptor source, site-ligand removal, chain,
+and water policy share one signature-validated receptor preparation. Identical
+case-local copies are retained so that viewers and exported cases remain
+self-contained.
 
 ### Receptor preparation
 
@@ -285,7 +289,9 @@ For a co-crystal campaign, preflight obtains the requested PDB structure before
 docking begins. The receptor pipeline then performs the following operations:
 
 1. BioPython parses the PDB file. PDBFixer attempts to identify missing
-   residues, add missing heavy atoms, and model missing loops when supported.
+   residues, add missing heavy atoms using preparation seed 42, and model
+   missing loops when supported. Older PDBFixer builds without seeded
+   missing-atom placement emit an explicit reproducibility warning.
    If this optional repair fails, the event is logged and the original parsed
    structure is retained rather than silently aborting the whole campaign.
 2. The selected crystallographic-water policy is applied to `HOH` and `WAT`
@@ -348,8 +354,12 @@ Version 0.1 does **not** enumerate ligand ionization states as a function of pH.
 The configured pH range is reserved for future use, and the normalized SMILES
 charge state is the starting state. Curate input charge states externally when
 ionization is important, and inspect the saved `ligand_variants/*.pdbqt` files.
-The ligand cache key includes the molecule identifier, input SMILES, and relevant
-preparation limits, so repeated compatible compounds can avoid regeneration.
+The ligand cache filename includes the molecule identifier, while its content
+key covers the input SMILES, complete ligand-preparation configuration,
+state-enumeration policy, cache schema, RDKit version, and Open Babel executable
+identity/version. Repeated compatible compounds can therefore avoid
+regeneration without silently reusing variants prepared by a different
+toolchain or policy.
 
 ### Preparation records
 
@@ -363,6 +373,7 @@ Useful case-level files include:
 | `ligand_variants/*.pdbqt` | Prepared tautomer/conformer candidates |
 | `variants/<variant>/docked.pdbqt` | Engine poses for a docked variant |
 | `run_manifest.json` | Frozen settings, versions, paths, and case identities |
+| `prepared_receptors/<cache-version>/...` | Shared receptor preparation and its input/tool signature |
 
 Always inspect representative prepared receptors and ligands before a large
 campaign. A completed conversion proves file compatibility, not chemical

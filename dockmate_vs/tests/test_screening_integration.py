@@ -19,11 +19,13 @@ class FakePipeline:
     variants = []
     adaptive_limit = 2
     receptor_site_ligand = None
+    prepare_receptor_calls = 0
 
     def __init__(self, *args, **kwargs):
         pass
 
     def _prepare_receptor(self, pdb_file, water_handling, site_ligand_resname=None):
+        type(self).prepare_receptor_calls += 1
         type(self).receptor_site_ligand = site_ligand_resname
         root = Path(pdb_file).parent
         receptor_pdbqt = root / "receptor.pdbqt"
@@ -100,6 +102,7 @@ def _mock_case(monkeypatch, tmp_path, scores, failed=()):
         ligand.write_text("LIGAND\n")
         variants.append({"label": label, "pdbqt": ligand, "smiles": "CC"})
     FakePipeline.variants = variants
+    FakePipeline.prepare_receptor_calls = 0
     FakeSminaEngine.scores = scores
     FakeSminaEngine.failed = set(failed)
     monkeypatch.setattr(redock_module, "AdaptiveDockingPipeline", FakePipeline)
@@ -151,6 +154,35 @@ def test_screening_case_selects_best_score_not_best_rmsd(monkeypatch, tmp_path):
     assert result.docking_completed is True
     assert result.variants_prepared == 3
     assert result.variants_docked == 3
+
+
+def test_screening_cases_share_one_deterministic_receptor_preparation(
+    monkeypatch, tmp_path
+):
+    scores = {"v1": -7.0}
+    app, pdb_file = _mock_case(monkeypatch, tmp_path, scores)
+    receptor_cache = tmp_path / "shared_receptor"
+
+    for case_name in ("case_one", "case_two"):
+        app._run_single_case(
+            pdb_file=pdb_file,
+            ligand_name=case_name,
+            ligand_chain="A",
+            smiles="CC",
+            case_dir=tmp_path / case_name,
+            threshold=2.0,
+            single_cfg=_single_config("score"),
+            ligand_resname="LIG",
+            site_mode="prediction",
+            run_mode="screening",
+            receptor_cache_dir=receptor_cache,
+        )
+
+    assert FakePipeline.prepare_receptor_calls == 1
+    assert (receptor_cache / "preparation_manifest.json").exists()
+    for case_name in ("case_one", "case_two"):
+        assert (tmp_path / case_name / "receptor_prepared.pdbqt").exists()
+        assert (tmp_path / case_name / "receptor_prepared.pdb").exists()
 
 
 def test_adaptive_variant_mode_docks_only_selected_subset(monkeypatch, tmp_path):
@@ -572,6 +604,7 @@ def test_worker_skips_compatible_completed_case(monkeypatch, tmp_path):
         "rescore": {"enable": False},
     }
     manifest = {
+        "resume_version": redock_module.SCREENING_RESUME_VERSION,
         "config": config,
         "cases": [{
             "pdb_id": "1ABC",

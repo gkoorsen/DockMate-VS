@@ -3,6 +3,7 @@ DockMate-VS graphical application for docking protocol development and screening
 """
 
 import copy
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -39,6 +40,7 @@ from dockmate_vs.binding_site.cocrystal import BindingSite, BindingSiteDefinitio
 from dockmate_vs.docking.smina import SminaDockingEngine
 from dockmate_vs.gui.utils import download_pdb_structure
 from dockmate_vs.gui.widgets.progress_dialog import ProgressDialog
+from dockmate_vs.preparation.protein import RECEPTOR_PREPARATION_SEED
 from dockmate_vs.utils.rmsd import calculate_rmsd
 
 
@@ -70,6 +72,8 @@ LEGACY_FILTERS_PATH = Path.home() / ".docking_platform_gui" / "redock_filters.js
 PROTOCOL_RMSD_EQUIVALENCE_TOLERANCE = 0.25
 PROTOCOL_SUCCESS_EQUIVALENCE_TOLERANCE = 0.10
 PROTOCOL_CANDIDATE_LIMIT = 8
+RECEPTOR_PREPARATION_CACHE_VERSION = "receptor-preparation-v1"
+SCREENING_RESUME_VERSION = "shared-receptor-v1"
 
 
 def _executable_default(explicit: Optional[str], command: str) -> str:
@@ -1735,6 +1739,7 @@ class DockMateVSApp(tk.Tk):
             for pair in actives
         )
         return cls._json_normalize({
+            "receptor_preparation_cache_version": RECEPTOR_PREPARATION_CACHE_VERSION,
             "input_file": str(Path(config["input_file"]).expanduser().resolve()),
             "threshold": config.get("threshold"),
             "active_cases": active_cases,
@@ -1812,6 +1817,7 @@ class DockMateVSApp(tk.Tk):
         manifest = {
             "created_at": datetime.now(timezone.utc).isoformat(),
             "software": self._software_provenance(config),
+            "receptor_preparation_cache_version": RECEPTOR_PREPARATION_CACHE_VERSION,
             "input_file": config["input_file"],
             "protocol_sweep": sweep,
             "single_protocol": config["single"],
@@ -1990,6 +1996,13 @@ class DockMateVSApp(tk.Tk):
                         site_mode="cocrystal",
                         run_mode="protocol_development",
                         control_label=1,
+                        receptor_cache_dir=self._receptor_cache_directory(
+                            output_dir=output_dir,
+                            pdb_id=pdb_id,
+                            site_ligand=site_ligand,
+                            ligand_chain=ligand_chain,
+                            water_handling=water,
+                        ),
                     )
                     docking_cache[docking_key] = copy.deepcopy(result)
                 result.target_name = pair.get("target_name")
@@ -2841,6 +2854,8 @@ class DockMateVSApp(tk.Tk):
         manifest = {
             "created_at": datetime.now(timezone.utc).isoformat(),
             "software": self._software_provenance(config),
+            "resume_version": SCREENING_RESUME_VERSION,
+            "receptor_preparation_cache_version": RECEPTOR_PREPARATION_CACHE_VERSION,
             "config": config,
             "cases": [
                 {
@@ -3013,6 +3028,13 @@ class DockMateVSApp(tk.Tk):
                         run_mode=config["mode"],
                         control_label=control_label,
                         is_reference_ligand=is_reference_case,
+                        receptor_cache_dir=self._receptor_cache_directory(
+                            output_dir=output_dir,
+                            pdb_id=pdb_id,
+                            site_ligand=(site_ligand if site_mode == "cocrystal" else None),
+                            ligand_chain=ligand_chain,
+                            water_handling=single_cfg["water_handling"],
+                        ),
                     )
                 result.control_label = control_label
                 result.target_name = target_name
@@ -3190,6 +3212,141 @@ class DockMateVSApp(tk.Tk):
             site_method="cocrystal"
         )
 
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        """Return a stable digest for a receptor source file."""
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _installed_package_version(package: str) -> Optional[str]:
+        try:
+            return importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            return None
+
+    @classmethod
+    def _receptor_cache_signature(
+        cls,
+        pdb_file: Path,
+        water_handling,
+        site_ligand: Optional[str],
+        ligand_chain: Optional[str],
+    ) -> dict:
+        """Describe every input that can change a prepared receptor."""
+        obabel = shutil.which("obabel")
+        obabel_metadata = None
+        if obabel:
+            executable = Path(obabel).resolve()
+            stat = executable.stat()
+            obabel_metadata = {
+                "path": str(executable),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        return {
+            "cache_version": RECEPTOR_PREPARATION_CACHE_VERSION,
+            "preparation_seed": RECEPTOR_PREPARATION_SEED,
+            "source_sha256": cls._file_sha256(Path(pdb_file)),
+            "water_handling": str(getattr(water_handling, "value", water_handling)),
+            "site_ligand": str(site_ligand or ""),
+            "ligand_chain": str(ligand_chain or ""),
+            "pdbfixer_version": cls._installed_package_version("pdbfixer"),
+            "openmm_version": cls._installed_package_version("openmm"),
+            "obabel": obabel_metadata,
+        }
+
+    def _receptor_cache_directory(
+        self,
+        output_dir: Path,
+        pdb_id: str,
+        site_ligand: Optional[str],
+        ligand_chain: Optional[str],
+        water_handling,
+    ) -> Path:
+        """Return the shared receptor directory for one preparation condition."""
+        water = str(getattr(water_handling, "value", water_handling))
+        identity = json.dumps(
+            {
+                "pdb_id": str(pdb_id).upper(),
+                "site_ligand": str(site_ligand or ""),
+                "ligand_chain": str(ligand_chain or ""),
+                "water_handling": water,
+            },
+            sort_keys=True,
+        )
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+        label = self._safe_case_id(
+            f"{pdb_id}_{site_ligand or 'apo'}_{ligand_chain or 'all'}_{water}"
+        )
+        return (
+            Path(output_dir)
+            / "prepared_receptors"
+            / RECEPTOR_PREPARATION_CACHE_VERSION
+            / f"{label}_{digest}"
+        )
+
+    @staticmethod
+    def _copy_file_atomic(source: Path, destination: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() == destination.resolve():
+            return
+        temporary = destination.with_name(f".{destination.name}.tmp")
+        shutil.copy2(source, temporary)
+        temporary.replace(destination)
+
+    def _prepare_receptor_with_cache(
+        self,
+        pipeline: AdaptiveDockingPipeline,
+        pdb_file: Path,
+        case_dir: Path,
+        water_handling,
+        site_ligand: Optional[str],
+        ligand_chain: Optional[str],
+        cache_dir: Path,
+    ) -> Tuple[Path, Path]:
+        """Prepare a receptor once and materialize identical case-local copies."""
+        case_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        signature = self._receptor_cache_signature(
+            pdb_file, water_handling, site_ligand, ligand_chain
+        )
+        manifest_path = cache_dir / "preparation_manifest.json"
+        cached_pdbqt = cache_dir / "receptor_prepared.pdbqt"
+        cached_pdb = cache_dir / "receptor_prepared.pdb"
+        case_pdbqt = case_dir / "receptor_prepared.pdbqt"
+        case_pdb = case_dir / "receptor_prepared.pdb"
+
+        cache_is_valid = False
+        if manifest_path.exists() and cached_pdbqt.exists() and cached_pdb.exists():
+            try:
+                cache_is_valid = self._json_normalize(
+                    json.loads(manifest_path.read_text())
+                ) == self._json_normalize(signature)
+            except (OSError, json.JSONDecodeError):
+                cache_is_valid = False
+
+        if not cache_is_valid:
+            prepared_pdbqt, prepared_pdb = pipeline._prepare_receptor(
+                pdb_file,
+                water_handling=water_handling,
+                site_ligand_resname=site_ligand,
+            )
+            self._copy_file_atomic(Path(prepared_pdbqt), case_pdbqt)
+            self._copy_file_atomic(Path(prepared_pdb), case_pdb)
+            self._copy_file_atomic(case_pdbqt, cached_pdbqt)
+            self._copy_file_atomic(case_pdb, cached_pdb)
+            self._write_json_atomic(manifest_path, signature)
+        else:
+            self._copy_file_atomic(cached_pdbqt, case_pdbqt)
+            self._copy_file_atomic(cached_pdb, case_pdb)
+            logger.info("Reusing prepared receptor from {}", cache_dir)
+
+        return case_pdbqt, case_pdb
+
     def _run_single_case(
         self,
         pdb_file: Path,
@@ -3206,6 +3363,7 @@ class DockMateVSApp(tk.Tk):
         run_mode: str = "single",
         control_label: Optional[int] = None,
         is_reference_ligand: Optional[bool] = None,
+        receptor_cache_dir: Optional[Path] = None,
     ) -> RedockResult:
         if site_mode == "cocrystal" and self._has_covalent_ligand_link(
             pdb_file, ligand_resname or ligand_name, ligand_chain
@@ -3229,13 +3387,25 @@ class DockMateVSApp(tk.Tk):
             n_cpus=single_cfg.get("n_cpus")
         )
 
-        receptor_pdbqt, receptor_pdb = pipeline._prepare_receptor(
-            pdb_file,
-            water_handling=single_cfg["water_handling"],
-            site_ligand_resname=(
-                ligand_resname or ligand_name if site_mode == "cocrystal" else None
-            )
+        receptor_site_ligand = (
+            ligand_resname or ligand_name if site_mode == "cocrystal" else None
         )
+        if receptor_cache_dir is not None:
+            receptor_pdbqt, receptor_pdb = self._prepare_receptor_with_cache(
+                pipeline=pipeline,
+                pdb_file=pdb_file,
+                case_dir=case_dir,
+                water_handling=single_cfg["water_handling"],
+                site_ligand=receptor_site_ligand,
+                ligand_chain=ligand_chain,
+                cache_dir=Path(receptor_cache_dir),
+            )
+        else:
+            receptor_pdbqt, receptor_pdb = pipeline._prepare_receptor(
+                pdb_file,
+                water_handling=single_cfg["water_handling"],
+                site_ligand_resname=receptor_site_ligand,
+            )
 
         enumerate_states = not pipeline._contains_metal(smiles)
         variants = pipeline._prepare_ligand_variants(
@@ -3454,10 +3624,12 @@ class DockMateVSApp(tk.Tk):
         try:
             previous_manifest = json.loads(manifest_path.read_text())
             expected = self._json_normalize({
+                "resume_version": current_manifest.get("resume_version"),
                 "config": current_manifest.get("config"),
                 "cases": current_manifest.get("cases"),
             })
             previous = {
+                "resume_version": previous_manifest.get("resume_version"),
                 "config": previous_manifest.get("config"),
                 "cases": previous_manifest.get("cases"),
             }

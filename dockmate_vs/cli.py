@@ -8,6 +8,8 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
+from dockmate_vs import __version__
+
 
 def check_gui_dependencies() -> None:
     """Fail early with an actionable message when GUI dependencies are absent."""
@@ -37,6 +39,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dockmate-vs",
         description="Docking protocol development and virtual screening",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "--vina", action="store_true", help="Use Vina instead of Smina for adaptive docking"

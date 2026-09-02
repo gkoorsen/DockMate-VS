@@ -13,6 +13,7 @@ import subprocess
 import copy
 import shutil
 import logging
+import inspect
 
 import numpy as np
 from loguru import logger
@@ -39,6 +40,9 @@ from dockmate_vs.config.schema import (
     WaterHandling,
     WaterRetentionConfig
 )
+
+
+RECEPTOR_PREPARATION_SEED = 42
 
 
 @dataclass
@@ -242,7 +246,15 @@ class ProteinPreparation:
             # Add missing atoms
             if self.config.add_missing_atoms:
                 fixer.findMissingAtoms()
-                fixer.addMissingAtoms()
+                parameters = inspect.signature(fixer.addMissingAtoms).parameters
+                if "seed" in parameters:
+                    fixer.addMissingAtoms(seed=RECEPTOR_PREPARATION_SEED)
+                else:
+                    logger.warning(
+                        "This PDBFixer build cannot seed missing-atom placement; "
+                        "receptor coordinates may vary between fresh campaigns"
+                    )
+                    fixer.addMissingAtoms()
                 logger.debug("Added missing atoms")
 
             # Model missing loops (can be slow)
