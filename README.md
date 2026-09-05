@@ -201,9 +201,14 @@ troubleshooting, and results interpretation.
 
 ## Citation and support
 
-Citation metadata are provided in [`CITATION.cff`](CITATION.cff). Until the
-SoftwareX article and archived release DOI are available, cite the versioned
-GitHub release and repository URL.
+Citation metadata are provided in [`CITATION.cff`](CITATION.cff). Please cite
+the archived software release:
+
+> Koorsen, G. (2026). DockMate-VS (v0.1.0). Zenodo.
+> https://doi.org/10.5281/zenodo.22283782
+
+When the SoftwareX article is available, cite both the article and the archived
+software release.
 
 - Problems and feature requests: [GitHub Issues](https://github.com/gkoorsen/DockMate-VS/issues)
 - Support contact: [gkoorsen@uj.ac.za](mailto:gkoorsen@uj.ac.za)

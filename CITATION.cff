@@ -13,8 +13,9 @@ authors:
 version: 0.1.0
 date-released: 2026-09-01
 license: MIT
+doi: 10.5281/zenodo.22283782
 repository-code: https://github.com/gkoorsen/DockMate-VS
-url: https://github.com/gkoorsen/DockMate-VS
+url: https://zenodo.org/records/22283782
 abstract: >-
   A spreadsheet-driven desktop application for reproducible molecular-docking
   protocol development, native-pose recovery, control enrichment, rescoring,
