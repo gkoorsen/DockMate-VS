@@ -81,7 +81,7 @@ or accept the channel terms as prompted by the error message.
 mamba env create -f environment.yml
 ```
 
-### Install the external docking tools
+### 3. Install the external docking tools
 
 ```bash
 scripts/install_external_tools.sh
@@ -90,7 +90,7 @@ scripts/install_external_tools.sh
 Docking engines are installed into separate conda environments (their
 native dependencies conflict) and linked into `dockmate-vs`.
 
-### Reactivate the environment
+### 4. Reactivate the environment
 
 Required — the installer writes conda activation hooks that set `RBT_ROOT`
 for rDock, and these only take effect on a fresh activation:
@@ -123,7 +123,7 @@ redistributed in the image; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.m
 The current image targets `linux/amd64` because the available Smina package is
 not published for every architecture.
 
-## Launch
+## 4. Launch
 
 ```bash
 dockmate-vs
