@@ -83,7 +83,7 @@ mamba env create -f environment.yml
 
 ### 3. Install the external tools
 
-####Optional: Download LigPlot+
+*Optional*: Download LigPlot+
 Download LigPlot+ from https://www.ebi.ac.uk/thornton-srv/software/LigPlus/. This will allow invoking LigPlot+ to view 2D representations in the DockMate-VS Pose Viewer.
 
 Install the rest of the external tools required:
