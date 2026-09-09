@@ -106,6 +106,13 @@ class WaterRetentionConfig(BaseModel):
 class LigandPreparationConfig(BaseModel):
     """Configuration for ligand preparation."""
 
+    charge_handling: Literal["preserve", "neutralize"] = Field(
+        default="preserve",
+        description=(
+            "Preserve input formal charges, or neutralize removable charges "
+            "as in legacy campaigns; neither mode assigns states from pH"
+        ),
+    )
     ph_range: tuple[float, float] = Field(
         default=(7.0, 7.4),
         description=(

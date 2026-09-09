@@ -320,7 +320,8 @@ def _resume_manifest(tmp_path, scoring="vina"):
         "config": {
             "mode": "screening",
             "output_dir": tmp_path,
-            "single": {"variant_select_by": "score", "scoring": scoring},
+            "single": {"variant_select_by": "score", "scoring": scoring,
+                       "charge_handling": "preserve"},
         },
         "cases": [
             {
@@ -600,7 +601,7 @@ def test_worker_skips_compatible_completed_case(monkeypatch, tmp_path):
         "output_dir": tmp_path,
         "mode": "screening",
         "threshold": 2.0,
-        "single": {"engine": "smina"},
+        "single": {"engine": "smina", "charge_handling": "preserve"},
         "rescore": {"enable": False},
     }
     manifest = {

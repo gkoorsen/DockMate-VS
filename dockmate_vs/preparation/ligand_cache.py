@@ -136,7 +136,7 @@ class LigandCache:
             mol_id: Molecule identifier
             config: Preparation configuration
             n_cpus: Number of CPUs for parallel processing
-            enumerate_states: Whether to enumerate protonation states
+            enumerate_states: Whether to enumerate tautomers of the selected charge state
         
         Returns:
             List of prepared ligands

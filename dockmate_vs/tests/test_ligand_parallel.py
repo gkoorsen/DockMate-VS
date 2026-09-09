@@ -24,7 +24,7 @@ class _InlinePool:
 
 
 def test_normalized_charge_state_is_not_duplicated():
-    preparation = LigandPreparation(LigandPreparationConfig(), n_cpus=1)
+    preparation = LigandPreparation(LigandPreparationConfig(charge_handling="neutralize"), n_cpus=1)
     molecule = Chem.MolFromSmiles("CCN")
 
     states = preparation._enumerate_protonation(molecule)

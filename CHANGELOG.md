@@ -7,6 +7,13 @@ uses semantic versioning after the initial public release.
 
 ### Changed
 
+- New campaigns preserve input ligand formal charges by default. An explicit
+  legacy neutralization option is available in the GUI, headless configuration,
+  and Python API; pH-dependent state enumeration is not implemented.
+- Charge handling is recorded in manifests and included in ligand cache keys.
+  Switching policies requires a new campaign directory. Compatible historical
+  campaigns can resume with explicit neutralization, and bundled reproduction
+  configurations retain that policy.
 - Protocol-development dashboard panels are labelled A-D in reading order,
   consistent with the screening dashboard, for all ranking cutoffs.
 - Single-receptor assay screening charts now show ROC discrimination,

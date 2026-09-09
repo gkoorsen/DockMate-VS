@@ -75,6 +75,10 @@ PROTOCOL_SUCCESS_EQUIVALENCE_TOLERANCE = 0.10
 PROTOCOL_CANDIDATE_LIMIT = 8
 RECEPTOR_PREPARATION_CACHE_VERSION = "receptor-preparation-v1"
 SCREENING_RESUME_VERSION = "shared-receptor-v1"
+CHARGE_HANDLING_OPTIONS = {
+    "Preserve input charges": "preserve",
+    "Neutralize removable charges": "neutralize",
+}
 
 
 def _executable_default(explicit: Optional[str], command: str) -> str:
@@ -183,6 +187,7 @@ class DockMateVSApp(tk.Tk):
         self.variant_mode_var = tk.StringVar(value="adaptive") 
         self.max_tautomers_var = tk.StringVar(value="8")
         self.max_conformers_var = tk.StringVar(value="10")
+        self.charge_handling_var = tk.StringVar(value="Preserve input charges")
         self.enable_rescore_var = tk.BooleanVar(value=False)
         self.rescore_scoring_var = tk.StringVar(value="vina")
 
@@ -648,6 +653,16 @@ class DockMateVSApp(tk.Tk):
         max_conf_entry = tk.Entry(variant_frame, textvariable=self.max_conformers_var, width=6)
         max_conf_entry.grid(row=3, column=2, sticky="w")
         self._register_busy_widget(max_conf_entry)
+
+        tk.Label(variant_frame, text="Ligand charge handling:").grid(
+            row=6, column=0, sticky="w", pady=(8, 0)
+        )
+        charge_handling = ttk.Combobox(
+            variant_frame, textvariable=self.charge_handling_var,
+            values=tuple(CHARGE_HANDLING_OPTIONS), state="readonly", width=29,
+        )
+        charge_handling.grid(row=6, column=1, columnspan=2, sticky="w", pady=(8, 0))
+        self._register_busy_widget(charge_handling)
 
         settings_row += 1
         self.adaptive_frame = tk.LabelFrame(
@@ -1722,11 +1737,11 @@ class DockMateVSApp(tk.Tk):
         cls, actives: List[Dict[str, str]], config: dict
     ) -> dict:
         """Describe inputs that must remain fixed when extending a sweep."""
-        single = config.get("single", {})
+        single = cls._config_with_charge_handling(config)["single"]
         invariant_single_keys = (
             "num_modes", "energy_range", "scoring", "apo_site_mode",
             "site_definition_mode", "site_residues", "size_override",
-            "ligand_variant_mode", "max_tautomers", "max_conformers",
+            "ligand_variant_mode", "max_tautomers", "max_conformers", "charge_handling",
         )
         active_cases = sorted(
             (
@@ -1803,6 +1818,7 @@ class DockMateVSApp(tk.Tk):
         current_signature = manifest.get("resume_signature")
         if previous_signature is None:
             return "existing protocol manifest predates safe resume metadata"
+        previous_signature.setdefault("single", {}).setdefault("charge_handling", "neutralize")
         if cls._json_normalize(
             previous_signature
         ) != cls._json_normalize(current_signature):
@@ -1810,6 +1826,7 @@ class DockMateVSApp(tk.Tk):
         return None
 
     def _run_protocol_worker(self, actives: List[Dict[str, str]], config: dict) -> None:
+        config = self._config_with_charge_handling(config)
         output_dir = config["output_dir"] / "protocol_development"
         output_dir.mkdir(parents=True, exist_ok=True)
         results_path = output_dir / "protocol_development_results.csv"
@@ -2799,6 +2816,7 @@ class DockMateVSApp(tk.Tk):
             "variant_select_by": variant_select_by,
             "max_tautomers": max_tautomers,
             "max_conformers": max_conformers,
+            "charge_handling": CHARGE_HANDLING_OPTIONS[self.charge_handling_var.get()],
             "n_cpus": cpu
         }
 
@@ -2842,16 +2860,36 @@ class DockMateVSApp(tk.Tk):
             "variant_select_by": variant_select_by,
             "max_tautomers": max_tautomers,
             "max_conformers": max_conformers,
+            "charge_handling": CHARGE_HANDLING_OPTIONS[self.charge_handling_var.get()],
             "n_cpus": self._parse_int(self.cpu_var.get(), "CPU") or 4
         }
 
     def _run_worker(self, pairs: List[Dict[str, str]], config: dict) -> None:
+        config = self._config_with_charge_handling(config)
         output_dir = config["output_dir"]
         output_dir.mkdir(parents=True, exist_ok=True)
         progress_path = output_dir / "redock_progress.json"
         results_path = output_dir / "redock_results.json"
         results_csv = output_dir / "redock_results.csv"
         manifest_path = output_dir / "run_manifest.json"
+        if manifest_path.exists():
+            try:
+                previous_config = self._config_with_charge_handling(
+                    json.loads(manifest_path.read_text()).get("config"), default="neutralize"
+                )
+            except (OSError, ValueError, TypeError, AttributeError) as exc:
+                self._queue.put(("preflight_failed", f"Could not validate saved campaign: {exc}"))
+                return
+            policy_key = "adaptive" if config.get("mode") == "adaptive" else "single"
+            previous_policy = previous_config.get(policy_key, {}).get("charge_handling", "neutralize")
+            if previous_policy != config[policy_key]["charge_handling"]:
+                self._queue.put((
+                    "preflight_failed",
+                    "Ligand charge handling differs from the saved campaign. "
+                    "Choose a new output directory or restore the original charge handling "
+                    "(legacy campaigns used neutralize).",
+                ))
+                return
         manifest = {
             "created_at": datetime.now(timezone.utc).isoformat(),
             "software": self._software_provenance(config),
@@ -3140,6 +3178,7 @@ class DockMateVSApp(tk.Tk):
             variant_select_by=adaptive_cfg.get("variant_select_by", "rmsd"),
             max_tautomers=adaptive_cfg.get("max_tautomers", 8),
             max_conformers=adaptive_cfg.get("max_conformers", 10),
+            charge_handling=adaptive_cfg.get("charge_handling", "preserve"),
             n_cpus=adaptive_cfg.get("n_cpus")
         )
 
@@ -3385,6 +3424,7 @@ class DockMateVSApp(tk.Tk):
             variant_select_by=single_cfg.get("variant_select_by", "rmsd"),
             max_tautomers=single_cfg.get("max_tautomers", 8),
             max_conformers=single_cfg.get("max_conformers", 10),
+            charge_handling=single_cfg.get("charge_handling", "preserve"),
             n_cpus=single_cfg.get("n_cpus")
         )
 
@@ -3617,6 +3657,19 @@ class DockMateVSApp(tk.Tk):
                 ordered.append(results_by_case[case_id])
         return ordered
 
+    @staticmethod
+    def _config_with_charge_handling(config: Optional[dict], default: str = "preserve") -> dict:
+        """Make preparation policy explicit; missing historical policy means neutralize."""
+        normalized = copy.deepcopy(config or {})
+        active_key = "adaptive" if normalized.get("mode") == "adaptive" else "single"
+        for key in ("single", "adaptive"):
+            if normalized.get(key) or key == active_key:
+                options = normalized.setdefault(key, {})
+                policy = options.setdefault("charge_handling", default)
+                if policy not in {"preserve", "neutralize"}:
+                    raise ValueError(f"{key}.charge_handling must be preserve or neutralize")
+        return normalized
+
     def _load_resumable_results(
         self, manifest_path: Path, progress_path: Path, current_manifest: dict
     ) -> List[RedockResult]:
@@ -3626,12 +3679,14 @@ class DockMateVSApp(tk.Tk):
             previous_manifest = json.loads(manifest_path.read_text())
             expected = self._json_normalize({
                 "resume_version": current_manifest.get("resume_version"),
-                "config": current_manifest.get("config"),
+                "config": self._config_with_charge_handling(current_manifest.get("config")),
                 "cases": current_manifest.get("cases"),
             })
             previous = {
                 "resume_version": previous_manifest.get("resume_version"),
-                "config": previous_manifest.get("config"),
+                "config": self._config_with_charge_handling(
+                    previous_manifest.get("config"), default="neutralize"
+                ),
                 "cases": previous_manifest.get("cases"),
             }
             if previous != expected:

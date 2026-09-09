@@ -62,6 +62,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "variant_select_by": "score",
         "max_tautomers": 8,
         "max_conformers": 10,
+        "charge_handling": "preserve",
         "n_cpus": 4,
     },
     "adaptive": {},
@@ -165,6 +166,8 @@ def load_campaign_config(path: Path, mode: str) -> dict:
         raise ValueError("threshold must be greater than zero")
 
     single = config["single"]
+    if single.get("charge_handling") not in {"preserve", "neutralize"}:
+        raise ValueError("single.charge_handling must be preserve or neutralize")
     if single.get("engine") not in {"vina", "smina", "rdock"}:
         raise ValueError("single.engine must be vina, smina, or rdock")
     if single.get("water_handling") not in {"remove_all", "retain_all", "selective"}:

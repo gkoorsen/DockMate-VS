@@ -1,7 +1,7 @@
 """Ligand preparation with RDKit and Open Babel.
 
-The current pipeline performs largest-fragment selection and charge
-normalization, RDKit tautomer and conformer generation, optional MMFF94s
+The current pipeline performs largest-fragment selection and explicit charge
+handling, RDKit tautomer and conformer generation, optional MMFF94s
 minimization, and Open Babel PDBQT conversion. It does not claim pH-aware
 ionization-state enumeration.
 """
@@ -101,9 +101,8 @@ class LigandPreparationError(Exception):
 class LigandPreparation:
     """Convert SMILES strings into docking-ready PDBQT variants.
 
-    Users should inspect charge-sensitive compounds because the standardization
-    step normalizes neutralizable formal charges and does not enumerate pH-aware
-    ionization states.
+    Input formal charges are preserved by default. Optional legacy neutralization
+    removes neutralizable charges; neither mode enumerates pH-aware states.
 
     Example:
         >>> config = LigandPreparationConfig()
@@ -128,12 +127,12 @@ class LigandPreparation:
         # Handle CPU count
         if n_cpus is None:
             self.n_cpus = min(cpu_count(), 8)
-            logger.info(f"LigandPreparation initialized: pH {config.ph_range}, "
+            logger.info(f"LigandPreparation initialized: charge_handling={config.charge_handling}, "
                        f"max_tautomers={config.max_tautomers}, "
                        f"CPUs={self.n_cpus} (auto-detected)")
         else:
             self.n_cpus = max(1, int(n_cpus))  # Ensure at least 1
-            logger.info(f"LigandPreparation initialized: pH {config.ph_range}, "
+            logger.info(f"LigandPreparation initialized: charge_handling={config.charge_handling}, "
                        f"max_tautomers={config.max_tautomers}, "
                        f"CPUs={self.n_cpus} (user-specified)")
 
@@ -149,7 +148,7 @@ class LigandPreparation:
         Args:
             smiles: Input SMILES string
             mol_id: Molecule identifier
-            enumerate_states: Whether to enumerate normalized-state tautomers
+            enumerate_states: Whether to enumerate tautomers of the selected charge state
 
         Returns:
             List of prepared ligands (multiple if enumeration enabled)
@@ -169,12 +168,9 @@ class LigandPreparation:
             # 2. Standardize molecule
             mol = self._standardize_molecule(mol)
 
-            logger.info(f"  Selecting normalized charge state for {mol_id}")
-            # 3. Retain one normalized charge state before tautomer enumeration.
-            if enumerate_states:
-                protonated_mols = self._enumerate_protonation(mol)
-            else:
-                protonated_mols = [(mol, "standardized")]
+            logger.info(f"  Charge handling for {mol_id}: {self.config.charge_handling}")
+            # 3. Retain one charge state before tautomer enumeration.
+            protonated_mols = self._enumerate_protonation(mol)
 
             results = []
 
@@ -258,7 +254,7 @@ class LigandPreparation:
 
     def _standardize_molecule(self, mol: Chem.Mol) -> Chem.Mol:
         """
-        Standardize molecule (remove salts, neutralize).
+        Keep the largest fragment and apply the explicit charge policy.
 
         Args:
             mol: Input molecule
@@ -270,8 +266,8 @@ class LigandPreparation:
         remover = rdMolStandardize.LargestFragmentChooser()
         mol = remover.choose(mol)
 
-        # Normalize removable formal charges. This is not pH-aware ionization.
-        mol = self.uncharger.uncharge(mol)
+        if self.config.charge_handling == "neutralize":
+            mol = self.uncharger.uncharge(mol)
 
         return mol
 
@@ -279,7 +275,7 @@ class LigandPreparation:
         self,
         mol: Chem.Mol
     ) -> List[Tuple[Chem.Mol, str]]:
-        """Return the single normalized charge state used by this release.
+        """Return the single selected charge state used by this release.
 
         Earlier versions labelled unchanged molecule copies as protonated and
         deprotonated variants. Those copies were chemically identical and only
@@ -292,7 +288,8 @@ class LigandPreparation:
         Returns:
             List of (molecule, state_description) tuples
         """
-        return [(Chem.Mol(mol), "standardized")]
+        state = "input_charge" if self.config.charge_handling == "preserve" else "standardized"
+        return [(Chem.Mol(mol), state)]
 
     def _enumerate_tautomers(self, mol: Chem.Mol) -> List[Chem.Mol]:
         """Enumerate and rank tautomers by chemical likelihood."""
@@ -300,7 +297,14 @@ class LigandPreparation:
         enumerator.SetMaxTautomers(self.config.max_tautomers * 2)  # Generate more
         
         tautomers = []
+        input_charges = [atom.GetFormalCharge() for atom in mol.GetAtoms()]
         for taut in enumerator.Enumerate(mol):
+            # A tautomer must not erase a curated ionization centre, including
+            # a zwitterion whose net charge would otherwise look unchanged.
+            if self.config.charge_handling == "preserve" and (
+                [atom.GetFormalCharge() for atom in taut.GetAtoms()] != input_charges
+            ):
+                continue
             tautomers.append(taut)
         
         if not tautomers:

@@ -119,7 +119,8 @@ class AdaptiveDockingPipeline:
         max_conformers: int = 10,
         n_cpus: Optional[int] = None,
         molecule_type: str = "active",
-        skip_rmsd_for_decoys: bool = True
+        skip_rmsd_for_decoys: bool = True,
+        charge_handling: str = "preserve",
     ):
         """
         Initialize adaptive pipeline.
@@ -142,6 +143,7 @@ class AdaptiveDockingPipeline:
             n_cpus: Number of CPUs for parallel ligand preparation (None = auto-detect, capped at 8)
             molecule_type: Type of molecule ('active' or 'decoy')
             skip_rmsd_for_decoys: Whether to skip RMSD calculation for decoys
+            charge_handling: Preserve input formal charges or use legacy neutralization
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -159,6 +161,9 @@ class AdaptiveDockingPipeline:
         self.variant_select_by = variant_select_by
         self.max_tautomers = max_tautomers
         self.max_conformers = max_conformers
+        self.charge_handling = LigandPreparationConfig(
+            charge_handling=charge_handling
+        ).charge_handling
         self.n_cpus = n_cpus  # Store for ligand preparation
         self.docking_binary = self.vina_binary if self.use_vina else self.smina_binary
         self.allow_custom_scoring = not self.use_vina
@@ -485,6 +490,7 @@ class AdaptiveDockingPipeline:
         else:
             # Use cache for ligand preparation
             config = LigandPreparationConfig(
+                charge_handling=self.charge_handling,
                 max_tautomers=self.max_tautomers,
                 max_conformers=self.max_conformers,
                 use_etkdg_v3=True,
@@ -618,6 +624,7 @@ class AdaptiveDockingPipeline:
         """Prepare ligand once per pipeline run and return PDBQT path."""
         # Define config first
         config = LigandPreparationConfig(
+            charge_handling=self.charge_handling,
             max_tautomers=self.max_tautomers,
             max_conformers=self.max_conformers,
             use_etkdg_v3=True,
@@ -660,6 +667,7 @@ class AdaptiveDockingPipeline:
         # Per-call overrides let the first (screening) pass run with reduced
         # settings; fall back to the instance defaults when not supplied.
         config = LigandPreparationConfig(
+            charge_handling=self.charge_handling,
             max_tautomers=self.max_tautomers if max_tautomers is None else max_tautomers,
             max_conformers=self.max_conformers if max_conformers is None else max_conformers,
             use_etkdg_v3=True,
@@ -1475,7 +1483,8 @@ def run_adaptive_docking(
     use_vina: bool = False,
     max_tautomers: int = 8,
     max_conformers: int = 10,
-    n_cpus: Optional[int] = None
+    n_cpus: Optional[int] = None,
+    charge_handling: str = "preserve",
 ) -> Tuple[DockingResult, List[DockingResult]]:
     """
     Convenience function to run adaptive docking pipeline.
@@ -1496,6 +1505,7 @@ def run_adaptive_docking(
         max_tautomers: Maximum tautomers to generate (default 8)
         max_conformers: Maximum conformers to generate (default 10)
         n_cpus: Number of CPUs for ligand preparation (None = auto-detect)
+        charge_handling: Preserve input formal charges or use legacy neutralization
 
     Returns:
         Tuple of (best_result, all_results)
@@ -1526,6 +1536,7 @@ def run_adaptive_docking(
         use_vina=use_vina,
         max_tautomers=max_tautomers,
         max_conformers=max_conformers,
+        charge_handling=charge_handling,
         n_cpus=n_cpus
     )
 

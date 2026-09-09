@@ -4,6 +4,7 @@ output_dir: ../results/dude_aces_protocol
 threshold: 2.0
 
 single:
+  charge_handling: neutralize  # Retain the original example's preparation policy.
   engine: smina
   box_margin: 4.0
   water_handling: remove_all
