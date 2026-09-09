@@ -5,10 +5,21 @@ RUN micromamba install --yes --name base --file /tmp/environment.yml \
     && micromamba clean --all --yes
 
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
+
+# WORKDIR creates the directory owned by root even though the image runs as
+# $MAMBA_USER, and COPY --chown only sets ownership on the entries it copies,
+# not on the pre-existing parent. pip builds in-tree, so setuptools needs to
+# write dockmate_vs.egg-info into this directory: create it and hand it over
+# before switching back to the unprivileged user.
+USER root
+RUN mkdir -p /opt/dockmate-vs && chown $MAMBA_USER:$MAMBA_USER /opt/dockmate-vs
+USER $MAMBA_USER
+
 WORKDIR /opt/dockmate-vs
 COPY --chown=$MAMBA_USER:$MAMBA_USER . /opt/dockmate-vs
 RUN python -m pip install --no-cache-dir openmm==8.6.0 pdbfixer==1.12.0 \
     && python -m pip install --no-deps . \
+    && rm -rf /opt/dockmate-vs/dockmate_vs.egg-info \
     && test -x /opt/conda/bin/vina \
     && test -x /opt/conda/bin/smina \
     && test -x /opt/conda/bin/rbdock \
