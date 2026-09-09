@@ -12,22 +12,122 @@ DockMate-VS supports two stages:
 Use Protocol Development before Screening when changing receptor preparation,
 water treatment, box geometry, docking engine, search effort, or scoring.
 
-## 2. Requirements
+## 2. Installation
 
-### Python environment
+The steps below follow the [root README](README.md#installation). Python
+3.9-3.12 is supported.
 
-Python 3.9-3.12 is supported. From the repository root:
+### 1. Install conda (if you don't have it)
+
+We recommend **Miniforge**, which defaults to the conda-forge channel used by
+DockMate-VS. Download and run the installer for your OS and architecture:
 
 ```bash
+cd ~
+curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+bash "Miniforge3-$(uname)-$(uname -m).sh"
+```
+
+Accept the licence, keep the default location, and answer `yes` when offered
+`conda init`. Then open a new terminal, or reload:
+
+```bash
+source ~/.bashrc      # macOS: source ~/.zshrc
+conda --version
+```
+
+### 2. Install DockMate-VS
+
+```bash
+git clone https://github.com/gkoorsen/DockMate-VS.git
+cd DockMate-VS
 conda env create -f environment.yml
 conda activate dockmate-vs
 python -m pip install -e .
 ```
 
+Your prompt should now begin with `(dockmate-vs)`. Verify the installation:
+
+```bash
+python -c "import dockmate_vs; print(dockmate_vs.__version__)"
+```
+
 The GUI uses Tk. Linux users may need their distribution's `python3-tk`
 package. On macOS, use a Python build that includes Tk support.
 
-### External programs
+#### Already using Anaconda or Miniconda?
+
+The environment will still build, but conda may report
+`CondaToSNonInteractiveError` if Anaconda's default channels are in your
+configuration. Either remove them:
+
+```bash
+conda config --add channels conda-forge
+conda config --remove channels defaults
+conda config --set channel_priority strict
+```
+
+or accept the channel terms as prompted by the error message.
+
+#### Slow solve?
+
+`conda env create` can take several minutes. Miniforge includes `mamba`,
+which can be used instead:
+
+```bash
+mamba env create -f environment.yml
+```
+
+### 3. Install the external tools
+
+Optionally download [LigPlot+](https://www.ebi.ac.uk/thornton-srv/software/LigPlus/)
+under its own licence. This enables 2D interaction views from the DockMate-VS
+Pose Viewer. With the `dockmate-vs` environment active, run:
+
+```bash
+scripts/install_external_tools.sh --with-pymol --ligplus-archive PATH_TO_LIGPLOT_PLUS_ARCHIVE
+```
+
+Replace `PATH_TO_LIGPLOT_PLUS_ARCHIVE` with the downloaded archive's path,
+quoting paths containing spaces.
+LigPlot+ is not required; without an archive, omit the option and its argument:
+
+```bash
+scripts/install_external_tools.sh --with-pymol
+```
+
+Supported archives are `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, and
+`.tar.xz`/`.txz`. The installer validates the archive before package installation
+and registers an extracted copy under `$CONDA_PREFIX/opt/ligplus/<archive-sha256>`.
+Repeated use of the same archive reuses that copy; a different archive gets a
+separate directory, retaining the previous copy. `--dry-run` validates and
+prints the planned actions without extracting files or modifying the environment.
+Archives must contain exactly one `LigPlus.jar` and a LigPlot executable for
+the current platform. Unsafe paths, links, and special files are rejected.
+Use `--ligplus-root` for an existing extracted installation; it cannot be
+combined with `--ligplus-archive`.
+
+Docking engines are installed into separate conda environments because their
+native dependencies conflict, and their executables are linked into
+`dockmate-vs`.
+
+### 4. Reactivate the environment
+
+This step is required. The installer writes conda activation hooks that set
+`RBT_ROOT` for rDock; they take effect on a fresh activation:
+
+```bash
+conda deactivate && conda activate dockmate-vs
+```
+
+Confirm:
+
+```bash
+echo "$RBT_ROOT"    # should print a path ending in /envs/dockmate-rdock
+vina --version
+```
+
+### External program reference
 
 | Program | Role | Requirement | Installation instructions |
 | --- | --- | --- | --- |
@@ -41,73 +141,29 @@ package. On macOS, use a Python build that includes Tk support.
 | fpocket | Apo binding-site prediction | Optional | [fpocket](https://github.com/Discngine/fpocket#installing) |
 | PyMOL and LigPlot+ | Pose and interaction visualization | Optional | [PyMOL](https://pymol.org/) / [LigPlot+](https://www.ebi.ac.uk/thornton-srv/software/LigPlus/) |
 
-After activating `dockmate-vs`, the bundled installer can install all
-package-manageable tools and keep their commands on the conda environment's
-`PATH`:
+For advanced installer options or existing installations, run:
 
 ```bash
-scripts/install_external_tools.sh
+scripts/install_external_tools.sh --help
 ```
 
-The installer supports Micromamba, Mamba, or Conda configured with the
-libmamba solver. It automatically prefers `micromamba`, then `mamba`, before
-using `conda`. This avoids prolonged dependency resolution with Conda's classic
-solver. macOS users can install Micromamba with:
+The installer supports Micromamba, Mamba, or Conda configured with the libmamba
+solver, preferring `micromamba`, then `mamba`, then `conda`. It accepts
+`--package-manager` to select an executable and `--allow-classic-conda` to
+override the classic-solver guard. Do not run package-manager transactions
+against the same environment concurrently.
 
-```bash
-brew install micromamba
-```
+Existing installations can be registered with `--vina-bin`, `--smina-bin`,
+`--rdock-root`, `--pymol-bin`, and `--ligplus-root`. The installer writes conda
+activation hooks rather than editing `.zshrc`, `.bashrc`, or other shell startup
+files. Reactivate the environment after registering tools as described above.
+The installer supports macOS and Linux; Windows users should use Docker, WSL,
+or the linked manual installation instructions.
 
-See the [Micromamba installation
-instructions](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html)
-for other platforms. Use `--package-manager /path/to/micromamba` to select a
-specific executable. The installer stops before invoking Conda's classic
-solver by default; `--allow-classic-conda` overrides this guard when the delay
-is acceptable.
-
-Use `--with-pymol` to add open-source PyMOL. LigPlot+ must first be obtained
-under its own licence; register an extracted installation without copying it
-into the repository:
-
-```bash
-scripts/install_external_tools.sh --with-pymol \
-  --smina-bin /path/to/smina \
-  --ligplus-root /path/to/LigPlus
-```
-
-The script accepts `--vina-bin`, `--smina-bin`, `--rdock-root`, `--pymol-bin`,
-and `--ligplus-root` for existing installations. It validates these paths
-before solving the environment, links explicitly supplied binaries into the
-active environment, and writes conda activation hooks for `RBT_ROOT` and
-LigPlot+ variables. It does not edit `.zshrc`, `.bashrc`, or other shell startup
-files. The installer supports macOS and Linux. The current bioconda rDock
-package is Linux-only; on macOS, provide an existing rDock root or use the
-Docker backend. Windows users should use Docker, WSL, or the linked manual
-installation instructions.
-
-If an older copy of the installer repeatedly displays `Solving environment`
-and mentions frozen or flexible solves, cancel it with `Ctrl+C`. Install
-Micromamba, update the repository, and rerun the installer. Do not run Conda and
-Micromamba transactions against the same environment concurrently.
-
-Install tools according to their own documentation and licenses. DockMate-VS
-discovers `vina`, `smina`, and `rbdock` from the active executable `PATH` when
-they are available. The GUI can override Vina/Smina executable paths and the
-rDock root (`RBT_ROOT`). Commands without dedicated GUI fields, including
-`obabel`, `reduce`, and `mk_prepare_receptor.py`, must be on `PATH`. Example
-Vina/Smina overrides are:
-
-```text
-/usr/local/bin/vina
-/home/user/apps/smina/smina
-```
-
-Test the selected binary before a campaign:
-
-```bash
-/path/to/vina --version
-/path/to/smina --version
-```
+DockMate-VS discovers `vina`, `smina`, and `rbdock` from the active executable
+`PATH`. The GUI can override Vina/Smina executable paths and the rDock root
+(`RBT_ROOT`). Commands without dedicated GUI fields, including `obabel`,
+`reduce`, and `mk_prepare_receptor.py`, must be on `PATH`.
 
 LigPlot+ is discovered through `LIGPLOT_BIN`, the executable `PATH`, or a
 LigPlus installation named by `LIGPLUS_ROOT`/`LIGPLOT_HOME`. Set

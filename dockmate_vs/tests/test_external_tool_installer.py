@@ -21,6 +21,7 @@ def test_external_tool_installer_has_valid_syntax_and_help():
     )
 
     assert "--ligplus-root PATH" in result.stdout
+    assert "--ligplus-archive PATH" in result.stdout
     assert "--package-manager CMD" in result.stdout
     assert "does not edit shell startup files" in result.stdout
 

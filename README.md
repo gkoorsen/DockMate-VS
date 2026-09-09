@@ -88,9 +88,11 @@ Download LigPlot+ from https://www.ebi.ac.uk/thornton-srv/software/LigPlus/. Thi
 
 Install the external tools required:
 ```bash
-scripts/install_external_tools.sh --with-pymol --ligplot-archive PATH_TO_LIGPLOT_PLUS_ARCHIVE
+scripts/install_external_tools.sh --with-pymol --ligplus-archive PATH_TO_LIGPLOT_PLUS_ARCHIVE
 ```
-if LigPlot+ was downloaded, replace PATH_TO_LIGPLOT_PLUS_ARCHIVE in the command above, alternatively, drop the --ligplot-archive flag. LigPlot+ installation is not required.
+If LigPlot+ was downloaded, replace `PATH_TO_LIGPLOT_PLUS_ARCHIVE` with its path
+(quote paths containing spaces). Otherwise, omit `--ligplus-archive` and its
+argument. LigPlot+ installation is not required.
 
 Docking engines are installed into separate conda environments (their
 native dependencies conflict) and linked into `dockmate-vs`.

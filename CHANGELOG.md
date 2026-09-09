@@ -7,6 +7,9 @@ uses semantic versioning after the initial public release.
 
 ### Changed
 
+- Added `--ligplus-archive` to install and register a separately downloaded
+  LigPlot+ archive, with validation, staged extraction, reusable archive-specific
+  directories, and read-only dry runs. Installation guides use the same option.
 - Removed smart/adaptive ligand-variant selection. New GUI, headless, and Python
   pipeline runs default to docking all generated variants within configured
   preparation limits. Legacy adaptive-selection configs require the original

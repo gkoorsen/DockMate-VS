@@ -24,6 +24,10 @@ Options:
   --rdock-root PATH     Register an existing rDock installation root.
   --pymol-bin PATH      Register an existing PyMOL executable.
   --ligplus-root PATH   Register a separately licensed LigPlot+ installation.
+  --ligplus-archive PATH
+                        Install a user-downloaded LigPlot+ archive (.zip, .tar,
+                        .tar.gz, .tar.bz2, or .tar.xz) and register it.
+                        LigPlot+ must be obtained separately under its licence.
   --dry-run             Print actions without changing the environment.
   -h, --help            Show this help text.
 
@@ -63,6 +67,8 @@ smina_bin=""
 rdock_root=""
 pymol_bin=""
 ligplus_root=""
+ligplus_archive=""
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" || exit 1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -78,7 +84,7 @@ while [[ $# -gt 0 ]]; do
       isolate_engines=0
       shift
       ;;
-    --package-manager|--vina-bin|--smina-bin|--rdock-root|--pymol-bin|--ligplus-root|--engine-env-dir)
+    --package-manager|--vina-bin|--smina-bin|--rdock-root|--pymol-bin|--ligplus-root|--ligplus-archive|--engine-env-dir)
       [[ $# -ge 2 ]] || die "$1 requires a path"
       case "$1" in
         --package-manager) package_manager_arg="$2" ;;
@@ -88,6 +94,7 @@ while [[ $# -gt 0 ]]; do
         --rdock-root) rdock_root="$2" ;;
         --pymol-bin) pymol_bin="$2" ;;
         --ligplus-root) ligplus_root="$2" ;;
+        --ligplus-archive) ligplus_archive="$2" ;;
       esac
       shift 2
       ;;
@@ -148,6 +155,12 @@ note "package manager: $package_manager"
 [[ -z "$pymol_bin" || -f "$pymol_bin" ]] || die "PyMOL executable was not found: $pymol_bin"
 [[ -z "$rdock_root" || -d "$rdock_root" ]] || die "rDock root was not found: $rdock_root"
 [[ -z "$ligplus_root" || -d "$ligplus_root" ]] || die "LigPlot+ root was not found: $ligplus_root"
+[[ -z "$ligplus_archive" || -f "$ligplus_archive" ]] || die "LigPlot+ archive was not found: $ligplus_archive"
+[[ -z "$ligplus_root" || -z "$ligplus_archive" ]] || die "use either --ligplus-root or --ligplus-archive, not both"
+if [[ -n "$ligplus_archive" ]]; then
+  ligplus_root="$("$CONDA_PREFIX/bin/python" "$script_dir/install_ligplus_archive.py" \
+    "$ligplus_archive" "$CONDA_PREFIX" --check)" || die "invalid LigPlot+ archive"
+fi
 
 command_missing() {
   ! command -v "$1" >/dev/null 2>&1
@@ -457,7 +470,13 @@ configure_ligplus() {
   note "LigPlot+ root: $root"
 }
 
-if [[ -n "$ligplus_root" ]]; then
+if [[ -n "$ligplus_archive" && $dry_run -eq 0 ]]; then
+  ligplus_root="$("$CONDA_PREFIX/bin/python" "$script_dir/install_ligplus_archive.py" \
+    "$ligplus_archive" "$CONDA_PREFIX")" || die "could not install LigPlot+ archive"
+fi
+if [[ -n "$ligplus_archive" && $dry_run -eq 1 ]]; then
+  note "DRY RUN: install validated archive $ligplus_archive into $ligplus_root and register LigPlot+ activation hooks"
+elif [[ -n "$ligplus_root" ]]; then
   configure_ligplus "$ligplus_root"
 fi
 
