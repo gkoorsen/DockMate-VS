@@ -476,6 +476,25 @@ benchmark labels support enrichment but do not create reference poses.
 The Results window renders summary sections and charts from the raw result
 records. Reopening a run regenerates the summary with current reporting logic.
 
+Single-receptor assay benchmarks show four panels: ROC discrimination,
+precision-recall, raw docking-score density distributions, and molecular weight
+versus raw docking score. ROC and precision-recall retain the campaign's selected
+ranking score (including rescoring, when present); the lower panels always use
+`best_score`. The molecular-weight annotation is Spearman correlation with
+**negative** docking score, calculated on all finite score/weight pairs.
+Missing molecular weights are excluded only from this diagnostic and its
+available count is shown. Bootstrap confidence intervals are not computed by
+the GUI.
+
+The default score range includes every finite docking score. Set **Score upper
+limit** and click **Apply** to focus the lower panels; **Full range** restores
+the complete view. Off-scale counts are annotated, and each histogram is
+normalized to unit area over the displayed scores. For the manuscript's ESR1
+80/800 seed-42 figure, use an upper limit of `0.8`. The figure toolbar supports
+zoom, reset, and saving PNG/PDF figures. A GUI screenshot captures the same
+four-panel view. Cumulative recovery and ranking-score histograms remain
+available in `redock_summary.json`.
+
 Use **Load Run Folder...** and select one completed campaign directory directly,
 not the parent `output` directory that contains several campaigns. For a
 Screening campaign, the selected folder contains `redock_results.json` or

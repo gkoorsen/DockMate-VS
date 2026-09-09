@@ -3,6 +3,21 @@
 All notable changes to DockMate-VS are documented here. The project
 uses semantic versioning after the initial public release.
 
+## [Unreleased]
+
+### Changed
+
+- Protocol-development dashboard panels are labelled A-D in reading order,
+  consistent with the screening dashboard, for all ranking cutoffs.
+- Single-receptor assay screening charts now show ROC discrimination,
+  precision-recall, raw docking-score density distributions, and a
+  molecular-weight diagnostic with Spearman correlation against negative
+  docking score, matching the manuscript's four-panel analysis.
+- Assay charts support PNG/PDF export and an optional score-axis upper limit
+  with explicit off-scale counts. The default view includes all finite scores.
+- Reopening older runs rebuilds raw-score diagnostics from saved result records;
+  cumulative recovery and ranking-score histograms remain in summary JSON.
+
 ## [0.1.0] - 2026-09-01
 
 ### Added

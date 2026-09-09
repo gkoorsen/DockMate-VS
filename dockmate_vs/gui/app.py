@@ -39,6 +39,7 @@ from dockmate_vs.adaptive_docking import AdaptiveDockingPipeline
 from dockmate_vs.binding_site.cocrystal import BindingSite, BindingSiteDefinition
 from dockmate_vs.docking.smina import SminaDockingEngine
 from dockmate_vs.gui.utils import download_pdb_structure
+from dockmate_vs.gui.assay_charts import docking_diagnostics, populate_assay_charts
 from dockmate_vs.gui.widgets.progress_dialog import ProgressDialog
 from dockmate_vs.preparation.protein import RECEPTOR_PREPARATION_SEED
 from dockmate_vs.utils.rmsd import calculate_rmsd
@@ -4046,8 +4047,12 @@ class DockMateVSApp(tk.Tk):
         def _on_frame_configure(_event):
             canvas.configure(scrollregion=canvas.bbox("all"))
 
-        def _on_canvas_configure(event):
-            canvas.itemconfigure(window_id, width=event.width)
+        def _on_canvas_configure(_event=None):
+            chart_selected = notebook.select() == str(charts_frame)
+            canvas.itemconfigure(
+                window_id, width=canvas.winfo_width(),
+                height=canvas.winfo_height() if chart_selected else 0,
+            )
 
         content.bind("<Configure>", _on_frame_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
@@ -4059,6 +4064,7 @@ class DockMateVSApp(tk.Tk):
         charts_frame = tk.Frame(notebook)
         notebook.add(summary_frame, text="Summary")
         notebook.add(charts_frame, text="Charts")
+        notebook.bind("<<NotebookTabChanged>>", _on_canvas_configure)
 
         self._populate_summary_tab(summary_frame, summary)
         self._populate_charts_tab(charts_frame, summary, rmsd_values)
@@ -4284,6 +4290,11 @@ class DockMateVSApp(tk.Tk):
             if results_path.suffix.lower() == ".csv" else results_path
         )
         if not json_path.exists():
+            csv_path = results_path.with_name("redock_results.csv")
+            if saved_summary.get("assay_benchmark_charts") and csv_path.exists():
+                saved_summary["assay_benchmark_charts"]["docking_diagnostics"] = (
+                    docking_diagnostics(self._read_results_csv(csv_path).to_dict("records"))
+                )
             return saved_summary
         try:
             payload = json.loads(json_path.read_text())
@@ -4683,7 +4694,7 @@ class DockMateVSApp(tk.Tk):
             top_n = state["top_n"]
             self._draw_protocol_scatter(
                 pose_canvas,
-                f"Pose generation vs selected Top-{top_n} ranking",
+                f"A  Pose generation vs selected Top-{top_n} ranking",
                 state["data"]["pose_ranking_points"],
                 "Best generated-pose RMSD (A)",
                 f"Selected Top-{top_n} RMSD (A)",
@@ -4698,7 +4709,7 @@ class DockMateVSApp(tk.Tk):
             top_n = state["top_n"]
             self._draw_protocol_scatter(
                 rescore_canvas,
-                f"Paired Top-{top_n} RMSD: docking vs rescoring",
+                f"B  Paired Top-{top_n} RMSD: docking vs rescoring",
                 state["data"]["rescore_points"],
                 f"Docking-ranked Top-{top_n} RMSD (A)",
                 f"Rescored Top-{top_n} RMSD (A)",
@@ -4713,7 +4724,7 @@ class DockMateVSApp(tk.Tk):
             top_n = state["top_n"]
             self._draw_protocol_scatter(
                 runtime_canvas,
-                f"Top-{top_n} accuracy-runtime trade-off",
+                f"C  Top-{top_n} accuracy-runtime trade-off",
                 state["data"]["runtime_points"],
                 "Recorded docking runtime (s, log scale)",
                 f"Selected Top-{top_n} RMSD (A)",
@@ -4726,7 +4737,7 @@ class DockMateVSApp(tk.Tk):
             top_n = state["top_n"]
             self._draw_factor_effect_chart(
                 effects_canvas,
-                f"Top-{top_n} RMSD by protocol factor",
+                f"D  Top-{top_n} RMSD by protocol factor",
                 state["data"]["factor_effects"],
                 threshold=2.0,
                 x_label=f"Selected Top-{top_n} RMSD (A)",
@@ -4963,94 +4974,7 @@ class DockMateVSApp(tk.Tk):
                 summary.get("enrichment_dataset_type") == "assay_benchmark"
                 and assay_data.get("roc_curve")
             ):
-                tk.Label(
-                    parent,
-                    text=(
-                        f"Assay benchmark: {assay_data['actives']} actives and "
-                        f"{assay_data['inactives']} inactives ranked at one receptor. "
-                        "Curves and distributions use the same ranking score; higher "
-                        "values rank better. Histogram classes are normalized separately."
-                    ),
-                    anchor="w",
-                    justify="left",
-                    wraplength=1050,
-                    fg="#555555",
-                ).grid(
-                    row=0, column=0, columnspan=2, sticky="ew",
-                    padx=10, pady=(10, 0),
-                )
-
-                auc = summary.get("roc_auc")
-                ap = summary.get("average_precision")
-                prevalence = assay_data.get("prevalence")
-                ef_values = [
-                    summary.get("ef_1_percent"),
-                    summary.get("ef_5_percent"),
-                    summary.get("ef_10_percent"),
-                ]
-                chart_specs = [
-                    (
-                        "curve",
-                        f"ROC curve (AUC = {auc:.3f})" if auc is not None else "ROC curve",
-                        assay_data["roc_curve"],
-                        "False-positive rate", "True-positive rate",
-                        True, None, (), "#177E89",
-                    ),
-                    (
-                        "curve",
-                        (
-                            f"Precision-recall curve (AP = {ap:.3f})"
-                            if ap is not None else "Precision-recall curve"
-                        ),
-                        assay_data["precision_recall_curve"],
-                        "Recall", "Precision",
-                        False, prevalence, (), "#D97732",
-                    ),
-                    (
-                        "histogram", "Ranking-score distributions",
-                        assay_data["score_histogram"],
-                        "Ranking score (higher is better)", "Within-class frequency (%)",
-                        False, None, (), "",
-                    ),
-                    (
-                        "curve",
-                        "Cumulative active recovery (EF 1/5/10% = "
-                        + "/".join(
-                            f"{value:.2f}" if value is not None else "N/A"
-                            for value in ef_values
-                        )
-                        + ")",
-                        assay_data["cumulative_recovery_curve"],
-                        "Fraction of library screened", "Fraction of actives recovered",
-                        True, None, (0.01, 0.05, 0.10), "#5B8E3E",
-                    ),
-                ]
-                for index, spec in enumerate(chart_specs):
-                    canvas = tk.Canvas(
-                        parent, height=300, bg="white", highlightthickness=1
-                    )
-                    canvas.grid(
-                        row=1 + index // 2, column=index % 2,
-                        sticky="nsew", padx=10, pady=10,
-                    )
-                    if spec[0] == "histogram":
-                        self._install_chart(
-                            canvas,
-                            lambda c=canvas, s=spec: self._draw_score_distribution_chart(
-                                c, s[1], s[2], s[3], s[4]
-                            ),
-                        )
-                    else:
-                        self._install_chart(
-                            canvas,
-                            lambda c=canvas, s=spec: self._draw_xy_line_chart(
-                                c, s[1], s[2], s[3], s[4],
-                                reference_diagonal=s[5],
-                                horizontal_reference=s[6],
-                                vertical_guides=s[7],
-                                color=s[8],
-                            ),
-                        )
+                populate_assay_charts(parent, summary)
                 return
 
             tk.Label(
@@ -9087,6 +9011,10 @@ class DockMateVSApp(tk.Tk):
                 summary["assay_benchmark_charts"] = (
                     self._assay_benchmark_chart_data(score_labels)
                 )
+                if summary["assay_benchmark_charts"]:
+                    summary["assay_benchmark_charts"]["docking_diagnostics"] = (
+                        docking_diagnostics(asdict(result) for result in results)
+                    )
         
         # Calculate protocol/engine breakdown (only for actives with valid RMSD)
         # Older redock results predate the explicit completion field. A valid
