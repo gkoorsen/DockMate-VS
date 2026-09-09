@@ -10,7 +10,6 @@ import logging
 import os
 import time
 from rdkit import Chem
-from rdkit.Chem import Descriptors
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -113,7 +112,7 @@ class AdaptiveDockingPipeline:
         smina_timeout_sec: int = 1200,
         smina_exhaustiveness: int = 16,
         use_vina: bool = False,
-        ligand_variant_mode: str = "first",
+        ligand_variant_mode: str = "all",
         variant_select_by: str = "rmsd",
         max_tautomers: int = 8,
         max_conformers: int = 10,
@@ -136,7 +135,7 @@ class AdaptiveDockingPipeline:
             smina_timeout_sec: Smina timeout in seconds
             smina_exhaustiveness: Base Smina exhaustiveness for protocols
             use_vina: Use Vina binary instead of Smina (vina scoring only)
-            ligand_variant_mode: How to select ligand variants ("first", "best", "all")
+            ligand_variant_mode: Explicit selection ("all", "best", "first", "thorough")
             variant_select_by: Criterion for "best" variant ("rmsd" or "energy")
             max_tautomers: Maximum tautomers to generate (default 8)
             max_conformers: Maximum conformers to generate (default 10)
@@ -145,6 +144,7 @@ class AdaptiveDockingPipeline:
             skip_rmsd_for_decoys: Whether to skip RMSD calculation for decoys
             charge_handling: Preserve input formal charges or use legacy neutralization
         """
+        self.validate_variant_mode(ligand_variant_mode)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -308,26 +308,15 @@ class AdaptiveDockingPipeline:
         if not enumerate_states:
             logger.info("Skipping protonation/tautomer enumeration for metal-containing ligand")
 
-        # First, prepare with reduced settings for efficiency
-        reduced_tautomers = 4  # Reduce computational cost
-        reduced_conformers = 5
-
         variants_all = self._prepare_ligand_variants(
             ligand_smiles=ligand_smiles,
             ligand_name=ligand_name,
-            enumerate_states=enumerate_states,
-            max_tautomers=reduced_tautomers,
-            max_conformers=reduced_conformers
+            enumerate_states=enumerate_states
         )
 
         logger.info(f"Prepared {len(variants_all)} initial variants")
 
-        # ADAPTIVE VARIANT SELECTION (early - before docking)
-        variants = self._adaptive_variant_selection(
-            variants=variants_all,
-            ligand_smiles=ligand_smiles,
-            ligand_name=ligand_name
-        )
+        variants = self._select_ligand_variants(variants_all)
 
         logger.info(f"Selected {len(variants)} variants for docking")
 
@@ -664,8 +653,7 @@ class AdaptiveDockingPipeline:
         max_tautomers: Optional[int] = None,
         max_conformers: Optional[int] = None
     ) -> List[dict]:
-        # Per-call overrides let the first (screening) pass run with reduced
-        # settings; fall back to the instance defaults when not supplied.
+        # Explicit per-call limits override the pipeline's preparation settings.
         config = LigandPreparationConfig(
             charge_handling=self.charge_handling,
             max_tautomers=self.max_tautomers if max_tautomers is None else max_tautomers,
@@ -740,113 +728,28 @@ class AdaptiveDockingPipeline:
             return min(successes, key=_key)
         return min(results, key=_key)
     
-    def _adaptive_variant_selection(
-        self,
-        variants: List[dict],
-        ligand_smiles: str,
-        ligand_name: str
-    ) -> List[dict]:
-        """
-        Intelligently select variants based on molecular properties.
-        
-        Strategy:
-        - Rigid molecules (few rotatable bonds): dock 1-2 variants
-        - Semi-flexible molecules: dock 3-5 variants
-        - Highly flexible molecules: dock 5-10 variants
-        - Very large molecules: dock more variants
-        
-        Args:
-            variants: List of prepared ligand variants
-            ligand_smiles: SMILES string for property calculation
-            ligand_name: Ligand name for logging
-            
-        Returns:
-            Selected subset of variants
-        """
+    @staticmethod
+    def validate_variant_mode(mode: str) -> str:
+        if mode not in {"all", "best", "first", "thorough"}:
+            raise ValueError(
+                f"Unsupported ligand_variant_mode '{mode}'. Smart/adaptive variant "
+                "selection has been removed. Choose all, best, first, or thorough; "
+                "use the original software version to resume a legacy adaptive campaign."
+            )
+        return mode
+
+    def _select_ligand_variants(self, variants: List[dict]) -> List[dict]:
+        """Apply the explicit sampling policy without property-based budgets."""
+        mode = self.validate_variant_mode(self.ligand_variant_mode)
         if not variants:
-            logger.warning(f"No variants available for {ligand_name}")
             return variants
-        
-        # Parse molecule to analyze properties
-        try:
-            mol = Chem.MolFromSmiles(ligand_smiles)
-            if mol is None:
-                logger.warning(f"Could not parse SMILES for {ligand_name}, using default selection")
-                return self._default_variant_selection(variants)
-        except Exception as e:
-            logger.warning(f"Error analyzing {ligand_name}: {e}, using default selection")
-            return self._default_variant_selection(variants)
-        
-        # Calculate molecular properties
-        n_rotatable = Descriptors.NumRotatableBonds(mol)
-        n_heavy_atoms = mol.GetNumHeavyAtoms()
-        molecular_weight = Descriptors.MolWt(mol)
-        
-        logger.info(f"Ligand properties: {n_rotatable} rotatable bonds, "
-                   f"{n_heavy_atoms} heavy atoms, MW={molecular_weight:.1f}")
-        
-        # Determine flexibility category
-        if n_rotatable == 0:
-            flexibility = "rigid"
-            n_variants = 1
-        elif n_rotatable <= 3:
-            flexibility = "semi-rigid"
-            n_variants = 2
-        elif n_rotatable <= 6:
-            flexibility = "flexible"
-            n_variants = 5
-        elif n_rotatable <= 10:
-            flexibility = "very-flexible"
-            n_variants = 8
-        else:
-            flexibility = "highly-flexible"
-            n_variants = 10
-        
-        # Adjust for size (larger molecules need more sampling)
-        if n_heavy_atoms > 40:
-            n_variants = min(n_variants + 3, 10)
-            logger.info(f"Large molecule ({n_heavy_atoms} atoms): increasing variants")
-        elif n_heavy_atoms > 30:
-            n_variants = min(n_variants + 2, 10)
-        
-        # Cap at available variants
-        n_variants = min(n_variants, len(variants))
-        
-        logger.info(f"Flexibility: {flexibility} → docking {n_variants} variants "
-                   f"(out of {len(variants)} available)")
-        
-        # Select variants intelligently
-        if n_variants >= len(variants):
-            # Dock all variants
-            selected = variants
-        elif n_variants == 1:
-            # Pick single best by energy
-            selected = [self._select_best_variant(variants)]
-        else:
-            # Pick diverse set: best energy + diverse conformers
-            selected = self._select_diverse_variants(variants, n_variants)
-        
-        logger.info(f"Selected {len(selected)} variants for docking:")
-        for i, var in enumerate(selected[:5], 1):  # Show first 5
-            energy = var.get('energy', 0.0)
-            label = var.get('label', 'unknown')
-            logger.info(f"  {i}. {label} (energy: {energy:.2f} kcal/mol)")
-        if len(selected) > 5:
-            logger.info(f"  ... and {len(selected) - 5} more")
-        
-        return selected
-    
-    def _default_variant_selection(self, variants: List[dict]) -> List[dict]:
-        """Fallback selection based on configured mode."""
-        mode = self.ligand_variant_mode
-        
         if mode == "best":
             return [self._select_best_variant(variants)]
-        elif mode == "first":
+        if mode == "first":
             return variants[:1]
-        else:
-            # Default: pick top 5 by energy
-            return sorted(variants, key=lambda v: v.get('energy', 0.0))[:5]
+        if mode == "thorough":
+            return self._select_diverse_variants(variants, min(15, len(variants)))
+        return variants
     
     def _select_diverse_variants(
         self,

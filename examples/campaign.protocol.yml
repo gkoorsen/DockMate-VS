@@ -15,7 +15,7 @@ single:
   scoring: vina
   smina_binary: smina
   vina_binary: vina
-  ligand_variant_mode: adaptive
+  ligand_variant_mode: all
   max_tautomers: 2
   max_conformers: 2
 

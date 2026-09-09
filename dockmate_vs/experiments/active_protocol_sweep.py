@@ -105,7 +105,7 @@ def main() -> int:
                 config = {
                     "engine": "smina", "rdock_root": ".",
                     "smina_binary": args.smina, "vina_binary": args.vina,
-                    "ligand_variant_mode": "adaptive", "variant_select_by": "rmsd",
+                    "ligand_variant_mode": "all", "variant_select_by": "rmsd",
                     "max_tautomers": 2, "max_conformers": 3, "n_cpus": args.cpu,
                     "water_handling": water, "size_override": None, "box_margin": 4.0,
                     "exhaustiveness": exhaustiveness, "num_modes": 20,

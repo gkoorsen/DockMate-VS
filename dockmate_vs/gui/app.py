@@ -184,7 +184,7 @@ class DockMateVSApp(tk.Tk):
         self.sample_enable_var = tk.BooleanVar(value=False)
         self.sample_size_var = tk.StringVar(value="")
         self.sample_seed_var = tk.StringVar(value="")
-        self.variant_mode_var = tk.StringVar(value="adaptive") 
+        self.variant_mode_var = tk.StringVar(value="all_score")
         self.max_tautomers_var = tk.StringVar(value="8")
         self.max_conformers_var = tk.StringVar(value="10")
         self.charge_handling_var = tk.StringVar(value="Preserve input charges")
@@ -272,6 +272,7 @@ class DockMateVSApp(tk.Tk):
         self.grid_columnconfigure(1, weight=0)
 
         canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        self._main_canvas = canvas
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
 
         canvas.grid(row=0, column=0, sticky="nsew")
@@ -286,6 +287,8 @@ class DockMateVSApp(tk.Tk):
 
         def _on_canvas_configure(event: tk.Event) -> None:
             canvas.itemconfigure(container_id, width=event.width)
+            if hasattr(self, "results_notebook"):
+                self.after_idle(self._resize_workflow_notebook)
 
         container.bind("<Configure>", _on_container_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
@@ -382,16 +385,19 @@ class DockMateVSApp(tk.Tk):
         ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         row += 1
+        self._campaign_input_widgets = tuple(container.winfo_children())
         self.workflow_notebook = ttk.Notebook(container)
         self.workflow_notebook.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 5))
         self.protocol_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
         self.screening_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
         self.filters_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
         self.pose_viewer_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
+        self.results_tab = tk.Frame(self.workflow_notebook, padx=10, pady=10)
         self.workflow_notebook.add(self.protocol_tab, text="Protocol Development")
         self.workflow_notebook.add(self.screening_tab, text="Screening")
         self.workflow_notebook.add(self.filters_tab, text="Filters")
         self.workflow_notebook.add(self.pose_viewer_tab, text="Pose Viewer")
+        self.workflow_notebook.add(self.results_tab, text="Results")
         self.workflow_notebook.bind("<<NotebookTabChanged>>", self._on_workflow_changed)
 
         structure_filters = tk.LabelFrame(
@@ -581,26 +587,6 @@ class DockMateVSApp(tk.Tk):
             row=settings_row, column=0, columnspan=3, sticky="ew", pady=(5, 5)
         )
         variant_frame.grid_columnconfigure(0, weight=1)
-
-        # Adaptive mode (NEW - recommended default)
-        variant_adaptive = tk.Radiobutton(
-            variant_frame,
-            text="⭐ Adaptive (recommended) - Smart variant selection",
-            variable=self.variant_mode_var,
-            value="adaptive",
-            font=("Arial", 10, "bold")
-        )
-        variant_adaptive.grid(row=0, column=0, sticky="w", pady=(0, 2))
-        self._register_busy_widget(variant_adaptive)
-
-        # Add help text for adaptive mode
-        adaptive_help = tk.Label(
-            variant_frame,
-            text="Automatically selects 1-10 variants based on molecular flexibility",
-            font=("Arial", 8, "italic"),
-            foreground="gray"
-        )
-        adaptive_help.grid(row=1, column=0, sticky="w", padx=20, pady=(0, 8))
 
         # Best variant only (renamed for clarity)
         variant_best = tk.Radiobutton(
@@ -918,11 +904,11 @@ class DockMateVSApp(tk.Tk):
         status_label = tk.Label(container, textvariable=self.status_var, anchor="w", fg="#555555")
         status_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 0))
 
-        row += 1
-        self.results_frame = tk.LabelFrame(container, text="Results", padx=10, pady=10)
-        self.results_frame.grid(row=row, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
+        self.results_tab.grid_columnconfigure(0, weight=1)
+        self.results_tab.grid_rowconfigure(0, weight=1)
+        self.results_frame = tk.Frame(self.results_tab)
+        self.results_frame.grid(row=0, column=0, sticky="nsew")
         self.results_frame.grid_columnconfigure(0, weight=1)
-        container.grid_rowconfigure(row, weight=1)
 
         results_actions = tk.Frame(self.results_frame)
         results_actions.grid(row=0, column=0, sticky="ew", pady=(0, 6))
@@ -947,18 +933,15 @@ class DockMateVSApp(tk.Tk):
         )
         pose_viewer_btn.pack(side="left")
         self._register_busy_widget(pose_viewer_btn)
-        tk.Label(
-            results_actions,
-            text="Choose one completed campaign folder, not the parent output folder.",
-            fg="#666666",
-        ).pack(side="left", padx=10)
-
         self.results_notebook = ttk.Notebook(self.results_frame)
         self.results_notebook.grid(row=1, column=0, sticky="nsew")
         self.results_summary_tab = tk.Frame(self.results_notebook)
         self.results_charts_tab = tk.Frame(self.results_notebook)
         self.results_notebook.add(self.results_summary_tab, text="Summary")
         self.results_notebook.add(self.results_charts_tab, text="Charts")
+        self.results_notebook.bind(
+            "<<NotebookTabChanged>>", lambda _event: self.after_idle(self._resize_workflow_notebook)
+        )
         self.results_frame.grid_rowconfigure(1, weight=1)
         self._populate_empty_results()
         self._update_execution_backend()
@@ -1061,6 +1044,7 @@ class DockMateVSApp(tk.Tk):
             self._set_status("Vina binary updated")
 
     def _on_workflow_changed(self, _event: Optional[tk.Event] = None) -> None:
+        self._main_canvas.yview_moveto(0)
         selected = self.workflow_notebook.select()
         if selected == str(self.screening_tab):
             self.mode_var.set("screening")
@@ -1082,12 +1066,24 @@ class DockMateVSApp(tk.Tk):
         if not selected:
             return
         page = self.nametowidget(selected)
+        if selected == str(self.results_tab):
+            if self.results_notebook.select() == str(self.results_charts_tab):
+                page_height = max(740, self._main_canvas.winfo_height() - 100)
+                self.results_notebook.configure(height=page_height - 80)
+                self.workflow_notebook.configure(height=page_height)
+                return
+            self.results_notebook.configure(height=0)
         page.update_idletasks()
         self.workflow_notebook.configure(height=max(70, page.winfo_reqheight() + 12))
 
     def _update_mode(self) -> None:
         mode = self.mode_var.get()
         selected_tab = self.workflow_notebook.select()
+        for widget in self._campaign_input_widgets:
+            if selected_tab == str(self.results_tab):
+                widget.grid_remove()
+            else:
+                widget.grid()
         run_tab_selected = selected_tab in {
             str(self.protocol_tab), str(self.screening_tab)
         }
@@ -1096,12 +1092,6 @@ class DockMateVSApp(tk.Tk):
                 self.run_configuration_frame.grid()
             else:
                 self.run_configuration_frame.grid_remove()
-        if hasattr(self, "results_frame"):
-            if run_tab_selected:
-                self.results_frame.grid()
-            else:
-                self.results_frame.grid_remove()
-
         sampling_state = "normal" if mode == "screening" else "disabled"
         for widget in self._sampling_widgets:
             try:
@@ -1827,6 +1817,7 @@ class DockMateVSApp(tk.Tk):
 
     def _run_protocol_worker(self, actives: List[Dict[str, str]], config: dict) -> None:
         config = self._config_with_charge_handling(config)
+        AdaptiveDockingPipeline.validate_variant_mode(config["single"].get("ligand_variant_mode", "all"))
         output_dir = config["output_dir"] / "protocol_development"
         output_dir.mkdir(parents=True, exist_ok=True)
         results_path = output_dir / "protocol_development_results.csv"
@@ -2866,6 +2857,8 @@ class DockMateVSApp(tk.Tk):
 
     def _run_worker(self, pairs: List[Dict[str, str]], config: dict) -> None:
         config = self._config_with_charge_handling(config)
+        policy_key = "adaptive" if config.get("mode") == "adaptive" else "single"
+        AdaptiveDockingPipeline.validate_variant_mode(config[policy_key].get("ligand_variant_mode", "all"))
         output_dir = config["output_dir"]
         output_dir.mkdir(parents=True, exist_ok=True)
         progress_path = output_dir / "redock_progress.json"
@@ -3174,7 +3167,7 @@ class DockMateVSApp(tk.Tk):
             use_vina=adaptive_cfg.get("use_vina", False),
             smina_binary=adaptive_cfg.get("smina_binary", "smina"),
             vina_binary=adaptive_cfg.get("vina_binary", "vina"),
-            ligand_variant_mode=adaptive_cfg.get("ligand_variant_mode", "first"),
+            ligand_variant_mode=adaptive_cfg.get("ligand_variant_mode", "all"),
             variant_select_by=adaptive_cfg.get("variant_select_by", "rmsd"),
             max_tautomers=adaptive_cfg.get("max_tautomers", 8),
             max_conformers=adaptive_cfg.get("max_conformers", 10),
@@ -3420,7 +3413,7 @@ class DockMateVSApp(tk.Tk):
             rdock_root=Path(single_cfg["rdock_root"]),
             smina_binary=single_cfg["smina_binary"],
             vina_binary=single_cfg["vina_binary"],
-            ligand_variant_mode=single_cfg.get("ligand_variant_mode", "first"),
+            ligand_variant_mode=single_cfg.get("ligand_variant_mode", "all"),
             variant_select_by=single_cfg.get("variant_select_by", "rmsd"),
             max_tautomers=single_cfg.get("max_tautomers", 8),
             max_conformers=single_cfg.get("max_conformers", 10),
@@ -3454,20 +3447,8 @@ class DockMateVSApp(tk.Tk):
             ligand_name=ligand_name,
             enumerate_states=enumerate_states
         )
-        variant_mode = single_cfg.get("ligand_variant_mode", "first")
         variants_prepared = len(variants)
-        if variant_mode == "best":
-            variants = [pipeline._select_best_variant(variants)]
-        elif variant_mode == "first":
-            variants = variants[:1]
-        elif variant_mode == "adaptive":
-            variants = pipeline._adaptive_variant_selection(
-                variants, ligand_smiles=smiles, ligand_name=ligand_name
-            )
-        elif variant_mode == "thorough":
-            variants = pipeline._select_diverse_variants(
-                variants, min(15, len(variants))
-            )
+        variants = pipeline._select_ligand_variants(variants)
         variants_docked = len(variants)
 
         binding_site: BindingSite
@@ -4125,7 +4106,7 @@ class DockMateVSApp(tk.Tk):
         self._populate_charts_tab(charts_frame, summary, rmsd_values)
 
     def _render_protocol_results(self, results_path: Path, report_path: Path) -> None:
-        """Render a protocol-development report in the main Results card."""
+        """Render a protocol-development report in the Results tab."""
         self._clear_frame(self.results_summary_tab)
         self._clear_frame(self.results_charts_tab)
         self._populate_protocol_report(
@@ -4133,6 +4114,8 @@ class DockMateVSApp(tk.Tk):
         )
         self._populate_protocol_charts(self.results_charts_tab, Path(results_path))
         self.results_notebook.select(self.results_summary_tab)
+        self.workflow_notebook.select(self.results_tab)
+        self.after_idle(self._resize_workflow_notebook)
 
     def _show_protocol_results(self, results_path: Path, report_path: Path) -> None:
         """Open the completion summary window for a protocol-development run."""
@@ -4256,13 +4239,16 @@ class DockMateVSApp(tk.Tk):
     ) -> None:
         """Render generated Markdown as labels and sortable-looking tables."""
         if source_text:
-            tk.Label(
+            source_label = tk.Label(
                 parent,
                 text=source_text,
                 anchor="w",
                 justify="left",
+                width=1,
                 fg="#555555",
-            ).pack(fill="x", pady=(0, 6))
+            )
+            source_label.pack(fill="x", pady=(0, 6))
+            source_label.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(100, event.width - 8)))
         prose, tables = DockMateVSApp._parse_protocol_markdown_sections(report)
         for index, line in enumerate(prose):
             if index == 0:
@@ -4272,9 +4258,11 @@ class DockMateVSApp(tk.Tk):
             else:
                 is_bullet = line.startswith("- ")
                 rendered = line[2:].strip() if is_bullet else line
-                tk.Label(
-                    parent, text=rendered, anchor="w", justify="left", wraplength=1050
-                ).pack(fill="x", padx=(14 if is_bullet else 0, 0), pady=(0, 3))
+                label = tk.Label(
+                    parent, text=rendered, anchor="w", justify="left", width=1, wraplength=1050
+                )
+                label.pack(fill="x", padx=(14 if is_bullet else 0, 0), pady=(0, 3))
+                label.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(100, event.width - 8)))
 
         if not tables:
             if not prose:
@@ -4702,12 +4690,14 @@ class DockMateVSApp(tk.Tk):
             row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0)
         )
         header.grid_columnconfigure(0, weight=1)
-        tk.Label(
+        note_label = tk.Label(
             header, textvariable=note_var, anchor="w", justify="left",
-            wraplength=850, fg="#555555",
-        ).grid(row=0, column=0, sticky="ew")
+            width=1, wraplength=850, fg="#555555",
+        )
+        note_label.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        note_label.bind("<Configure>", lambda event: note_label.configure(wraplength=max(100, event.width)))
         selector = tk.Frame(header)
-        selector.grid(row=0, column=1, sticky="ne", padx=(12, 0))
+        selector.grid(row=0, column=0, sticky="e")
         tk.Label(selector, text="Ranking cutoff:").pack(side="left", padx=(0, 4))
 
         parent.grid_columnconfigure(0, weight=1)
@@ -4827,6 +4817,8 @@ class DockMateVSApp(tk.Tk):
         self._populate_summary_tab(self.results_summary_tab, summary)
         self._populate_charts_tab(self.results_charts_tab, summary, rmsd_values)
         self.results_notebook.select(self.results_summary_tab)
+        self.workflow_notebook.select(self.results_tab)
+        self.after_idle(self._resize_workflow_notebook)
 
     def _populate_empty_results(self) -> None:
         self._clear_frame(self.results_summary_tab)
@@ -5284,9 +5276,9 @@ class DockMateVSApp(tk.Tk):
     ) -> None:
         """Render a responsive condition-level scatter plot with hover details."""
         canvas.delete("all")
-        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 460)
-        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 280)
-        left, right, top, bottom = 64, 24, 67, 48
+        width = int(canvas.winfo_width()) if canvas.winfo_width() > 1 else 460
+        height = int(canvas.winfo_height()) if canvas.winfo_height() > 1 else 280
+        left, right, top, bottom = 64, 24, 95, 48
         plot_width = max(100, width - left - right)
         plot_height = max(90, height - top - bottom)
         canvas.create_text(
@@ -5441,8 +5433,8 @@ class DockMateVSApp(tk.Tk):
                 anchor="nw", fill="#356B39", font=("TkDefaultFont", 8),
             )
             canvas.create_text(
-                _x(x_threshold) + 8, top + 8, text="search and ranking failed",
-                anchor="nw", fill="#8A4A3B", font=("TkDefaultFont", 8),
+                width - right - 8, top + 22, text="search and\nranking failed",
+                anchor="ne", fill="#8A4A3B", font=("TkDefaultFont", 8),
             )
 
         if pareto:
@@ -5470,22 +5462,17 @@ class DockMateVSApp(tk.Tk):
                 font=("TkDefaultFont", 8),
             )
             legend_x += max(62, len(engine) * 7 + 28)
+        legend_notes = []
         if len({bool(point.get("rescore")) for point in valid_points}) > 1:
-            canvas.create_text(
-                legend_x, 43.5, text="circle=docking  diamond=rescored",
-                anchor="w", fill="#555555", font=("TkDefaultFont", 8),
-            )
-            legend_x += 175
+            legend_notes.append("circle=docking; diamond=rescored")
         if any(int(point.get("count", 1)) > 1 for point in valid_points):
-            canvas.create_text(
-                legend_x, 43.5, text="size=overlap count",
-                anchor="w", fill="#555555", font=("TkDefaultFont", 8),
-            )
+            legend_notes.append("size=overlap count")
         if pareto:
-            canvas.create_text(
-                width - right, 43.5, text="outlined = Pareto-efficient",
-                anchor="e", fill="#333333", font=("TkDefaultFont", 8),
-            )
+            legend_notes.append("outlined=Pareto-efficient")
+        canvas.create_text(
+            14, 57, text="; ".join(legend_notes), width=width - 28,
+            anchor="nw", fill="#555555", font=("TkDefaultFont", 8),
+        )
 
         for index, point in enumerate(valid_points):
             x_coord, y_coord = _x(point["x"]), _y(point["y"])
@@ -5542,8 +5529,8 @@ class DockMateVSApp(tk.Tk):
     ) -> None:
         """Show median, IQR, and range for each protocol factor level."""
         canvas.delete("all")
-        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 460)
-        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 280)
+        width = int(canvas.winfo_width()) if canvas.winfo_width() > 1 else 460
+        height = int(canvas.winfo_height()) if canvas.winfo_height() > 1 else 280
         left, right, top, bottom = 142, 42, 48, 34
         plot_width = max(100, width - left - right)
         plot_height = max(100, height - top - bottom)
@@ -10138,7 +10125,6 @@ class DockMateVSApp(tk.Tk):
             (variant_mode, variant_select_by) tuple
             
         Modes:
-            - "adaptive": Smart selection based on molecular flexibility (1-10 variants)
             - "best": Only lowest energy variant (1 variant)
             - "thorough": Comprehensive sampling (10-15 variants)
             - "all": All variants
@@ -10150,9 +10136,7 @@ class DockMateVSApp(tk.Tk):
         """
         mode = self.variant_mode_var.get()
         
-        if mode == "adaptive":
-            return "adaptive", "rmsd"
-        elif mode == "best":
+        if mode == "best":
             return "best", "rmsd"
         elif mode == "thorough":
             return "thorough", "rmsd"
@@ -10161,9 +10145,10 @@ class DockMateVSApp(tk.Tk):
         elif mode == "all_score":
             return "all", "score"
         else:
-            # Fallback to adaptive (safer than "first")
-            logger.warning(f"Unknown variant mode '{mode}', defaulting to adaptive")
-            return "adaptive", "rmsd"
+            raise ValueError(
+                f"Unsupported ligand variant mode '{mode}'. "
+                "Choose an explicit variant selection option."
+            )
 
     @staticmethod
     def _variant_selection_for_mode(run_mode: str, requested: str) -> str:

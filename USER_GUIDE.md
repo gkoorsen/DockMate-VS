@@ -350,10 +350,19 @@ DockMate-VS prepares each populated SMILES with RDKit and Open Babel:
    charge-model-free fallback. Metal-containing ligands skip tautomer
    enumeration and use the Open Babel `qeq`, `qtpie`, and `eem` charge fallbacks.
 5. The selected ligand-variant policy determines how many prepared variants are
-   docked. Adaptive selection uses rotatable-bond and heavy-atom counts; the
-   fast option uses the lowest MMFF-energy variant; thorough/all modes dock a
-   larger subset. Screening always chooses the final retained result by docking
+   docked. The default docks all generated variants within the configured
+   tautomer/conformer limits. The fast option uses the lowest MMFF-energy variant;
+   thorough sampling selects up to 15 variants, prioritizing different tautomer
+   states before filling remaining slots by energy. Screening always chooses the final retained result by docking
    score, never by native-pose RMSD.
+
+Smart/adaptive ligand-variant selection has been removed. Headless/API selection
+supports `all` (default), `best`, `first` (legacy), and `thorough`. Configurations
+containing `ligand_variant_mode: adaptive` are rejected rather than silently
+mapped to another method. To reproduce or resume those historical campaigns,
+use their original software version. Choose an explicit supported mode and a
+new output directory for new runs. The adaptive docking-protocol cascade remains
+available and now honours the configured variant selection and preparation limits.
 
 Neither charge-handling mode enumerates ligand ionization states as a function
 of pH. The configured pH range is reserved for future use. Preserving a supplied
@@ -493,8 +502,10 @@ benchmark labels support enrichment but do not create reference poses.
 
 ## 8. Results and inspection
 
-The Results window renders summary sections and charts from the raw result
-records. Reopening a run regenerates the summary with current reporting logic.
+The **Results** tab, next to **Pose Viewer**, contains **Summary** and **Charts**
+views plus controls to load a run folder or results file. Loading results or
+completing a campaign selects this tab. Reopening a run regenerates the summary
+with current reporting logic.
 
 Single-receptor assay benchmarks show four panels: ROC discrimination,
 precision-recall, raw docking-score density distributions, and molecular weight

@@ -7,6 +7,12 @@ uses semantic versioning after the initial public release.
 
 ### Changed
 
+- Removed smart/adaptive ligand-variant selection. New GUI, headless, and Python
+  pipeline runs default to docking all generated variants within configured
+  preparation limits. Legacy adaptive-selection configs require the original
+  software version; they are not silently reinterpreted.
+- Moved the Results block into a dedicated tab beside Pose Viewer, retaining
+  Summary, Charts, result loading, and pose navigation.
 - New campaigns preserve input ligand formal charges by default. An explicit
   legacy neutralization option is available in the GUI, headless configuration,
   and Python API; pH-dependent state enumeration is not implemented.

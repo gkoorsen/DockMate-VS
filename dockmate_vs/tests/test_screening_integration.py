@@ -13,16 +13,21 @@ from dockmate_vs.binding_site.cocrystal import BindingSite
 from dockmate_vs.docking.base import DockingPose, DockingResult
 from dockmate_vs.gui.app import DockMateVSApp
 from dockmate_vs.gui.app import RedockResult
+from dockmate_vs.adaptive_docking import AdaptiveDockingPipeline
 
 
 class FakePipeline:
     variants = []
-    adaptive_limit = 2
     receptor_site_ligand = None
     prepare_receptor_calls = 0
 
     def __init__(self, *args, **kwargs):
-        pass
+        self.ligand_variant_mode = kwargs.get("ligand_variant_mode", "all")
+        self.validate_variant_mode(self.ligand_variant_mode)
+
+    validate_variant_mode = staticmethod(AdaptiveDockingPipeline.validate_variant_mode)
+    _select_ligand_variants = AdaptiveDockingPipeline._select_ligand_variants
+    _select_best_variant = AdaptiveDockingPipeline._select_best_variant
 
     def _prepare_receptor(self, pdb_file, water_handling, site_ligand_resname=None):
         type(self).prepare_receptor_calls += 1
@@ -39,9 +44,6 @@ class FakePipeline:
 
     def _prepare_ligand_variants(self, **kwargs):
         return self.variants
-
-    def _adaptive_variant_selection(self, variants, **kwargs):
-        return variants[:self.adaptive_limit]
 
     def _select_diverse_variants(self, variants, count):
         return variants[:count]
@@ -185,11 +187,11 @@ def test_screening_cases_share_one_deterministic_receptor_preparation(
         assert (tmp_path / case_name / "receptor_prepared.pdb").exists()
 
 
-def test_adaptive_variant_mode_docks_only_selected_subset(monkeypatch, tmp_path):
+def test_default_variant_mode_docks_all_prepared_variants(monkeypatch, tmp_path):
     scores = {f"v{i}": -float(i) for i in range(1, 7)}
     app, pdb_file = _mock_case(monkeypatch, tmp_path, scores)
     config = _single_config("score")
-    config["ligand_variant_mode"] = "adaptive"
+    del config["ligand_variant_mode"]
 
     result = app._run_single_case(
         pdb_file, "sample", "A", "CC", tmp_path / "case", 2.0,
@@ -197,8 +199,8 @@ def test_adaptive_variant_mode_docks_only_selected_subset(monkeypatch, tmp_path)
     )
 
     assert result.variants_prepared == 6
-    assert result.variants_docked == 2
-    assert result.best_score == -2.0
+    assert result.variants_docked == 6
+    assert result.best_score == -6.0
 
 
 def test_failed_variant_is_skipped_when_another_variant_succeeds(monkeypatch, tmp_path):

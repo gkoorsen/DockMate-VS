@@ -21,6 +21,7 @@ import yaml
 from loguru import logger
 
 from dockmate_vs.gui.app import DockMateVSApp, RedockResult
+from dockmate_vs.adaptive_docking import AdaptiveDockingPipeline
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -58,7 +59,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "rdock_runs": 20,
         "rdock_seed": 42,
         "rdock_radius": None,
-        "ligand_variant_mode": "adaptive",
+        "ligand_variant_mode": "all",
         "variant_select_by": "score",
         "max_tautomers": 8,
         "max_conformers": 10,
@@ -166,6 +167,7 @@ def load_campaign_config(path: Path, mode: str) -> dict:
         raise ValueError("threshold must be greater than zero")
 
     single = config["single"]
+    AdaptiveDockingPipeline.validate_variant_mode(single["ligand_variant_mode"])
     if single.get("charge_handling") not in {"preserve", "neutralize"}:
         raise ValueError("single.charge_handling must be preserve or neutralize")
     if single.get("engine") not in {"vina", "smina", "rdock"}:
