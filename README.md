@@ -86,11 +86,11 @@ mamba env create -f environment.yml
 *Optional*: Download LigPlot+
 Download LigPlot+ from https://www.ebi.ac.uk/thornton-srv/software/LigPlus/. This will allow invoking LigPlot+ to view 2D representations in the DockMate-VS Pose Viewer.
 
-Install the rest of the external tools required:
+Install the external tools required:
 ```bash
 scripts/install_external_tools.sh --with-pymol --ligplot-archive PATH_TO_LIGPLOT_PLUS_ARCHIVE
 ```
-if LigPlot+ was downloaded, replace PATH_TO_LIGPLOT_PLUS_ARCHIVE in the command above, alternatively, drop the --ligplot-archive flag 
+if LigPlot+ was downloaded, replace PATH_TO_LIGPLOT_PLUS_ARCHIVE in the command above, alternatively, drop the --ligplot-archive flag. LigPlot+ installation is not required.
 
 Docking engines are installed into separate conda environments (their
 native dependencies conflict) and linked into `dockmate-vs`.
