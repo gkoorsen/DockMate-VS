@@ -27,25 +27,25 @@ questions while producing resumable, machine-readable campaigns.
 
 ## Installation
 
-Python 3.9-3.12 is supported. A conda environment is recommended because RDKit
-and optional protein-preparation tools have compiled dependencies.
+### 1. Install conda (if you don't have it)
 
-For conda installation in Linux environment, use:
+We recommend **Miniforge**, which defaults to the conda-forge channel that DockMate-VS builds against. The one-liner below picks the right installer for your OS and architecture:
 
 ```bash
 cd ~
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-bash Miniconda3-latest-Linux-x86_64.sh
+curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+bash "Miniforge3-$(uname)-$(uname -m).sh"
 ```
 
-Accept the licence, take the default location (~/miniconda3), and say yes when it offers to run conda init. Then reload:
+Accept the licence, keep the default location, and answer `yes` when it offers to run `conda init`. Then open a new terminal, or reload:
 
 ```bash
-source ~/.bashrc
+source ~/.bashrc      # macOS: source ~/.zshrc
 conda --version
 ```
 
-Clone the repo and install:
+### 2. Install DockMate-VS
+
 ```bash
 git clone https://github.com/gkoorsen/DockMate-VS.git
 cd DockMate-VS
@@ -54,32 +54,34 @@ conda activate dockmate-vs
 python -m pip install -e .
 ```
 
-Install the package-manageable docking and preparation programs into the active
-environment with:
+Your prompt should now begin with `(dockmate-vs)`. Verify:
 
 ```bash
-scripts/install_external_tools.sh
+python -c "import dockmate_vs; print(dockmate_vs.__version__)"
 ```
 
-Conda activation automatically places these executables on `PATH`. The script
-automatically prefers Micromamba or Mamba over Conda for dependency resolution.
-On macOS, install Micromamba with `brew install micromamba` if Conda is using its
-slow classic solver. The script can also register existing Smina, rDock, PyMOL,
-and separately licensed LigPlot+ installations; run
-`scripts/install_external_tools.sh --help` for those options.
+### Already using Anaconda or Miniconda?
 
-Alternatively, install into an existing compatible environment:
+The environment will still build, but conda may refuse with `CondaToSNonInteractiveError` if Anaconda's default channels are in your
+configuration. Either remove them:
 
 ```bash
-python -m pip install .
+conda config --add channels conda-forge
+conda config --remove channels defaults
+conda config --set channel_priority strict
 ```
 
-For local execution, AutoDock Vina or Smina must be selected in the GUI or
-discoverable in the executable `PATH`; Open Babel's `obabel` command must be on
-that `PATH`. rDock, Meeko flexible-receptor preparation, PyMOL, and LigPlot+ are
-optional. Protein repair uses OpenMM/PDBFixer, Reduce, and PROPKA when available. See
-[`USER_GUIDE.md`](USER_GUIDE.md) for platform-specific setup and capability
-details.
+or accept the channel terms as prompted by the error message.
+
+### Slow solve?
+
+`conda env create` can take several minutes. Miniforge includes `mamba`, which is much faster:
+
+```bash
+mamba env create -f environment.yml
+```
+
+For local execution, AutoDock Vina or Smina must be selected in the GUI or discoverable in the executable `PATH`; Open Babel's `obabel` command must be on that `PATH`. rDock, Meeko flexible-receptor preparation, PyMOL, and LigPlot+ are optional. Protein repair uses OpenMM/PDBFixer, Reduce, and PROPKA when available. See [`USER_GUIDE.md`](USER_GUIDE.md) for platform-specific setup and capability details.
 
 ### Optional core container
 
