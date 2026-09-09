@@ -30,6 +30,21 @@ questions while producing resumable, machine-readable campaigns.
 Python 3.9-3.12 is supported. A conda environment is recommended because RDKit
 and optional protein-preparation tools have compiled dependencies.
 
+For conda installation in Linux environment, use:
+
+```bash
+cd ~
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+```
+
+Accept the licence, take the default location (~/miniconda3), and say yes when it offers to run conda init. Then reload:
+
+```bash
+source ~/.bashrc
+conda --version
+```
+
 ```bash
 git clone https://github.com/gkoorsen/DockMate-VS.git
 cd DockMate-VS
