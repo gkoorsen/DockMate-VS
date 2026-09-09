@@ -45,6 +45,7 @@ source ~/.bashrc
 conda --version
 ```
 
+Clone the repo and install:
 ```bash
 git clone https://github.com/gkoorsen/DockMate-VS.git
 cd DockMate-VS
