@@ -81,7 +81,30 @@ or accept the channel terms as prompted by the error message.
 mamba env create -f environment.yml
 ```
 
-For local execution, AutoDock Vina or Smina must be selected in the GUI or discoverable in the executable `PATH`; Open Babel's `obabel` command must be on that `PATH`. rDock, Meeko flexible-receptor preparation, PyMOL, and LigPlot+ are optional. Protein repair uses OpenMM/PDBFixer, Reduce, and PROPKA when available. See [`USER_GUIDE.md`](USER_GUIDE.md) for platform-specific setup and capability details.
+### Install the external docking tools
+
+```bash
+scripts/install_external_tools.sh
+```
+
+Docking engines are installed into separate conda environments (their
+native dependencies conflict) and linked into `dockmate-vs`.
+
+### Reactivate the environment
+
+Required — the installer writes conda activation hooks that set `RBT_ROOT`
+for rDock, and these only take effect on a fresh activation:
+
+```bash
+conda deactivate && conda activate dockmate-vs
+```
+
+Confirm:
+
+```bash
+echo "$RBT_ROOT"    # should print a path ending in /envs/dockmate-rdock
+vina --version
+```
 
 ### Optional core container
 
