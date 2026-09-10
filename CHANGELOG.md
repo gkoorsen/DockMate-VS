@@ -5,8 +5,14 @@ uses semantic versioning after the initial public release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-10
+
 ### Changed
 
+- External docking engines are installed into isolated conda environments and
+  linked into the active environment, avoiding conflicting native dependencies.
+- The core Docker build sets writable source-directory ownership before package
+  installation and removes in-tree package metadata afterwards.
 - Added `--ligplus-archive` to install and register a separately downloaded
   LigPlot+ archive, with validation, staged extraction, reusable archive-specific
   directories, and read-only dry runs. Installation guides use the same option.
@@ -88,4 +94,6 @@ uses semantic versioning after the initial public release.
 - Restart metadata invalidates pre-0.1 campaign progress that could mix
   independently prepared receptor copies.
 
+[Unreleased]: https://github.com/gkoorsen/DockMate-VS/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/gkoorsen/DockMate-VS/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.0

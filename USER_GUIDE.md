@@ -203,10 +203,10 @@ python scripts/launch_dockmate_vs.py
 Select an input workbook and a dedicated output directory. Avoid reusing an
 unrelated run directory.
 
-The main notebook has four tabs: **Protocol Development**, **Screening**,
-**Filters**, and **Pose Viewer**. The first two select the workflow. Filters are
-shared input policies, while Pose Viewer inspects completed runs without changing
-the selected workflow.
+The main notebook has five tabs: **Protocol Development**, **Screening**,
+**Filters**, **Pose Viewer**, and **Results**. The first two select the workflow.
+Filters are shared input policies. Pose Viewer and Results inspect completed
+runs without changing the selected workflow.
 
 Choose **Local** under Execution backend to use binaries configured in the GUI.
 Choose **Docker** to run the campaign in the core image. The GUI mounts the input

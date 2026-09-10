@@ -1,0 +1,9 @@
+include CHANGELOG.md CITATION.cff CODE_OF_CONDUCT.md CONTRIBUTING.md
+include LICENSE README.md THIRD_PARTY_NOTICES.md USER_GUIDE.md
+include environment.yml requirements.txt
+recursive-include scripts *.py *.sh dockmate-docker
+recursive-include docs *.md *.png
+recursive-include examples *.md *.yml *.xlsx *.png
+recursive-include docker Dockerfile *.yml
+recursive-include dockmate_vs/tests *.py
+global-exclude *.py[cod] .DS_Store

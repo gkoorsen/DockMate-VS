@@ -10,12 +10,11 @@ authors:
     orcid: https://orcid.org/0000-0001-5159-1806
     affiliation: Department of Biochemistry, University of Johannesburg
     email: gkoorsen@uj.ac.za
-version: 0.1.0
-date-released: 2026-09-01
+version: 0.1.1
+date-released: 2026-09-10
 license: MIT
-doi: 10.5281/zenodo.22283782
 repository-code: https://github.com/gkoorsen/DockMate-VS
-url: https://zenodo.org/records/22283782
+url: https://github.com/gkoorsen/DockMate-VS
 abstract: >-
   A spreadsheet-driven desktop application for reproducible molecular-docking
   protocol development, native-pose recovery, control enrichment, rescoring,
