@@ -1,0 +1,8 @@
+# Historical statistical analysis versions; use Python 3.9.
+# Reconstruction additionally requires RDKit 2022.03.5.
+numpy==1.23.5
+pandas==1.5.3
+scipy==1.11.2
+scikit-learn==1.1.1
+matplotlib==3.8.2
+openpyxl==3.1.2

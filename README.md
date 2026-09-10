@@ -253,6 +253,16 @@ detected and skipped.
 See [`USER_GUIDE.md`](USER_GUIDE.md) for complete workflow instructions,
 troubleshooting, and results interpretation.
 
+## ESR1 case-study materials
+
+The reconstruction-based [ESR1 supplement](supplementary/README.md) provides
+the exact subset identifiers, historical campaign settings, structure-free
+results, and scripts supporting the SoftwareX case study.
+Download the [supplement ZIP](supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip)
+and its [SHA-256 checksum](supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip.sha256).
+LIT-PCBA structures must be obtained separately; they are not redistributed.
+This supplement is hosted on GitHub separately from the Zenodo software archive.
+
 ## Citation and support
 
 Citation metadata are provided in [`CITATION.cff`](CITATION.cff). Please cite
