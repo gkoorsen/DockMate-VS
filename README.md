@@ -250,13 +250,10 @@ troubleshooting, and results interpretation.
 ## Citation and support
 
 Citation metadata are provided in [`CITATION.cff`](CITATION.cff). Please cite
-the version used in your work. The current software version is **0.1.1**; its
-Zenodo DOI will be added after the new archive is published.
+the version used in your work. The current software version is **0.1.1**:
 
-The previous archived release is:
-
-> Koorsen, G. (2026). DockMate-VS (v0.1.0). Zenodo.
-> https://doi.org/10.5281/zenodo.22283782
+> Koorsen, G. (2026). DockMate-VS (v0.1.1). Zenodo.
+> https://doi.org/10.5281/zenodo.22685196
 
 When the SoftwareX article is available, cite both the article and the archived
 software release.
