@@ -46,9 +46,15 @@ conda --version
 
 ### 2. Install DockMate-VS
 
+From Github:
 ```bash
 git clone https://github.com/gkoorsen/DockMate-VS.git
 cd DockMate-VS
+```
+Alternatively, download the Zenodo distribution at https://zenodo.org/records/22283782
+
+Set up the environment:
+```bash
 conda env create -f environment.yml
 conda activate dockmate-vs
 python -m pip install -e .
