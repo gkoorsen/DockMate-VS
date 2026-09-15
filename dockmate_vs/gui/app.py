@@ -3926,14 +3926,21 @@ class DockMateVSApp(tk.Tk):
             selected_path / "redock_results.json",
             selected_path / "redock_results.csv",
         ]
-        protocol_candidates = [
+        direct_protocol_candidates = [
             selected_path / "protocol_development_results.csv",
+        ]
+        nested_protocol_candidates = [
             selected_path / "protocol_development" / "protocol_development_results.csv",
         ]
+
+        # A mixed screening run can include a nested protocol_development/ folder
+        # from setup. Selecting the top-level run folder should show enrichment
+        # charts from redock_results.*; select protocol_development/ itself for
+        # protocol-development charts.
         candidates = (
-            protocol_candidates + screening_candidates
-            if preferred_mode == "protocol_development"
-            else screening_candidates + protocol_candidates
+            screening_candidates
+            + direct_protocol_candidates
+            + nested_protocol_candidates
         )
         return next((candidate for candidate in candidates if candidate.is_file()), None)
 
@@ -8038,6 +8045,20 @@ class DockMateVSApp(tk.Tk):
                 return candidate
         return None
 
+    @staticmethod
+    def _pose_label_key(label: str) -> str:
+        return re.sub(r"\s+", "_", label.strip().upper())
+
+    @staticmethod
+    def _pose_case_label(case: Dict[str, object], index: int) -> str:
+        pdb_id = str(case.get("pdb_id") or "").strip() or "unknown"
+        ligand = str(case.get("ligand") or "").strip()
+        display_name = str(case.get("display_name") or "").strip() or ligand or "unknown"
+        output_file = Path(str(case.get("output_file") or ""))
+        variant = output_file.parent.name or output_file.stem or "unknown_variant"
+        complex_label = f"{pdb_id}/{ligand}" if ligand else pdb_id
+        return f"{index + 1:04d} | {complex_label} | {display_name} | variant {variant}"
+
     def _show_pose_viewer(self, results_path: Path) -> None:
         csv_path = self._pose_results_csv(results_path)
         if not csv_path.exists():
@@ -8071,6 +8092,9 @@ class DockMateVSApp(tk.Tk):
             crystal_ligand_pdb = case_dir / "crystal_ligand.pdb"
             if not crystal_ligand_pdb.exists():
                 crystal_ligand_pdb = None
+            viewer_id = self._safe_case_id(
+                f"{pdb_id}_{display_name}_{case_dir.name}_{output_file.parent.name}"
+            )
             cases.append(
                 {
                     "pdb_id": pdb_id,
@@ -8079,7 +8103,7 @@ class DockMateVSApp(tk.Tk):
                     "output_file": output_file,
                     "crystal_ligand_pdb": crystal_ligand_pdb,
                     "case_dir": case_dir,
-                    "viewer_dir": viewer_root / self._safe_case_id(f"{pdb_id}_{display_name}"),
+                    "viewer_dir": viewer_root / viewer_id,
                 }
             )
 
@@ -8087,8 +8111,12 @@ class DockMateVSApp(tk.Tk):
             messagebox.showwarning("Pose viewer", "No valid pose files found.")
             return
 
-        case_labels = [f"{case['pdb_id']}_{case['display_name']}" for case in cases]
-        case_label_map = {label.upper(): idx for idx, label in enumerate(case_labels)}
+        case_labels = [
+            self._pose_case_label(case, index) for index, case in enumerate(cases)
+        ]
+        case_label_map = {
+            self._pose_label_key(label): idx for idx, label in enumerate(case_labels)
+        }
 
         results_path = Path(results_path)
         self.last_results_path = results_path
@@ -8194,10 +8222,9 @@ class DockMateVSApp(tk.Tk):
             state["request_id"] += 1
             request_id = state["request_id"]
             case = cases[idx]
+            case_label = case_labels[idx]
             case_select_var.set(case_labels[idx])
-            info_var.set(
-                f"Case {idx + 1}/{len(cases)}: {case['pdb_id']}_{case['display_name']} (loading)"
-            )
+            info_var.set(f"Case {idx + 1}/{len(cases)}: {case_label} (loading)")
             summary_var.set("Loading selected poses...")
 
             def _worker():
@@ -8218,9 +8245,7 @@ class DockMateVSApp(tk.Tk):
             def _apply(payload):
                 if not _viewer_active() or request_id != state["request_id"]:
                     return
-                info_var.set(
-                    f"Case {idx + 1}/{len(cases)}: {case['pdb_id']}_{case['display_name']}"
-                )
+                info_var.set(f"Case {idx + 1}/{len(cases)}: {case_label}")
                 if not payload or payload[0] is None:
                     summary_var.set("No readable docked poses were found for this case.")
                     return
@@ -8236,6 +8261,8 @@ class DockMateVSApp(tk.Tk):
                     "\n".join(
                         [
                             f"Structure: {case['pdb_id']} | Ligand/job: {case['display_name']}",
+                            f"Run folder: {Path(str(case['case_dir'])).name}",
+                            f"Variant: {Path(str(case['output_file'])).parent.name}",
                             f"Native/reference ligand: {reference_status}",
                             _selection_line("Best-score pose", best_score),
                             rmsd_line,
@@ -8264,11 +8291,17 @@ class DockMateVSApp(tk.Tk):
             raw = label.strip()
             if not raw:
                 return
-            key = raw.upper().replace(" ", "_")
+            if raw.isdigit():
+                one_based_idx = int(raw)
+                if 1 <= one_based_idx <= len(cases):
+                    _render_case(one_based_idx - 1)
+                    return
+            key = self._pose_label_key(raw)
             idx = case_label_map.get(key)
             if idx is None:
                 for candidate_idx, case_label in enumerate(case_labels):
-                    if case_label.upper().startswith(key):
+                    candidate_key = self._pose_label_key(case_label)
+                    if candidate_key.startswith(key) or key in candidate_key:
                         idx = candidate_idx
                         break
             if idx is None:
@@ -8607,7 +8640,31 @@ class DockMateVSApp(tk.Tk):
         spearman = float(np.corrcoef(s_rank, c_rank)[0, 1])
         return pearson, spearman
 
-    def _rank_score_value(self, result: "RedockResult") -> Optional[float]:
+    def _rank_score_value(
+        self,
+        result: "RedockResult",
+        source: Optional[str] = None,
+    ) -> Optional[float]:
+        if source == "rescore_cnn_affinity":
+            return (
+                float(result.rescore_cnn_affinity)
+                if result.rescore_cnn_affinity is not None else None
+            )
+        if source == "rescore_cnn_score":
+            return (
+                float(result.rescore_cnn_score)
+                if result.rescore_cnn_score is not None else None
+            )
+        if source == "rescore_score":
+            return (
+                -float(result.rescore_score)
+                if result.rescore_score is not None else None
+            )
+        if source == "best_score":
+            return (
+                -float(result.best_score)
+                if result.best_score is not None else None
+            )
         if result.rescore_cnn_affinity is not None:
             # GNINA CNNaffinity is a predicted pK; larger values rank better.
             return float(result.rescore_cnn_affinity)
@@ -8618,6 +8675,43 @@ class DockMateVSApp(tk.Tk):
         if result.best_score is not None:
             return -float(result.best_score)
         return None
+
+    def _common_enrichment_score_source(
+        self,
+        results: List["RedockResult"],
+    ) -> Optional[str]:
+        if not results:
+            return None
+        for source in (
+            "rescore_cnn_affinity",
+            "rescore_cnn_score",
+            "rescore_score",
+            "best_score",
+        ):
+            if all(self._rank_score_value(result, source) is not None for result in results):
+                return source
+        return None
+
+    @staticmethod
+    def _enrichment_score_source_label(source: Optional[str]) -> Optional[str]:
+        labels = {
+            "rescore_cnn_affinity": "GNINA CNN affinity",
+            "rescore_cnn_score": "GNINA CNN score",
+            "rescore_score": "rescored docking score",
+            "best_score": "docking score",
+        }
+        return labels.get(source)
+
+    @staticmethod
+    def _display_score_from_rank(
+        rank_score: Optional[float],
+        source: Optional[str],
+    ) -> Optional[float]:
+        if rank_score is None:
+            return None
+        if source in {"rescore_cnn_affinity", "rescore_cnn_score"}:
+            return rank_score
+        return -rank_score
 
     @staticmethod
     def _selected_score_details(
@@ -8813,6 +8907,18 @@ class DockMateVSApp(tk.Tk):
         # Override/augment enrichment from explicit control labels.
         # This supports apo validation where RMSD is intentionally unavailable.
         score_labels: List[Tuple[float, int]] = []
+        labeled_results = [
+            result for result in results if result.control_label in (0, 1)
+        ]
+        scored_labeled_results = [
+            result for result in labeled_results
+            if self._rank_score_value(result) is not None
+        ]
+        enrichment_score_source = self._common_enrichment_score_source(scored_labeled_results)
+        summary["enrichment_score_source"] = (
+            self._enrichment_score_source_label(enrichment_score_source)
+            or "best available score"
+        )
         summary["n_actives"] = sum(r.control_label == 1 for r in results)
         summary["n_decoys"] = sum(r.control_label == 0 for r in results)
         summary["n_samples"] = sum(
@@ -8821,7 +8927,7 @@ class DockMateVSApp(tk.Tk):
         for result in results:
             if result.control_label not in (0, 1):
                 continue
-            rank_score = self._rank_score_value(result)
+            rank_score = self._rank_score_value(result, enrichment_score_source)
             if rank_score is None:
                 continue
             score_labels.append((rank_score, int(result.control_label)))
@@ -8887,7 +8993,7 @@ class DockMateVSApp(tk.Tk):
         for result in results:
             if result.control_label not in (0, 1):
                 continue
-            rank_score = self._rank_score_value(result)
+            rank_score = self._rank_score_value(result, enrichment_score_source)
             if rank_score is None:
                 continue
             key = (result.pdb_id, result.ligand_resname)
@@ -8949,9 +9055,15 @@ class DockMateVSApp(tk.Tk):
                 "decoys": m["decoys"],
                 "active_rank": active_rank,
                 "best_active": best_active[1],
-                "active_score": -top_active if top_active is not None else None,
+                "active_score": self._display_score_from_rank(
+                    top_active,
+                    enrichment_score_source,
+                ),
                 "best_decoy": best_decoy[1],
-                "best_decoy_score": -best_decoy[0] if best_decoy[0] is not None else None,
+                "best_decoy_score": self._display_score_from_rank(
+                    best_decoy[0],
+                    enrichment_score_source,
+                ),
                 "score_margin": (
                     top_active - best_decoy[0]
                     if top_active is not None and best_decoy[0] is not None else None
@@ -9473,6 +9585,13 @@ class DockMateVSApp(tk.Tk):
                 "target-pooled AUC then combines receptor-specific score scales and is "
                 "diagnostic only.",
                 "",
+            ])
+            if summary.get("enrichment_score_source"):
+                lines.extend([
+                    f"- Enrichment score source: {summary['enrichment_score_source']}",
+                    "",
+                ])
+            lines.extend([
                 f"| Target | Structures | Macro AUC | Target-pooled AUC | Actives | "
                 f"{negative_label} | {top_label} |",
                 "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -9907,7 +10026,14 @@ class DockMateVSApp(tk.Tk):
             col_map, ["protein", "target", "target_name", "targetname", "protein_name"]
         )
         chain_col = self._find_col(col_map, ["chain", "ligandchain", "ligand_chain"])
-        label_col = self._find_col(col_map, ["label", "class", "is_active", "isactive", "active", "actives"])
+        label_col = self._find_col(
+            col_map,
+            [
+                "control_label", "controllabel", "activity_label", "activitylabel",
+                "active_decoy", "activedecoy", "label", "class", "activity",
+                "is_active", "isactive", "active", "actives",
+            ],
+        )
         smiles_col = self._find_col(col_map, ["smiles", "smile", "smiles_string", "smilesstring"])
         decoy_smiles_col = self._find_col(col_map, ["decoy_smiles", "decoysmiles", "decoy_smile", "decoysmile"])
         decoy_compound_col = self._find_col(col_map, ["decoy_compound", "decoycompound", "decoy"])

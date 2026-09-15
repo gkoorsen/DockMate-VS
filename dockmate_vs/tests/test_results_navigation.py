@@ -1,6 +1,7 @@
 """Results rendering selects the dedicated page without changing the workflow."""
 
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -99,3 +100,22 @@ def test_pose_output_file_resolves_from_protocol_results_folder(tmp_path):
     )
 
     assert resolved == pose_file
+
+
+def test_pose_viewer_case_label_distinguishes_complex_and_variant():
+    label = DockMateVSApp._pose_case_label(
+        {
+            "pdb_id": "5REE",
+            "ligand": "T1M",
+            "display_name": "Gancaonin P",
+            "output_file": Path(
+                "5REE_T1M_Gancaonin_P/variants/Gancaonin P_v1/docked.pdbqt"
+            ),
+        },
+        6,
+    )
+
+    assert label == "0007 | 5REE/T1M | Gancaonin P | variant Gancaonin P_v1"
+    assert DockMateVSApp._pose_label_key(label) == (
+        "0007_|_5REE/T1M_|_GANCAONIN_P_|_VARIANT_GANCAONIN_P_V1"
+    )

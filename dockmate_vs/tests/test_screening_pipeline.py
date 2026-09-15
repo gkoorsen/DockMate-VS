@@ -84,6 +84,36 @@ def test_decoy_rows_expand_and_blank_decoy_rows_remain_samples(tmp_path: Path):
     assert pairs[-1]["smiles"] == "COC"
 
 
+def test_control_label_column_marks_screening_actives_and_decoys(tmp_path: Path):
+    template = tmp_path / "labelled_screen.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "PDB_ID": "1ABC",
+                "Ligand": "LIG",
+                "Target_Ligand": "known_active",
+                "SMILES": "CCO",
+                "control_label": 1,
+            },
+            {
+                "PDB_ID": "1ABC",
+                "Ligand": "LIG",
+                "Target_Ligand": "matched_decoy",
+                "SMILES": "CCC",
+                "control_label": 0,
+            },
+        ]
+    ).to_excel(template, index=False)
+
+    pairs, columns = _app_without_tk()._load_pairs_from_excel(template)
+
+    assert columns["label_col"] == "control_label"
+    assert [(p["dock_name"], p["control_label"]) for p in pairs] == [
+        ("known_active", 1),
+        ("matched_decoy", 0),
+    ]
+
+
 def test_screening_always_selects_ligand_variants_by_score():
     app = _app_without_tk()
 
@@ -940,6 +970,31 @@ def test_rank_score_uses_rescore_precedence_and_correct_direction():
     assert app._rank_score_value(_result()) is None
 
 
+def test_enrichment_uses_common_score_source_when_rescore_is_incomplete():
+    results = [
+        _result(
+            dock_name="active",
+            control_label=1,
+            best_score=-5.0,
+            rescore_method="smina_score_only:vinardo",
+            rescore_score=-20.0,
+        ),
+        _result(dock_name="failed_active", control_label=1),
+        _result(dock_name="decoy", control_label=0, best_score=-10.0),
+    ]
+
+    summary = _app_without_tk()._build_summary(results, threshold=2.0)
+
+    assert summary["enrichment_score_source"] == "docking score"
+    assert summary["n_actives"] == 2
+    assert summary["control_actives"] == 1
+    assert summary["roc_auc"] == pytest.approx(0.0)
+    assert summary["per_structure_enrichment"][0]["active_rank"] == 2
+    assert summary["per_structure_enrichment"][0]["best_decoy"] == "decoy"
+    assert summary["per_structure_enrichment"][0]["active_score"] == pytest.approx(-5.0)
+    assert summary["per_structure_enrichment"][0]["best_decoy_score"] == pytest.approx(-10.0)
+
+
 def test_progress_file_distinguishes_docking_completion_from_rmsd_success(tmp_path: Path):
     path = tmp_path / "progress.json"
     results = [
@@ -1355,7 +1410,7 @@ def test_results_loader_rejects_parent_output_folder_and_unrelated_file(tmp_path
     assert DockMateVSApp._result_file_for_selection(unrelated) is None
 
 
-def test_results_loader_prefers_current_workflow_when_both_exist(tmp_path):
+def test_results_loader_prefers_top_level_screening_when_protocol_folder_also_exists(tmp_path):
     screening = tmp_path / "redock_results.json"
     screening.write_text('{"results": []}')
     protocol_dir = tmp_path / "protocol_development"
@@ -1368,7 +1423,8 @@ def test_results_loader_prefers_current_workflow_when_both_exist(tmp_path):
     ) == screening
     assert DockMateVSApp._result_file_for_selection(
         tmp_path, "protocol_development"
-    ) == protocol
+    ) == screening
+    assert DockMateVSApp._result_file_for_selection(protocol_dir) == protocol
 
 
 def test_summary_counts_samples_separately_and_uses_explicit_controls():
