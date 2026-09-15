@@ -7997,6 +7997,47 @@ class DockMateVSApp(tk.Tk):
             else results_path.with_name("redock_results.csv")
         )
 
+    @staticmethod
+    def _resolve_pose_output_file(output_file_value: str, csv_path: Path) -> Optional[Path]:
+        """Resolve a pose path from a results CSV, including copied run folders."""
+        if not output_file_value.strip():
+            return None
+        output_file = Path(output_file_value).expanduser()
+        if output_file.exists():
+            return output_file
+
+        csv_dir = Path(csv_path).parent
+        search_roots = [csv_dir]
+        if csv_dir.name == "protocol_development":
+            search_roots.append(csv_dir.parent)
+
+        candidates: List[Path] = []
+        if not output_file.is_absolute():
+            candidates.extend(root / output_file for root in search_roots)
+
+        parts = output_file.parts
+        for root in search_roots:
+            for idx, part in enumerate(parts):
+                if part == root.name and idx + 1 < len(parts):
+                    candidates.append(root.joinpath(*parts[idx + 1:]))
+
+        # Results CSVs store absolute paths. If the run folder was copied or
+        # renamed, the stable tail is usually case/variants/variant/docked.*
+        max_tail = min(8, len(parts))
+        for tail_len in range(max_tail, 1, -1):
+            suffix = parts[-tail_len:]
+            for root in search_roots:
+                candidates.append(root.joinpath(*suffix))
+
+        seen = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate.exists():
+                return candidate
+        return None
+
     def _show_pose_viewer(self, results_path: Path) -> None:
         csv_path = self._pose_results_csv(results_path)
         if not csv_path.exists():
@@ -8015,8 +8056,8 @@ class DockMateVSApp(tk.Tk):
             output_file_val = row.get("output_file")
             if not isinstance(output_file_val, str):
                 continue
-            output_file = Path(output_file_val)
-            if not output_file.exists():
+            output_file = self._resolve_pose_output_file(output_file_val, csv_path)
+            if output_file is None:
                 continue
             pdb_id = str(row.get("pdb_id", "")).upper()
             ligand = str(row.get("ligand_resname", "")).upper()

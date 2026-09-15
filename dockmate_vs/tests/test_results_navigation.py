@@ -47,3 +47,55 @@ def test_view_navigation_preserves_workflow_mode(selected, expected_mode):
     app._on_workflow_changed()
     assert modes == ([] if expected_mode is None else [expected_mode])
     assert scroll_positions == [0]
+
+
+def test_pose_output_file_resolves_after_run_folder_is_copied(tmp_path):
+    run_dir = tmp_path / "anathi_template_updated_list_30_matched_decoys"
+    pose_file = (
+        run_dir
+        / "Mpro_ligand_001"
+        / "variants"
+        / "ligand_001_v1"
+        / "docked.pdbqt"
+    )
+    pose_file.parent.mkdir(parents=True)
+    pose_file.write_text("MODEL 1\nENDMDL\n")
+
+    stale_path = (
+        "/old/output/anathi_template_updated_list_30_matched_decoys/"
+        "Mpro_ligand_001/variants/ligand_001_v1/docked.pdbqt"
+    )
+
+    resolved = DockMateVSApp._resolve_pose_output_file(
+        stale_path,
+        run_dir / "redock_results.csv",
+    )
+
+    assert resolved == pose_file
+
+
+def test_pose_output_file_resolves_from_protocol_results_folder(tmp_path):
+    protocol_dir = (
+        tmp_path / "anathi_template_updated_list_30_matched_decoys" / "protocol_development"
+    )
+    pose_file = (
+        protocol_dir
+        / "Mpro_protocol_case"
+        / "variants"
+        / "ligand_001_v1"
+        / "docked.pdbqt"
+    )
+    pose_file.parent.mkdir(parents=True)
+    pose_file.write_text("MODEL 1\nENDMDL\n")
+
+    stale_path = (
+        "/old/output/anathi_template_updated_list_30_matched_decoys/protocol_development/"
+        "Mpro_protocol_case/variants/ligand_001_v1/docked.pdbqt"
+    )
+
+    resolved = DockMateVSApp._resolve_pose_output_file(
+        stale_path,
+        protocol_dir / "protocol_development_results.csv",
+    )
+
+    assert resolved == pose_file
