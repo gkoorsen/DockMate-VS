@@ -197,17 +197,52 @@ compound-receptor pairing explicitly. Reports retain the receptor and target
 grouping instead of assuming that scores from different structures are directly
 comparable.
 
-The application accepts two complementary labelled-data models:
+Only the **first worksheet** is read, regardless of its name. Put the campaign
+table there, with column headings in the first row. Additional worksheets, such
+as metadata or validated-structure lists, are not loaded as docking jobs.
 
-- **Matched controls:** one row contains a PDB/native-ligand pair and optional
-  decoy name/SMILES. The row expands to one active and one decoy docking.
-- **Assay benchmark:** each row contains one compound SMILES and an explicit
-  `label` (`1` active, `0` inactive). Multiple actives and inactives can share a
-  receptor structure.
+Common column headings are:
 
-A row without a decoy and without an explicit label is an unlabelled screening
-sample. It is ranked but never enters ROC AUC or enrichment calculations.
-SMILES columns are detected automatically. The **Filters** tab can exclude known
+| Column | Meaning |
+| --- | --- |
+| `Protein` | Target name used to group results. |
+| `PDB_ID` | Receptor structure identifier. |
+| `Ligand` | Co-crystal ligand residue name used as the binding-site reference. |
+| `Target_Ligand` | Name of the compound to dock, not its activity class. |
+| `SMILES` | Structure of the compound to dock. Supply this for unknown compounds. |
+| `decoy compound` | Comma-separated decoy names, in the same order as their SMILES. |
+| `decoy SMILES` | Comma-separated decoy structures for a matched-control row. |
+| `label` or `control_label` | Explicit class: `1` active, `0` decoy/inactive, blank unknown. |
+
+Column headings are detected automatically, ignoring case, spaces, underscores,
+and punctuation. The application supports two ways to specify controls:
+
+- **Matched controls:** omit explicit label columns from the worksheet. A row
+  with nonblank `decoy SMILES` expands to one active plus one docking case for
+  each listed decoy. For example, 30 decoy SMILES produce one active and 30
+  decoys. The active is named by `Target_Ligand` (or `Ligand` when no compound
+  name is supplied). Missing decoy names receive names such as `decoy_1`.
+  A row with blank decoy SMILES is an unknown screening compound, even if it
+  contains decoy names. Active-control and unknown rows can share this worksheet.
+- **Explicit labels:** put one compound per row and use `label` or
+  `control_label` to mark its class. `active` and `inactive`/`decoy` are also
+  accepted values. Multiple actives and negatives can share a receptor
+  structure. Leave a compound's label blank to treat it as unknown.
+
+**Label-column precedence:** if a recognized label column exists anywhere in the
+table, its values determine classification for every row and the decoy columns
+are not expanded. This applies even if the entire label column is blank. Remove
+the label column completely when using the matched-control format; alternatively,
+list every active, decoy, and unknown as a separate explicitly labelled or blank-
+labelled row. Other recognized label headings include `activity_label`,
+`active_decoy`, `class`, `activity`, `is_active`, `active`, and `actives`.
+
+Unknown screening compounds are ranked separately and never enter ROC AUC or
+enrichment calculations. A worksheet with neither decoy SMILES nor explicit
+labels therefore defines an unknown-compound screen. Compound names, workbook
+names, and output-folder names do not establish activity labels.
+
+The **Filters** tab can exclude known
 additives/cofactors and optionally sample unlabelled screening compounds; all
 labelled or matched controls are always retained.
 
@@ -225,6 +260,15 @@ Each screening run writes:
 
 Protocol-development runs produce an analogous manifest, condition-level CSV,
 summary, recommendations, and plots.
+
+For runs containing unknown compounds, **Results > Charts > Unknown docking
+scores** plots every available raw docking score by receptor structure and
+highlights the lowest-scoring compound in each group. Hover over a point for its
+compound name, target, structure, engine, and score. Use the structure selector
+to focus on one group and the plot toolbar to zoom or export an image. Active
+controls and decoys are excluded; scored/total counts show missing or failed
+cases. These are original docking scores, which can differ from the rescoring
+values used in the top-ranked-compound summary.
 
 The component boundaries, campaign flow, output contracts, and extension points
 are described in [`docs/architecture.md`](docs/architecture.md).

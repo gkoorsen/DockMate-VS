@@ -40,6 +40,7 @@ from dockmate_vs.binding_site.cocrystal import BindingSite, BindingSiteDefinitio
 from dockmate_vs.docking.smina import SminaDockingEngine
 from dockmate_vs.gui.utils import download_pdb_structure
 from dockmate_vs.gui.assay_charts import docking_diagnostics, populate_assay_charts
+from dockmate_vs.gui.unknown_charts import unknown_docking_data, populate_unknown_charts
 from dockmate_vs.gui.widgets.progress_dialog import ProgressDialog
 from dockmate_vs.preparation.protein import RECEPTOR_PREPARATION_SEED
 from dockmate_vs.utils.rmsd import calculate_rmsd
@@ -4341,6 +4342,10 @@ class DockMateVSApp(tk.Tk):
         )
         if not json_path.exists():
             csv_path = results_path.with_name("redock_results.csv")
+            if csv_path.exists():
+                saved_summary["unknown_docking_scores"] = unknown_docking_data(
+                    self._read_results_csv(csv_path).to_dict("records")
+                )
             if saved_summary.get("assay_benchmark_charts") and csv_path.exists():
                 saved_summary["assay_benchmark_charts"]["docking_diagnostics"] = (
                     docking_diagnostics(self._read_results_csv(csv_path).to_dict("records"))
@@ -5015,6 +5020,21 @@ class DockMateVSApp(tk.Tk):
         )
 
     def _populate_charts_tab(self, parent: tk.Frame, summary: dict, rmsd_values: List[float]) -> None:
+        unknown_groups = summary.get("unknown_docking_scores") or []
+        if unknown_groups:
+            parent.grid_rowconfigure(0, weight=1)
+            parent.grid_rowconfigure(1, weight=0)
+            parent.grid_rowconfigure(2, weight=0)
+            parent.grid_columnconfigure(0, weight=1)
+            parent.grid_columnconfigure(1, weight=0)
+            tabs = ttk.Notebook(parent)
+            tabs.grid(row=0, column=0, sticky="nsew")
+            overview = ttk.Frame(tabs)
+            unknowns = ttk.Frame(tabs)
+            tabs.add(overview, text="Overview")
+            tabs.add(unknowns, text="Unknown docking scores")
+            populate_unknown_charts(unknowns, unknown_groups)
+            parent = overview
         if self._is_screening_summary(summary):
             chart_data = self._screening_chart_data(summary)
             parent.grid_rowconfigure(0, weight=0)
@@ -9258,6 +9278,9 @@ class DockMateVSApp(tk.Tk):
             result for result in results
             if result.mode == "screening" and result.control_label is None
         ]
+        summary["unknown_docking_scores"] = unknown_docking_data(
+            asdict(result) for result in screening_results
+        )
         screening_scored = []
         for result in screening_results:
             score_details = self._selected_score_details(result)
