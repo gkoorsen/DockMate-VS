@@ -92,6 +92,14 @@ class PreparedLigand:
         with open(output_path, 'w') as f:
             f.write(self.pdbqt)
 
+    def to_sdf_file(self, output_path: str) -> None:
+        """Write the prepared RDKit molecule to SDF."""
+        writer = Chem.SDWriter(str(output_path))
+        try:
+            writer.write(self.mol)
+        finally:
+            writer.close()
+
 
 class LigandPreparationError(Exception):
     """Raised when ligand preparation fails."""

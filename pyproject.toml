@@ -50,6 +50,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+pose-quality = ["posebusters", "plip"]
 
 [project.urls]
 Homepage = "https://github.com/gkoorsen/DockMate-VS"

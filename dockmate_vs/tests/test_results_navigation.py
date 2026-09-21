@@ -50,6 +50,20 @@ def test_view_navigation_preserves_workflow_mode(selected, expected_mode):
     assert scroll_positions == [0]
 
 
+def test_results_scroll_target_uses_innermost_registered_canvas():
+    app = object.__new__(DockMateVSApp)
+    outer_canvas = SimpleNamespace(master=None)
+    outer_content = SimpleNamespace(master=outer_canvas)
+    inner_canvas = SimpleNamespace(master=outer_content)
+    inner_content = SimpleNamespace(master=inner_canvas)
+    leaf = SimpleNamespace(master=inner_content)
+    app._results_scroll_canvases = [outer_canvas, inner_canvas]
+
+    assert app._results_scroll_target(leaf) is inner_canvas
+    assert app._results_scroll_target(outer_content) is outer_canvas
+    assert app._results_scroll_target(SimpleNamespace(master=None)) is None
+
+
 def test_pose_output_file_resolves_after_run_folder_is_copied(tmp_path):
     run_dir = tmp_path / "anathi_template_updated_list_30_matched_decoys"
     pose_file = (

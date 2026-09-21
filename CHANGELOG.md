@@ -5,6 +5,21 @@ uses semantic versioning after the initial public release.
 
 ## [Unreleased]
 
+### Added
+
+- Screening summaries now include a pose-quality table for top unknown hits per
+  structure, combining PoseBusters plausibility checks with PLIP native-contact
+  similarity to support MD candidate triage.
+- Unknown-compound chart hover details now show PoseBusters pass/fail status and
+  the percentage of native contacts recovered for analyzed poses.
+- Prepared ligand variants are now saved as SDF files alongside PDBQT files so
+  PoseBusters can validate selected docked coordinates with the prepared ligand
+  topology instead of relying on PDBQT-only chemistry inference.
+- Protocol Development results now include per-structure pose-recovery tables
+  and hoverable success-rate and median-RMSD plots for Top-1/5/10 rankings.
+- Results tabs in the main application and completion dialogs now provide
+  independent vertical and horizontal scrolling.
+
 ## [0.1.1] - 2026-09-10
 
 ### Changed

@@ -17,7 +17,7 @@ USER $MAMBA_USER
 
 WORKDIR /opt/dockmate-vs
 COPY --chown=$MAMBA_USER:$MAMBA_USER . /opt/dockmate-vs
-RUN python -m pip install --no-cache-dir openmm==8.6.0 pdbfixer==1.12.0 \
+RUN python -m pip install --no-cache-dir openmm==8.6.0 pdbfixer==1.12.0 posebusters plip \
     && python -m pip install --no-deps . \
     && rm -rf /opt/dockmate-vs/dockmate_vs.egg-info \
     && test -x /opt/conda/bin/vina \

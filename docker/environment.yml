@@ -20,6 +20,7 @@ dependencies:
   - scipy
   - scikit-learn
   - openbabel
+  - lxml
   - vina=1.2.7
   - smina=2017.11.9
   - rdock=24.04.204_legacy

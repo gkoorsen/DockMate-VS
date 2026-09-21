@@ -31,7 +31,7 @@ import pandas as pd
 import numpy as np
 from loguru import logger
 from rdkit import Chem
-from rdkit.Chem import AllChem, Crippen, Descriptors, rdMolDescriptors
+from rdkit.Chem import AllChem, Crippen, Descriptors, rdFMCS, rdMolDescriptors
 from dockmate_vs.utils.redock_results import RedockAnalyzer
 from Bio import PDB
 
@@ -40,9 +40,19 @@ from dockmate_vs.binding_site.cocrystal import BindingSite, BindingSiteDefinitio
 from dockmate_vs.docking.smina import SminaDockingEngine
 from dockmate_vs.gui.utils import download_pdb_structure
 from dockmate_vs.gui.assay_charts import docking_diagnostics, populate_assay_charts
-from dockmate_vs.gui.unknown_charts import unknown_docking_data, populate_unknown_charts
+from dockmate_vs.gui.folder_picker import choose_directory
+from dockmate_vs.gui.unknown_charts import (
+    attach_pose_quality,
+    unknown_docking_data,
+    populate_unknown_charts,
+)
 from dockmate_vs.gui.widgets.progress_dialog import ProgressDialog
 from dockmate_vs.preparation.protein import RECEPTOR_PREPARATION_SEED
+from dockmate_vs.analysis.pose_quality import (
+    contact_similarity,
+    plip_contact_fingerprint,
+    run_posebusters,
+)
 from dockmate_vs.utils.rmsd import calculate_rmsd
 
 
@@ -74,6 +84,7 @@ LEGACY_FILTERS_PATH = Path.home() / ".docking_platform_gui" / "redock_filters.js
 PROTOCOL_RMSD_EQUIVALENCE_TOLERANCE = 0.25
 PROTOCOL_SUCCESS_EQUIVALENCE_TOLERANCE = 0.10
 PROTOCOL_CANDIDATE_LIMIT = 8
+SCREENING_POSE_QUALITY_LIMIT = 5
 RECEPTOR_PREPARATION_CACHE_VERSION = "receptor-preparation-v1"
 SCREENING_RESUME_VERSION = "shared-receptor-v1"
 CHARGE_HANDLING_OPTIONS = {
@@ -294,14 +305,25 @@ class DockMateVSApp(tk.Tk):
         container.bind("<Configure>", _on_container_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
 
-        def _on_mousewheel(event: tk.Event) -> None:
-            delta = int(-1 * (event.delta / 120)) if event.delta else 0
+        def _on_mousewheel(event: tk.Event) -> str:
+            raw_delta = int(event.delta) if event.delta else 0
+            if abs(raw_delta) >= 120:
+                delta = int(-raw_delta / 120)
+            else:
+                delta = -1 if raw_delta > 0 else (1 if raw_delta < 0 else 0)
             if delta:
-                canvas.yview_scroll(delta, "units")
+                target = self._results_scroll_target(event.widget) or canvas
+                target.yview_scroll(delta, "units")
+            return "break"
+
+        def _on_linux_mousewheel(event: tk.Event, delta: int) -> str:
+            target = self._results_scroll_target(event.widget) or canvas
+            target.yview_scroll(delta, "units")
+            return "break"
 
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
-        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+        canvas.bind_all("<Button-4>", lambda event: _on_linux_mousewheel(event, -1))
+        canvas.bind_all("<Button-5>", lambda event: _on_linux_mousewheel(event, 1))
         container.grid_columnconfigure(1, weight=1)
 
         row = 0
@@ -936,10 +958,23 @@ class DockMateVSApp(tk.Tk):
         self._register_busy_widget(pose_viewer_btn)
         self.results_notebook = ttk.Notebook(self.results_frame)
         self.results_notebook.grid(row=1, column=0, sticky="nsew")
-        self.results_summary_tab = tk.Frame(self.results_notebook)
-        self.results_charts_tab = tk.Frame(self.results_notebook)
-        self.results_notebook.add(self.results_summary_tab, text="Summary")
-        self.results_notebook.add(self.results_charts_tab, text="Charts")
+        self.results_summary_page = tk.Frame(self.results_notebook)
+        self.results_charts_page = tk.Frame(self.results_notebook)
+        self.results_pose_recovery_page = tk.Frame(self.results_notebook)
+        self.results_summary_tab = self._make_scrollable_results_area(
+            self.results_summary_page
+        )
+        self.results_charts_tab = self._make_scrollable_results_area(
+            self.results_charts_page
+        )
+        self.results_pose_recovery_tab = self._make_scrollable_results_area(
+            self.results_pose_recovery_page
+        )
+        self.results_notebook.add(self.results_summary_page, text="Summary")
+        self.results_notebook.add(self.results_charts_page, text="Charts")
+        self.results_notebook.add(
+            self.results_pose_recovery_page, text="Pose Recovery"
+        )
         self.results_notebook.bind(
             "<<NotebookTabChanged>>", lambda _event: self.after_idle(self._resize_workflow_notebook)
         )
@@ -947,6 +982,61 @@ class DockMateVSApp(tk.Tk):
         self._populate_empty_results()
         self._update_execution_backend()
         self.after_idle(self._resize_workflow_notebook)
+
+    def _results_scroll_target(self, widget: tk.Widget) -> Optional[tk.Canvas]:
+        """Return the innermost registered results canvas containing a widget."""
+        canvases = self.__dict__.get("_results_scroll_canvases", [])
+        current = widget
+        while current is not None:
+            for canvas in canvases:
+                if current is canvas:
+                    return canvas
+            current = getattr(current, "master", None)
+        return None
+
+    def _make_scrollable_results_area(
+        self, parent: tk.Widget, padx: int = 0, pady: int = 0
+    ) -> tk.Frame:
+        """Create a responsive content frame with two-axis scrolling."""
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(0, weight=1)
+        canvas = tk.Canvas(parent, borderwidth=0, highlightthickness=0)
+        vertical = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        horizontal = ttk.Scrollbar(parent, orient="horizontal", command=canvas.xview)
+        canvas.configure(
+            yscrollcommand=vertical.set,
+            xscrollcommand=horizontal.set,
+        )
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+
+        content = tk.Frame(canvas, padx=padx, pady=pady)
+        window = canvas.create_window((0, 0), window=content, anchor="nw")
+        canvases = self.__dict__.setdefault("_results_scroll_canvases", [])
+        canvases.append(canvas)
+
+        def _sync_region(_event: Optional[tk.Event] = None) -> None:
+            bounds = canvas.bbox("all")
+            if bounds is not None:
+                canvas.configure(scrollregion=bounds)
+
+        def _resize_content(event: tk.Event) -> None:
+            width = max(int(event.width), content.winfo_reqwidth())
+            if int(float(canvas.itemcget(window, "width") or 0)) != width:
+                canvas.itemconfigure(window, width=width)
+            _sync_region()
+
+        def _forget(event: tk.Event) -> None:
+            if event.widget is canvas and canvas in canvases:
+                canvases.remove(canvas)
+
+        content.bind("<Configure>", _sync_region)
+        canvas.bind("<Configure>", _resize_content)
+        canvas.bind("<Destroy>", _forget, add="+")
+        content._results_scroll_canvas = canvas
+        content._results_scroll_window = window
+        return content
 
     def _build_pose_viewer_tab(self) -> None:
         """Build the in-application pose navigator and external-viewer launch area."""
@@ -1068,12 +1158,10 @@ class DockMateVSApp(tk.Tk):
             return
         page = self.nametowidget(selected)
         if selected == str(self.results_tab):
-            if self.results_notebook.select() == str(self.results_charts_tab):
-                page_height = max(740, self._main_canvas.winfo_height() - 100)
-                self.results_notebook.configure(height=page_height - 80)
-                self.workflow_notebook.configure(height=page_height)
-                return
-            self.results_notebook.configure(height=0)
+            page_height = max(740, self._main_canvas.winfo_height() - 100)
+            self.results_notebook.configure(height=page_height - 80)
+            self.workflow_notebook.configure(height=page_height)
+            return
         page.update_idletasks()
         self.workflow_notebook.configure(height=max(70, page.winfo_reqheight() + 12))
 
@@ -1323,9 +1411,8 @@ class DockMateVSApp(tk.Tk):
                 actives = self._protocol_active_pairs(pairs)
                 if not actives:
                     msg = (
-                        "Protocol Development requires at least one control active. "
-                        "In the current template format, a row with a decoy SMILES "
-                        "creates an active/decoy control pair."
+                        "Protocol Development requires at least one explicitly identified "
+                        "native/control active with a crystallographic reference pose."
                     )
                     self._run_on_ui(lambda m=msg: self._start_run_failed("No control actives", m))
                     return
@@ -3774,7 +3861,7 @@ class DockMateVSApp(tk.Tk):
             "numpy", "pandas", "openpyxl", "rdkit", "loguru",
             "biopython", "pydantic", "MDAnalysis", "gemmi", "scipy",
             "scikit-learn", "matplotlib", "seaborn", "openmm",
-            "pdbfixer", "openbabel",
+            "pdbfixer", "openbabel", "posebusters", "plip",
         ):
             try:
                 dependencies[distribution] = importlib.metadata.version(distribution)
@@ -3854,7 +3941,7 @@ class DockMateVSApp(tk.Tk):
             df = pd.DataFrame([asdict(r) for r in results])
             df.to_csv(csv_path, index=False)
 
-        summary = self._build_summary(results, threshold)
+        summary = self._build_summary(results, threshold, json_path.parent)
         self._write_summary_files(json_path, summary)
 
     def _resolve_results_path(self, allow_csv: bool = False) -> Optional[Path]:
@@ -3977,13 +4064,13 @@ class DockMateVSApp(tk.Tk):
         """Load a campaign by selecting its run folder."""
         initial = Path(self.output_var.get()).expanduser()
         initial_dir = initial if initial.is_dir() else initial.parent
-        selected = filedialog.askdirectory(
+        selected = choose_directory(
+            self,
             title="Select one completed docking run folder",
-            initialdir=str(initial_dir) if initial_dir.exists() else None,
-            mustexist=True,
+            initial_dir=initial_dir,
         )
         if selected:
-            self._load_results_selection(Path(selected))
+            self._load_results_selection(selected)
 
     def _browse_results_file(self) -> None:
         """Load a campaign by selecting its exact results CSV or JSON file."""
@@ -4021,13 +4108,13 @@ class DockMateVSApp(tk.Tk):
     def _browse_pose_results_folder(self) -> None:
         initial = Path(self.output_var.get()).expanduser()
         initial_dir = initial if initial.is_dir() else initial.parent
-        selected = filedialog.askdirectory(
+        selected = choose_directory(
+            self,
             title="Select one completed docking run folder",
-            initialdir=str(initial_dir) if initial_dir.exists() else None,
-            mustexist=True,
+            initial_dir=initial_dir,
         )
         if selected:
-            self._load_pose_results_selection(Path(selected))
+            self._load_pose_results_selection(selected)
 
     def _browse_pose_results_file(self) -> None:
         initial = Path(self.output_var.get()).expanduser()
@@ -4074,41 +4161,17 @@ class DockMateVSApp(tk.Tk):
         dialog.geometry("900x700")
         dialog.transient(self)
 
-        container = tk.Frame(dialog)
-        container.pack(fill="both", expand=True)
-        canvas = tk.Canvas(container, borderwidth=0)
-        vscroll = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        hscroll = ttk.Scrollbar(container, orient="horizontal", command=canvas.xview)
-        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
-
-        vscroll.pack(side="right", fill="y")
-        hscroll.pack(side="bottom", fill="x")
-        canvas.pack(side="left", fill="both", expand=True)
-
-        content = tk.Frame(canvas)
-        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
-
-        def _on_frame_configure(_event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def _on_canvas_configure(_event=None):
-            chart_selected = notebook.select() == str(charts_frame)
-            canvas.itemconfigure(
-                window_id, width=canvas.winfo_width(),
-                height=canvas.winfo_height() if chart_selected else 0,
-            )
-
-        content.bind("<Configure>", _on_frame_configure)
-        canvas.bind("<Configure>", _on_canvas_configure)
-
+        content = tk.Frame(dialog, padx=10, pady=10)
+        content.pack(fill="both", expand=True)
         notebook = ttk.Notebook(content)
-        notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        notebook.pack(fill="both", expand=True)
 
-        summary_frame = tk.Frame(notebook)
-        charts_frame = tk.Frame(notebook)
-        notebook.add(summary_frame, text="Summary")
-        notebook.add(charts_frame, text="Charts")
-        notebook.bind("<<NotebookTabChanged>>", _on_canvas_configure)
+        summary_page = tk.Frame(notebook)
+        charts_page = tk.Frame(notebook)
+        summary_frame = self._make_scrollable_results_area(summary_page)
+        charts_frame = self._make_scrollable_results_area(charts_page)
+        notebook.add(summary_page, text="Summary")
+        notebook.add(charts_page, text="Charts")
 
         self._populate_summary_tab(summary_frame, summary)
         self._populate_charts_tab(charts_frame, summary, rmsd_values)
@@ -4117,11 +4180,20 @@ class DockMateVSApp(tk.Tk):
         """Render a protocol-development report in the Results tab."""
         self._clear_frame(self.results_summary_tab)
         self._clear_frame(self.results_charts_tab)
+        pose_tab = self.__dict__.get("results_pose_recovery_tab")
+        if pose_tab is not None:
+            self._clear_frame(pose_tab)
+        self._set_protocol_pose_tab_visible(True)
         self._populate_protocol_report(
             self.results_summary_tab, Path(results_path), Path(report_path)
         )
         self._populate_protocol_charts(self.results_charts_tab, Path(results_path))
-        self.results_notebook.select(self.results_summary_tab)
+        if pose_tab is not None:
+            self._populate_protocol_pose_recovery(pose_tab, Path(results_path))
+        summary_page = self.__dict__.get(
+            "results_summary_page", self.__dict__.get("results_summary_tab")
+        )
+        self.results_notebook.select(summary_page)
         self.workflow_notebook.select(self.results_tab)
         self.after_idle(self._resize_workflow_notebook)
 
@@ -4136,12 +4208,26 @@ class DockMateVSApp(tk.Tk):
         content.pack(fill="both", expand=True)
         notebook = ttk.Notebook(content)
         notebook.pack(fill="both", expand=True)
-        summary_tab = tk.Frame(notebook, padx=8, pady=8)
-        charts_tab = tk.Frame(notebook, padx=8, pady=8)
-        notebook.add(summary_tab, text="Summary")
-        notebook.add(charts_tab, text="Charts")
+        summary_page = tk.Frame(notebook)
+        charts_page = tk.Frame(notebook)
+        pose_recovery_page = tk.Frame(notebook)
+        summary_tab = self._make_scrollable_results_area(
+            summary_page, padx=8, pady=8
+        )
+        charts_tab = self._make_scrollable_results_area(
+            charts_page, padx=8, pady=8
+        )
+        pose_recovery_tab = self._make_scrollable_results_area(
+            pose_recovery_page, padx=8, pady=8
+        )
+        notebook.add(summary_page, text="Summary")
+        notebook.add(charts_page, text="Charts")
+        notebook.add(pose_recovery_page, text="Pose Recovery")
         self._populate_protocol_report(summary_tab, Path(results_path), Path(report_path))
         self._populate_protocol_charts(charts_tab, Path(results_path))
+        self._populate_protocol_pose_recovery(
+            pose_recovery_tab, Path(results_path)
+        )
 
         actions = tk.Frame(content)
         actions.pack(fill="x", pady=(8, 0))
@@ -4328,6 +4414,281 @@ class DockMateVSApp(tk.Tk):
 
         self._render_results(summary, rmsd_values)
 
+    @staticmethod
+    def _protocol_structure_pose_data(
+        frame: pd.DataFrame, threshold: float = 2.0, top_n: int = 1
+    ) -> List[dict]:
+        """Aggregate completed protocol conditions by crystal complex."""
+        if top_n not in {1, 5, 10}:
+            raise ValueError("Pose-recovery statistics support Top-1, Top-5, or Top-10.")
+        if frame.empty or "status" not in frame:
+            return []
+
+        working = frame.copy()
+        defaults = {
+            "target_name": "",
+            "pdb_id": "Unknown",
+            "ligand_resname": "Unknown",
+            "ligand_chain": "",
+            "engine": "unknown",
+            "box_definition": "unknown",
+            "rescore_method": "none",
+            "water_handling": "unknown",
+            "exhaustiveness": "N/A",
+            "seed": "N/A",
+        }
+        for column, default in defaults.items():
+            if column not in working:
+                working[column] = default
+            working[column] = working[column].astype("object")
+            working[column] = working[column].where(working[column].notna(), default)
+
+        metric_columns = (
+            "best_rmsd",
+            f"top{top_n}_rmsd",
+            f"rescore_top{top_n}_rmsd",
+        )
+        for column in metric_columns:
+            if column not in working:
+                working[column] = np.nan
+            working[column] = pd.to_numeric(working[column], errors="coerce")
+            working.loc[working[column] >= 900, column] = np.nan
+
+        working = working[
+            working["status"].astype(str).str.lower().eq("complete")
+        ].copy()
+        if working.empty:
+            return []
+
+        # Legacy rDock sweeps duplicated identical conditions for every Vina
+        # exhaustiveness level, even though rDock does not use exhaustiveness.
+        working.loc[
+            working["engine"].astype(str).str.lower().eq("rdock"),
+            "exhaustiveness",
+        ] = "N/A"
+        identity_columns = [
+            column
+            for column in (
+                "pdb_id", "ligand_resname", "ligand_chain", "target_name",
+                "engine", "box_definition", "rescore_method", "water_handling",
+                "exhaustiveness", "seed",
+            )
+            if column in working.columns
+        ]
+        working = working.drop_duplicates(subset=identity_columns, keep="last")
+
+        baseline_column = f"top{top_n}_rmsd"
+        rescore_column = f"rescore_top{top_n}_rmsd"
+        has_rescore = ~working["rescore_method"].astype(str).str.strip().str.lower().isin(
+            {"", "none", "nan", "n/a"}
+        )
+        working["_selected_rmsd"] = working[baseline_column]
+        working.loc[has_rescore, "_selected_rmsd"] = working.loc[
+            has_rescore, rescore_column
+        ]
+        working["_rescored_rmsd"] = working[rescore_column].where(has_rescore)
+
+        def _stats(values: pd.Series) -> Tuple[int, Optional[float], Optional[float]]:
+            valid = pd.to_numeric(values, errors="coerce").dropna()
+            if valid.empty:
+                return 0, None, None
+            return (
+                len(valid),
+                100.0 * float((valid < threshold).mean()),
+                float(valid.median()),
+            )
+
+        rows = []
+        group_columns = ["target_name", "pdb_id", "ligand_resname", "ligand_chain"]
+        for raw_key, group in working.groupby(group_columns, dropna=False, sort=False):
+            target, pdb_id, ligand, chain = (str(value).strip() for value in raw_key)
+            target = "" if target.lower() in {"nan", "none"} else target
+            chain = "" if chain.lower() in {"nan", "none"} else chain
+            structure = f"{pdb_id}/{chain}" if chain else pdb_id
+            label = f"{structure}/{ligand}"
+            if target and target != pdb_id:
+                label = f"{target} | {label}"
+
+            best_n, best_success, median_best = _stats(group["best_rmsd"])
+            baseline_n, baseline_success, median_baseline = _stats(
+                group[baseline_column]
+            )
+            rescore_n, rescore_success, median_rescore = _stats(
+                group["_rescored_rmsd"]
+            )
+            selected_n, selected_success, median_selected = _stats(
+                group["_selected_rmsd"]
+            )
+            rows.append({
+                "target": target or pdb_id,
+                "pdb_id": pdb_id,
+                "ligand": ligand,
+                "chain": chain,
+                "structure": structure,
+                "label": label,
+                "conditions": len(group),
+                "best_n": best_n,
+                "baseline_n": baseline_n,
+                "rescore_n": rescore_n,
+                "selected_n": selected_n,
+                "best_success": best_success,
+                "baseline_success": baseline_success,
+                "rescore_success": rescore_success,
+                "selected_success": selected_success,
+                "median_best": median_best,
+                "median_baseline": median_baseline,
+                "median_rescore": median_rescore,
+                "median_selected": median_selected,
+                "top_n": top_n,
+            })
+        return sorted(
+            rows,
+            key=lambda row: (row["target"], row["pdb_id"], row["ligand"], row["chain"]),
+        )
+
+    def _populate_protocol_pose_recovery(
+        self, parent: tk.Widget, results_path: Path
+    ) -> None:
+        """Render per-structure protocol pose-recovery statistics."""
+        if not results_path.exists():
+            tk.Label(parent, text="Protocol results CSV not found.").pack(
+                anchor="w", padx=10, pady=10
+            )
+            return
+        try:
+            frame = self._read_results_csv(results_path)
+        except Exception as exc:
+            tk.Label(parent, text=f"Could not load pose-recovery data: {exc}").pack(
+                anchor="w", padx=10, pady=10
+            )
+            return
+
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(2, weight=1)
+        source = tk.Label(
+            parent,
+            text=f"Results: {results_path}",
+            anchor="w",
+            justify="left",
+            width=1,
+            fg="#555555",
+        )
+        source.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 4))
+        source.bind(
+            "<Configure>",
+            lambda event: event.widget.configure(wraplength=max(100, event.width - 8)),
+        )
+
+        controls = tk.Frame(parent)
+        controls.grid(row=1, column=0, sticky="ew", padx=10, pady=(2, 8))
+        controls.grid_columnconfigure(1, weight=1)
+        tk.Label(controls, text="Ranking cutoff:").grid(row=0, column=0, sticky="w")
+        selector = tk.Frame(controls)
+        selector.grid(row=0, column=1, sticky="w", padx=(6, 0))
+        note_var = tk.StringVar(master=parent)
+        note = tk.Label(
+            controls,
+            textvariable=note_var,
+            anchor="w",
+            justify="left",
+            width=1,
+            fg="#555555",
+        )
+        note.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+
+        table_frame = tk.Frame(parent)
+        table_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_rowconfigure(0, weight=1)
+        columns = (
+            "target", "structure", "ligand", "conditions", "valid_best",
+            "best_success", "selected_success", "baseline_success",
+            "rescore_success", "median_best", "median_selected",
+            "median_baseline", "median_rescore",
+        )
+        headings = {
+            "target": "Target",
+            "structure": "Structure",
+            "ligand": "Native ligand",
+            "conditions": "Conditions",
+            "valid_best": "Valid RMSD",
+            "best_success": "Best-pose success",
+            "selected_success": "Selected success",
+            "baseline_success": "Docking success",
+            "rescore_success": "Rescored success",
+            "median_best": "Median best RMSD",
+            "median_selected": "Median selected RMSD",
+            "median_baseline": "Median docking RMSD",
+            "median_rescore": "Median rescored RMSD",
+        }
+        table = ttk.Treeview(table_frame, columns=columns, show="headings", height=18)
+        vertical = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
+        horizontal = ttk.Scrollbar(table_frame, orient="horizontal", command=table.xview)
+        table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        for column in columns:
+            table.heading(column, text=headings[column])
+            width = 125 if "success" in column or "median" in column else 95
+            if column in {"target", "ligand"}:
+                width = 115
+            table.column(column, width=width, minwidth=75, anchor="center", stretch=False)
+        table.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+
+        top_n_var = tk.IntVar(master=parent, value=1)
+        parent._pose_recovery_top_n_var = top_n_var
+        parent._pose_recovery_note_var = note_var
+
+        def _format_rate(value: Optional[float], count: int) -> str:
+            return "N/A" if value is None else f"{value:.1f}% (n={count})"
+
+        def _format_rmsd(value: Optional[float]) -> str:
+            return "N/A" if value is None else f"{value:.2f}"
+
+        def _refresh() -> None:
+            top_n = int(top_n_var.get())
+            rows = self._protocol_structure_pose_data(frame, top_n=top_n)
+            children = table.get_children()
+            if children:
+                table.delete(*children)
+            for row in rows:
+                table.insert("", "end", values=(
+                    row["target"], row["structure"], row["ligand"],
+                    row["conditions"], f"{row['best_n']}/{row['conditions']}",
+                    _format_rate(row["best_success"], row["best_n"]),
+                    _format_rate(row["selected_success"], row["selected_n"]),
+                    _format_rate(row["baseline_success"], row["baseline_n"]),
+                    _format_rate(row["rescore_success"], row["rescore_n"]),
+                    _format_rmsd(row["median_best"]),
+                    _format_rmsd(row["median_selected"]),
+                    _format_rmsd(row["median_baseline"]),
+                    _format_rmsd(row["median_rescore"]),
+                ))
+            for column, label in (
+                ("selected_success", f"Selected Top-{top_n} success"),
+                ("baseline_success", f"Docking Top-{top_n} success"),
+                ("rescore_success", f"Rescored Top-{top_n} success"),
+                ("median_selected", f"Median selected Top-{top_n}"),
+                ("median_baseline", f"Median docking Top-{top_n}"),
+                ("median_rescore", f"Median rescored Top-{top_n}"),
+            ):
+                table.heading(column, text=label)
+            note_var.set(
+                f"{len(rows)} crystal complex(es). Success uses RMSD < 2 A and "
+                "only conditions with a valid RMSD. Selected ranking uses the rescored "
+                "order when rescoring was enabled."
+            )
+
+        for cutoff in (1, 5, 10):
+            ttk.Radiobutton(
+                selector,
+                text=f"Top-{cutoff}",
+                variable=top_n_var,
+                value=cutoff,
+                command=_refresh,
+            ).pack(side="left", padx=2)
+        _refresh()
+
     def _summary_for_display(self, results_path: Path, summary_path: Path) -> dict:
         """Rebuild and persist metrics so older runs use current reporting."""
         saved_summary = {}
@@ -4357,7 +4718,7 @@ class DockMateVSApp(tk.Tk):
             if not results:
                 return saved_summary
             rebuilt_summary = self._build_summary(
-                results, float(saved_summary.get("threshold", 2.0))
+                results, float(saved_summary.get("threshold", 2.0)), json_path.parent
             )
             try:
                 self._write_summary_files(json_path, rebuilt_summary)
@@ -4690,12 +5051,18 @@ class DockMateVSApp(tk.Tk):
             tk.Label(parent, text=f"Could not load chart data: {exc}").pack(anchor="w", padx=10, pady=10)
             return
 
-        state = {"top_n": 1, "data": self._protocol_chart_data(frame, top_n=1)}
+        state = {
+            "top_n": 1,
+            "data": self._protocol_chart_data(frame, top_n=1),
+            "structures": self._protocol_structure_pose_data(frame, top_n=1),
+        }
         note_var = tk.StringVar(master=parent)
+        pose_note_var = tk.StringVar(master=parent)
         top_n_var = tk.IntVar(master=parent, value=1)
         # Keep Tk variables alive for as long as this results tab exists.
         parent._protocol_top_n_var = top_n_var
         parent._protocol_note_var = note_var
+        parent._protocol_pose_note_var = pose_note_var
 
         header = tk.Frame(parent)
         header.grid(
@@ -4713,18 +5080,58 @@ class DockMateVSApp(tk.Tk):
         tk.Label(selector, text="Ranking cutoff:").pack(side="left", padx=(0, 4))
 
         parent.grid_columnconfigure(0, weight=1)
-        parent.grid_columnconfigure(1, weight=1)
         parent.grid_rowconfigure(1, weight=1)
-        parent.grid_rowconfigure(2, weight=1)
 
-        pose_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
-        pose_canvas.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
-        rescore_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
-        rescore_canvas.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
-        runtime_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
-        runtime_canvas.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
-        effects_canvas = tk.Canvas(parent, height=310, bg="white", highlightthickness=1)
-        effects_canvas.grid(row=2, column=1, sticky="nsew", padx=10, pady=10)
+        chart_notebook = ttk.Notebook(parent)
+        chart_notebook.grid(
+            row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=10
+        )
+        comparison_tab = tk.Frame(chart_notebook)
+        recovery_tab = tk.Frame(chart_notebook)
+        chart_notebook.add(comparison_tab, text="Protocol Comparison")
+        chart_notebook.add(recovery_tab, text="Pose Recovery by Structure")
+
+        comparison_tab.grid_columnconfigure(0, weight=1)
+        comparison_tab.grid_columnconfigure(1, weight=1)
+        comparison_tab.grid_rowconfigure(0, weight=1)
+        comparison_tab.grid_rowconfigure(1, weight=1)
+        pose_canvas = tk.Canvas(
+            comparison_tab, height=310, bg="white", highlightthickness=1
+        )
+        pose_canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=(0, 5))
+        rescore_canvas = tk.Canvas(
+            comparison_tab, height=310, bg="white", highlightthickness=1
+        )
+        rescore_canvas.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=(0, 5))
+        runtime_canvas = tk.Canvas(
+            comparison_tab, height=310, bg="white", highlightthickness=1
+        )
+        runtime_canvas.grid(row=1, column=0, sticky="nsew", padx=(0, 5), pady=(5, 0))
+        effects_canvas = tk.Canvas(
+            comparison_tab, height=310, bg="white", highlightthickness=1
+        )
+        effects_canvas.grid(row=1, column=1, sticky="nsew", padx=(5, 0), pady=(5, 0))
+
+        recovery_tab.grid_columnconfigure(0, weight=1)
+        recovery_tab.grid_columnconfigure(1, weight=1)
+        recovery_tab.grid_rowconfigure(1, weight=1)
+        pose_note = tk.Label(
+            recovery_tab,
+            textvariable=pose_note_var,
+            anchor="w",
+            justify="left",
+            width=1,
+            fg="#555555",
+        )
+        pose_note.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        success_canvas = tk.Canvas(
+            recovery_tab, height=590, bg="white", highlightthickness=1
+        )
+        success_canvas.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
+        structure_rmsd_canvas = tk.Canvas(
+            recovery_tab, height=590, bg="white", highlightthickness=1
+        )
+        structure_rmsd_canvas.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
 
         def _update_note() -> None:
             data = state["data"]
@@ -4746,6 +5153,14 @@ class DockMateVSApp(tk.Tk):
                     f"{data['median_rescore_delta']:+.2f} A."
                 )
             note_var.set(note)
+            structures = state["structures"]
+            valid_selected = sum(row["selected_n"] for row in structures)
+            total_conditions = sum(row["conditions"] for row in structures)
+            pose_note_var.set(
+                f"{len(structures)} crystal complex(es); {valid_selected}/{total_conditions} "
+                f"completed conditions have a valid selected Top-{top_n} RMSD. "
+                "Bars summarize each structure across all tested protocol conditions."
+            )
 
         def _draw_pose() -> None:
             top_n = state["top_n"]
@@ -4800,12 +5215,50 @@ class DockMateVSApp(tk.Tk):
                 x_label=f"Selected Top-{top_n} RMSD (A)",
             )
 
-        draw_callbacks = (_draw_pose, _draw_rescore, _draw_runtime, _draw_effects)
+        def _draw_structure_success() -> None:
+            top_n = state["top_n"]
+            rows = state["structures"]
+            self._draw_grouped_horizontal_chart(
+                success_canvas,
+                f"Pose-recovery success by structure (RMSD < 2 A)",
+                [
+                    (row["label"], [row["best_success"], row["selected_success"]])
+                    for row in rows
+                ],
+                ("Best generated", f"Selected Top-{top_n}"),
+                max_value=100.0,
+            )
+
+        def _draw_structure_rmsd() -> None:
+            top_n = state["top_n"]
+            rows = state["structures"]
+            self._draw_grouped_horizontal_chart(
+                structure_rmsd_canvas,
+                "Median pose RMSD by structure",
+                [
+                    (row["label"], [row["median_best"], row["median_selected"]])
+                    for row in rows
+                ],
+                ("Best generated", f"Selected Top-{top_n}"),
+                thresholds=[(2.0, "2 A")],
+            )
+
+        draw_callbacks = (
+            _draw_pose,
+            _draw_rescore,
+            _draw_runtime,
+            _draw_effects,
+            _draw_structure_success,
+            _draw_structure_rmsd,
+        )
 
         def _select_top_n() -> None:
             top_n = int(top_n_var.get())
             state["top_n"] = top_n
             state["data"] = self._protocol_chart_data(frame, top_n=top_n)
+            state["structures"] = self._protocol_structure_pose_data(
+                frame, top_n=top_n
+            )
             _update_note()
             for draw in draw_callbacks:
                 draw()
@@ -4818,7 +5271,14 @@ class DockMateVSApp(tk.Tk):
 
         _update_note()
         for canvas, draw in zip(
-            (pose_canvas, rescore_canvas, runtime_canvas, effects_canvas),
+            (
+                pose_canvas,
+                rescore_canvas,
+                runtime_canvas,
+                effects_canvas,
+                success_canvas,
+                structure_rmsd_canvas,
+            ),
             draw_callbacks,
         ):
             self._install_chart(canvas, draw)
@@ -4826,20 +5286,48 @@ class DockMateVSApp(tk.Tk):
     def _render_results(self, summary: dict, rmsd_values: List[float]) -> None:
         self._clear_frame(self.results_summary_tab)
         self._clear_frame(self.results_charts_tab)
+        pose_tab = self.__dict__.get("results_pose_recovery_tab")
+        if pose_tab is not None:
+            self._clear_frame(pose_tab)
+        self._set_protocol_pose_tab_visible(False)
         self._populate_summary_tab(self.results_summary_tab, summary)
         self._populate_charts_tab(self.results_charts_tab, summary, rmsd_values)
-        self.results_notebook.select(self.results_summary_tab)
+        summary_page = self.__dict__.get(
+            "results_summary_page", self.__dict__.get("results_summary_tab")
+        )
+        self.results_notebook.select(summary_page)
         self.workflow_notebook.select(self.results_tab)
         self.after_idle(self._resize_workflow_notebook)
 
     def _populate_empty_results(self) -> None:
         self._clear_frame(self.results_summary_tab)
         self._clear_frame(self.results_charts_tab)
+        pose_tab = self.__dict__.get("results_pose_recovery_tab")
+        if pose_tab is not None:
+            self._clear_frame(pose_tab)
+        self._set_protocol_pose_tab_visible(False)
         tk.Label(
             self.results_summary_tab,
             text="No results yet. Run an analysis or load existing results.",
             fg="#555555"
         ).pack(anchor="w", padx=10, pady=10)
+
+    def _set_protocol_pose_tab_visible(self, visible: bool) -> None:
+        """Show the structure-level tab only for protocol-development results."""
+        notebook = self.__dict__.get("results_notebook")
+        page = self.__dict__.get(
+            "results_pose_recovery_page",
+            self.__dict__.get("results_pose_recovery_tab"),
+        )
+        if notebook is None or page is None:
+            return
+        try:
+            if visible:
+                notebook.add(page, text="Pose Recovery")
+            else:
+                notebook.hide(page)
+        except (AttributeError, tk.TclError):
+            return
 
     def _clear_frame(self, frame: tk.Widget) -> None:
         for child in frame.winfo_children():
@@ -5020,7 +5508,10 @@ class DockMateVSApp(tk.Tk):
         )
 
     def _populate_charts_tab(self, parent: tk.Frame, summary: dict, rmsd_values: List[float]) -> None:
-        unknown_groups = summary.get("unknown_docking_scores") or []
+        unknown_groups = attach_pose_quality(
+            summary.get("unknown_docking_scores") or [],
+            summary.get("screening_pose_quality") or [],
+        )
         if unknown_groups:
             parent.grid_rowconfigure(0, weight=1)
             parent.grid_rowconfigure(1, weight=0)
@@ -5986,7 +6477,26 @@ class DockMateVSApp(tk.Tk):
                 numeric = float(value)
                 x1 = left + min(max(numeric / axis_max, 0.0), 1.0) * plot_width
                 fill, outline = colors[series_index % len(colors)]
-                canvas.create_rectangle(left, y - bar_height, x1, y + bar_height, fill=fill, outline=outline)
+                bar = canvas.create_rectangle(
+                    left,
+                    y - bar_height,
+                    x1,
+                    y + bar_height,
+                    fill=fill,
+                    outline=outline,
+                )
+                tooltip = f"{label}\n{series_names[series_index]}: {numeric:.2f}"
+                canvas.tag_bind(
+                    bar,
+                    "<Enter>",
+                    lambda event, text=tooltip, w=width, h=height:
+                    self._draw_chart_tooltip(canvas, event, text, w, h),
+                )
+                canvas.tag_bind(
+                    bar,
+                    "<Leave>",
+                    lambda _event: canvas.delete("chart_tooltip"),
+                )
                 canvas.create_text(
                     min(x1 + 4, width - right + 3), y, text=f"{numeric:.2f}",
                     anchor="w", fill="#252525", font=("TkDefaultFont", 8),
@@ -8774,7 +9284,391 @@ class DockMateVSApp(tk.Tk):
             and decoy.ligand_charge == active.ligand_charge
         )
 
-    def _build_summary(self, results: List[RedockResult], threshold: float) -> dict:
+    def _resolve_result_output_file(
+        self,
+        result: RedockResult,
+        results_root: Optional[Path] = None,
+    ) -> Optional[Path]:
+        raw = str(result.output_file or "").strip()
+        if not raw:
+            return None
+        output_file = Path(raw).expanduser()
+        if output_file.exists():
+            return output_file
+        if results_root is None:
+            return None
+
+        root = Path(results_root).expanduser()
+        search_roots = [root]
+        if root.name == "protocol_development":
+            search_roots.append(root.parent)
+
+        candidates: List[Path] = []
+        if not output_file.is_absolute():
+            candidates.extend(base / output_file for base in search_roots)
+
+        parts = output_file.parts
+        for base in search_roots:
+            for idx, part in enumerate(parts):
+                if part == base.name and idx + 1 < len(parts):
+                    candidates.append(base.joinpath(*parts[idx + 1:]))
+
+        for tail_len in range(min(8, len(parts)), 1, -1):
+            suffix = parts[-tail_len:]
+            for base in search_roots:
+                candidates.append(base.joinpath(*suffix))
+
+        seen: set[Path] = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate.exists():
+                return candidate
+        return None
+
+    @staticmethod
+    def _write_ligand_sdf(mol: Chem.Mol, output_sdf: Path) -> None:
+        writer = Chem.SDWriter(str(output_sdf))
+        try:
+            if hasattr(writer, "SetKekulize"):
+                writer.SetKekulize(False)
+            writer.write(mol)
+        finally:
+            writer.close()
+
+    @staticmethod
+    def _load_first_sdf_mol(sdf_path: Path) -> Optional[Chem.Mol]:
+        for sanitize in (True, False):
+            try:
+                supplier = Chem.SDMolSupplier(
+                    str(sdf_path), removeHs=False, sanitize=sanitize
+                )
+                if len(supplier) > 0 and supplier[0] is not None:
+                    return supplier[0]
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _remove_hs_for_pose_topology(mol: Chem.Mol) -> Chem.Mol:
+        try:
+            return Chem.RemoveHs(Chem.Mol(mol), sanitize=False)
+        except TypeError:
+            return Chem.RemoveHs(Chem.Mol(mol))
+
+    @staticmethod
+    def _pose_topology_match_graph(mol: Chem.Mol) -> Chem.Mol:
+        graph = Chem.RWMol(mol)
+        for atom in graph.GetAtoms():
+            atom.SetIsAromatic(False)
+        for bond in graph.GetBonds():
+            bond.SetIsAromatic(False)
+            if bond.GetBondType() == Chem.BondType.AROMATIC:
+                bond.SetBondType(Chem.BondType.SINGLE)
+        match_graph = graph.GetMol()
+        match_graph.UpdatePropertyCache(strict=False)
+        return match_graph
+
+    @staticmethod
+    def _copy_docked_coordinates(
+        topology_mol: Chem.Mol,
+        docked_pose: Chem.Mol,
+    ) -> Chem.Mol:
+        if docked_pose.GetNumConformers() == 0:
+            raise ValueError("Docked pose has no coordinates")
+        if topology_mol.GetNumAtoms() != docked_pose.GetNumAtoms():
+            raise ValueError(
+                "Topology atom count does not match docked pose "
+                f"({topology_mol.GetNumAtoms()} vs {docked_pose.GetNumAtoms()})"
+            )
+
+        pose_mol = Chem.Mol(topology_mol)
+        pose_mol.RemoveAllConformers()
+        pose_conf = docked_pose.GetConformer()
+        topology_conf = Chem.Conformer(pose_mol.GetNumAtoms())
+        for atom_index in range(pose_mol.GetNumAtoms()):
+            topology_conf.SetAtomPosition(
+                atom_index, pose_conf.GetAtomPosition(atom_index)
+            )
+        pose_mol.AddConformer(topology_conf, assignId=True)
+        return pose_mol
+
+    def _prepared_topology_matched_to_docked_pose(
+        self,
+        prepared_mol: Chem.Mol,
+        docked_pose: Chem.Mol,
+    ) -> Chem.Mol:
+        prepared_heavy = self._remove_hs_for_pose_topology(prepared_mol)
+        docked_heavy = self._remove_hs_for_pose_topology(docked_pose)
+        if prepared_heavy.GetNumAtoms() != docked_heavy.GetNumAtoms():
+            raise ValueError(
+                "Prepared ligand heavy atom count does not match docked pose "
+                f"({prepared_heavy.GetNumAtoms()} vs {docked_heavy.GetNumAtoms()})"
+            )
+        if docked_heavy.GetNumConformers() == 0:
+            raise ValueError("Docked pose has no coordinates")
+
+        prepared_match_graph = self._pose_topology_match_graph(prepared_heavy)
+        docked_match_graph = self._pose_topology_match_graph(docked_heavy)
+        mcs = rdFMCS.FindMCS(
+            [prepared_match_graph, docked_match_graph],
+            atomCompare=rdFMCS.AtomCompare.CompareElements,
+            bondCompare=rdFMCS.BondCompare.CompareAny,
+            ringMatchesRingOnly=False,
+            completeRingsOnly=False,
+            timeout=10,
+        )
+        if mcs.canceled or mcs.numAtoms != prepared_heavy.GetNumAtoms():
+            raise ValueError(
+                "Prepared ligand topology could not be fully matched to docked pose "
+                f"({mcs.numAtoms} of {prepared_heavy.GetNumAtoms()} heavy atoms)"
+            )
+        query = Chem.MolFromSmarts(mcs.smartsString)
+        if query is None:
+            raise ValueError("Prepared ligand topology match could not be built")
+        prepared_match = prepared_match_graph.GetSubstructMatch(query)
+        docked_match = docked_match_graph.GetSubstructMatch(query)
+        if (
+            len(prepared_match) != prepared_heavy.GetNumAtoms()
+            or len(docked_match) != docked_heavy.GetNumAtoms()
+        ):
+            raise ValueError("Prepared ligand topology match was incomplete")
+
+        atom_order: List[Optional[int]] = [None] * docked_heavy.GetNumAtoms()
+        for query_index, docked_index in enumerate(docked_match):
+            atom_order[docked_index] = prepared_match[query_index]
+        if any(index is None for index in atom_order):
+            raise ValueError("Prepared ligand topology match did not cover every atom")
+
+        reordered = Chem.RenumberAtoms(
+            prepared_heavy,
+            [int(index) for index in atom_order if index is not None],
+        )
+        return self._copy_docked_coordinates(reordered, docked_heavy)
+
+    def _prepared_variant_sdf_for_output(self, output_file: Path) -> Optional[Path]:
+        case_dir = self._case_dir_from_output_file(output_file)
+        variant_label = output_file.parent.name
+        candidate = case_dir / "ligand_variants" / f"{variant_label}.sdf"
+        return candidate if candidate.exists() else None
+
+    def _write_ligand_sdf_with_prepared_topology(
+        self,
+        prepared_sdf: Path,
+        docked_pose: Chem.Mol,
+        output_sdf: Path,
+    ) -> str:
+        prepared_mol = self._load_first_sdf_mol(prepared_sdf)
+        if prepared_mol is None:
+            raise ValueError(f"Prepared ligand SDF could not be read: {prepared_sdf}")
+        if docked_pose.GetNumConformers() == 0:
+            raise ValueError("Docked pose has no coordinates")
+        if prepared_mol.GetNumAtoms() != docked_pose.GetNumAtoms():
+            try:
+                heavy_prepared_mol = Chem.RemoveHs(prepared_mol, sanitize=False)
+            except TypeError:
+                heavy_prepared_mol = Chem.RemoveHs(prepared_mol)
+            if heavy_prepared_mol.GetNumAtoms() == docked_pose.GetNumAtoms():
+                prepared_mol = heavy_prepared_mol
+        if prepared_mol.GetNumAtoms() != docked_pose.GetNumAtoms():
+            try:
+                pose_mol = self._prepared_topology_matched_to_docked_pose(
+                    prepared_mol, docked_pose
+                )
+            except Exception as exc:
+                raise ValueError(
+                    "Prepared ligand SDF atom count does not match docked pose "
+                    f"({prepared_mol.GetNumAtoms()} vs {docked_pose.GetNumAtoms()}); "
+                    f"heavy-atom topology matching also failed: {exc}"
+                ) from exc
+            self._write_ligand_sdf(pose_mol, output_sdf)
+            return "prepared_sdf_mcs"
+
+        prepared_symbols = [atom.GetSymbol() for atom in prepared_mol.GetAtoms()]
+        docked_symbols = [atom.GetSymbol() for atom in docked_pose.GetAtoms()]
+        if prepared_symbols != docked_symbols:
+            pose_mol = self._prepared_topology_matched_to_docked_pose(
+                prepared_mol, docked_pose
+            )
+            self._write_ligand_sdf(pose_mol, output_sdf)
+            return "prepared_sdf_mcs"
+
+        pose_mol = self._copy_docked_coordinates(prepared_mol, docked_pose)
+        self._write_ligand_sdf(pose_mol, output_sdf)
+        return "prepared_sdf"
+
+    def _write_posebusters_ligand_sdf(
+        self,
+        output_file: Path,
+        docked_pose: Chem.Mol,
+        quality_dir: Path,
+    ) -> Tuple[Path, str, Optional[str], Optional[str]]:
+        prepared_sdf = self._prepared_variant_sdf_for_output(output_file)
+        if prepared_sdf is not None:
+            ligand_sdf = quality_dir / "selected_pose_prepared_topology.sdf"
+            try:
+                topology_source = self._write_ligand_sdf_with_prepared_topology(
+                    prepared_sdf, docked_pose, ligand_sdf
+                )
+                return ligand_sdf, topology_source, str(prepared_sdf), None
+            except Exception as exc:
+                topology_error = str(exc)
+        else:
+            topology_error = "Prepared ligand SDF not found"
+
+        ligand_sdf = quality_dir / "selected_pose.sdf"
+        self._write_ligand_sdf(docked_pose, ligand_sdf)
+        return (
+            ligand_sdf,
+            "pdbqt_reconstruction",
+            str(prepared_sdf) if prepared_sdf is not None else None,
+            topology_error,
+        )
+
+    @staticmethod
+    def _pose_quality_error_row(base: dict, message: str) -> dict:
+        row = dict(base)
+        row.update({
+            "posebusters_available": False,
+            "posebusters_pass": None,
+            "posebusters_passed_checks": 0,
+            "posebusters_total_checks": 0,
+            "posebusters_failed_checks": [],
+            "posebusters_error": message,
+            "clash_pass": None,
+            "ligand_geometry_pass": None,
+            "internal_energy_pass": None,
+            "volume_overlap_pass": None,
+            "plip_available": False,
+            "plip_similarity": None,
+            "native_contact_recovery": None,
+            "native_contact_count": 0,
+            "pose_contact_count": 0,
+            "shared_contact_count": 0,
+            "shared_contacts": [],
+            "missing_native_contacts": [],
+            "new_pose_contacts": [],
+            "plip_error": message,
+        })
+        return row
+
+    def _screening_pose_quality_rows(
+        self,
+        candidates: List[Tuple[int, RedockResult, Tuple[float, float, str, str], str]],
+        results_root: Optional[Path] = None,
+    ) -> List[dict]:
+        rows: List[dict] = []
+        for rank, result, score_details, target_name in candidates:
+            output_file = self._resolve_result_output_file(result, results_root)
+            if output_file is None:
+                continue
+            compound = result.dock_name or result.ligand_resname
+            base = {
+                "target_name": target_name,
+                "pdb_id": result.pdb_id,
+                "ligand": result.ligand_resname,
+                "rank": rank,
+                "compound": compound,
+                "case_id": result.case_id,
+                "score": score_details[1],
+                "score_source": score_details[2],
+                "output_file": str(output_file),
+                "pose_index": None,
+                "pose_count": result.pose_count,
+            }
+            try:
+                selected = self._select_best_pose(
+                    None, output_file, selection_mode="best_score"
+                )
+                if selected is None:
+                    rows.append(self._pose_quality_error_row(base, "No readable docked poses"))
+                    continue
+                _, pose_mol, _, _, pose_index, pose_count = selected
+                base["pose_index"] = int(pose_index) + 1
+                base["pose_count"] = int(pose_count)
+
+                case_dir = self._case_dir_from_output_file(output_file)
+                quality_id = self._safe_case_id(
+                    f"{result.pdb_id}_{result.ligand_resname}_{compound}_{rank}"
+                )
+                quality_dir = case_dir / "pose_quality" / quality_id
+                quality_dir.mkdir(parents=True, exist_ok=True)
+
+                source_receptor = self._ensure_receptor_pdb(case_dir)
+                if source_receptor is None:
+                    rows.append(self._pose_quality_error_row(base, "Prepared receptor PDB not found"))
+                    continue
+                receptor_pdb = self._prepare_viewer_receptor(
+                    source_receptor,
+                    result.ligand_resname,
+                    quality_dir / "receptor_for_quality.pdb",
+                )
+
+                ligand_pdb = quality_dir / "selected_pose.pdb"
+                self._write_ligand_pdb(pose_mol, "ZQX", ligand_pdb)
+                (
+                    ligand_sdf,
+                    topology_source,
+                    prepared_ligand_sdf,
+                    topology_error,
+                ) = self._write_posebusters_ligand_sdf(
+                    output_file, pose_mol, quality_dir
+                )
+                docked_complex = quality_dir / "selected_pose_complex.pdb"
+                self._combine_complex(receptor_pdb, ligand_pdb, docked_complex)
+
+                row = dict(base)
+                row["posebusters_ligand_sdf"] = str(ligand_sdf)
+                row["posebusters_topology_source"] = topology_source
+                row["prepared_ligand_sdf"] = prepared_ligand_sdf
+                row["posebusters_topology_error"] = topology_error
+                row.update(run_posebusters(ligand_sdf, receptor_pdb))
+
+                crystal_ligand = case_dir / "crystal_ligand.pdb"
+                if crystal_ligand.exists():
+                    native_complex = quality_dir / "native_control_complex.pdb"
+                    self._combine_complex(receptor_pdb, crystal_ligand, native_complex)
+                    native_plip = plip_contact_fingerprint(native_complex)
+                    pose_plip = plip_contact_fingerprint(docked_complex)
+                    row["plip_available"] = (
+                        bool(native_plip.get("plip_available"))
+                        and bool(pose_plip.get("plip_available"))
+                    )
+                    errors = [
+                        label
+                        for label in (
+                            f"native: {native_plip.get('plip_error')}" if native_plip.get("plip_error") else "",
+                            f"pose: {pose_plip.get('plip_error')}" if pose_plip.get("plip_error") else "",
+                        )
+                        if label
+                    ]
+                    row["plip_error"] = "; ".join(errors) or None
+                    row.update(contact_similarity(
+                        native_plip.get("plip_contacts") or [],
+                        pose_plip.get("plip_contacts") or [],
+                    ))
+                else:
+                    row.update(contact_similarity([], []))
+                    row["plip_available"] = False
+                    row["plip_error"] = "Native/control ligand PDB not found"
+                rows.append(row)
+            except Exception as exc:
+                logger.warning(
+                    "Could not compute pose quality for {} {}: {}",
+                    result.pdb_id,
+                    compound,
+                    exc,
+                )
+                rows.append(self._pose_quality_error_row(base, str(exc)))
+        return rows
+
+    def _build_summary(
+        self,
+        results: List[RedockResult],
+        threshold: float,
+        results_root: Optional[Path] = None,
+    ) -> dict:
         """
         Build summary statistics using the enhanced RedockAnalyzer.
         
@@ -9304,6 +10198,9 @@ class DockMateVSApp(tk.Tk):
 
         screening_structure_rows = []
         screening_top_hits = []
+        pose_quality_candidates: List[
+            Tuple[int, RedockResult, Tuple[float, float, str, str], str]
+        ] = []
         for (pdb_id, ligand), structure_results in sorted(structure_groups.items()):
             structure_scored = []
             for result in structure_results:
@@ -9352,8 +10249,21 @@ class DockMateVSApp(tk.Tk):
                     "score": details[1],
                     "score_source": details[2],
                 })
+                pose_quality_candidates.append((rank, result, details, target_name))
         summary["per_structure_screening"] = screening_structure_rows
         summary["screening_top_hits"] = screening_top_hits
+        summary["screening_pose_quality_limit_per_structure"] = SCREENING_POSE_QUALITY_LIMIT
+        summary["screening_pose_quality"] = self._screening_pose_quality_rows(
+            [
+                item for item in pose_quality_candidates
+                if item[0] <= SCREENING_POSE_QUALITY_LIMIT
+            ],
+            results_root,
+        )
+        summary["unknown_docking_scores"] = attach_pose_quality(
+            summary["unknown_docking_scores"],
+            summary["screening_pose_quality"],
+        )
         summary["screening_failures"] = [
             {
                 "pdb_id": result.pdb_id,
@@ -9561,6 +10471,69 @@ class DockMateVSApp(tk.Tk):
                     f"| {row['target_name']} | {row['pdb_id']} | {row['ligand']} | "
                     f"{row['rank']} | {row['compound']} | "
                     f"{self._fmt_score(row['score'])} | {row['score_source']} |"
+                )
+
+        pose_quality_rows = summary.get("screening_pose_quality") or []
+        if pose_quality_rows:
+            limit = summary.get("screening_pose_quality_limit_per_structure") or SCREENING_POSE_QUALITY_LIMIT
+
+            def _pass_text(value: object) -> str:
+                if value is True:
+                    return "Pass"
+                if value is False:
+                    return "Fail"
+                return "-"
+
+            def _fraction_text(value: object) -> str:
+                if value is None:
+                    return "-"
+                try:
+                    return f"{100.0 * float(value):.1f}%"
+                except (TypeError, ValueError):
+                    return "-"
+
+            def _details_text(row: dict) -> str:
+                failed = row.get("posebusters_failed_checks") or []
+                if failed:
+                    text = ", ".join(str(item) for item in failed[:4])
+                    if len(failed) > 4:
+                        text += f", +{len(failed) - 4} more"
+                    return text.replace("|", "/")
+                error = row.get("posebusters_error")
+                return str(error).replace("|", "/") if error else "-"
+
+            lines.extend([
+                "",
+                "## Pose Plausibility and Native-Contact Similarity",
+                "",
+                f"Rows cover up to the top {limit} ranked unknown compound(s) per "
+                "structure. PoseBusters checks geometric and chemical plausibility; "
+                "PLIP similarity is a type-aware residue-contact Tanimoto comparison "
+                "against the native/control ligand pose.",
+                "",
+                "PoseBusters uses the saved selected docking coordinates. When available, "
+                "DockMate combines those coordinates with the prepared ligand SDF topology; "
+                "older runs without prepared SDF files fall back to topology inferred from "
+                "the PDBQT pose.",
+                "",
+                "| Target | PDB | Ligand | Rank | Compound | Score | PoseBusters | "
+                "Failed/details | Geometry | Clash | Energy | PLIP similarity | "
+                "Native contacts recovered |",
+                "| --- | --- | --- | ---: | --- | ---: | --- | --- | --- | --- | --- | ---: | ---: |",
+            ])
+            for row in pose_quality_rows:
+                lines.append(
+                    f"| {row.get('target_name') or '-'} | {row.get('pdb_id') or '-'} | "
+                    f"{row.get('ligand') or '-'} | {row.get('rank') or '-'} | "
+                    f"{str(row.get('compound') or '-').replace('|', '/')} | "
+                    f"{self._fmt_score(row.get('score'))} | "
+                    f"{_pass_text(row.get('posebusters_pass'))} | "
+                    f"{_details_text(row)} | "
+                    f"{_pass_text(row.get('ligand_geometry_pass'))} | "
+                    f"{_pass_text(row.get('clash_pass'))} | "
+                    f"{_pass_text(row.get('internal_energy_pass'))} | "
+                    f"{self._fmt(row.get('plip_similarity')) if row.get('plip_similarity') is not None else '-'} | "
+                    f"{_fraction_text(row.get('native_contact_recovery'))} |"
                 )
 
         screening_failures = summary.get("screening_failures") or []

@@ -495,6 +495,7 @@ class AdaptiveDockingPipeline:
             # Take first variant and save as PDBQT
             ligand_pdbqt = protocol_dir / f"{ligand_name}.pdbqt"
             ligands[0].to_pdbqt_file(str(ligand_pdbqt))
+            ligands[0].to_sdf_file(str(protocol_dir / f"{ligand_name}.sdf"))
 
         # Step 3: Define binding site
         logger.info(f"  [3/5] Defining binding site (margin={protocol.margin}Å)...")
@@ -642,6 +643,7 @@ class AdaptiveDockingPipeline:
         # Save to PDBQT
         ligand_pdbqt = self.output_dir / f"{ligand_name}_prepared.pdbqt"
         prepared_ligands[0].to_pdbqt_file(str(ligand_pdbqt))
+        prepared_ligands[0].to_sdf_file(str(self.output_dir / f"{ligand_name}_prepared.sdf"))
         return ligand_pdbqt
 
 
@@ -680,10 +682,13 @@ class AdaptiveDockingPipeline:
         for idx, lig in enumerate(prepared_ligands, 1):
             variant_label = f"{ligand_name}_v{idx}"
             ligand_pdbqt = variants_dir / f"{variant_label}.pdbqt"
+            ligand_sdf = variants_dir / f"{variant_label}.sdf"
             lig.to_pdbqt_file(str(ligand_pdbqt))
+            lig.to_sdf_file(str(ligand_sdf))
             variants.append({
                 "label": variant_label,
                 "pdbqt": ligand_pdbqt,
+                "sdf": ligand_sdf,
                 "energy": lig.energy,
                 "smiles": lig.smiles
             })

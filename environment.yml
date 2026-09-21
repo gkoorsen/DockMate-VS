@@ -23,3 +23,7 @@ dependencies:
   - openmm
   - pdbfixer
   - openbabel
+  - lxml
+  - pip:
+      - posebusters
+      - plip

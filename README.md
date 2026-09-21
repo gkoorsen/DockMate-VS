@@ -19,6 +19,8 @@ questions while producing resumable, machine-readable campaigns.
   docking pose onto its native ligand.
 - Evaluate labelled controls per receptor structure and target while keeping
   unlabelled compounds out of enrichment statistics.
+- Triage top screening hits with PoseBusters plausibility checks and PLIP
+  native-contact similarity.
 - Describe a complete batch campaign in one reviewable spreadsheet, including
   explicit compound-receptor pairings for multi-receptor docking.
 - Resume compatible campaigns and retry missing or failed outputs.
@@ -59,6 +61,18 @@ conda env create -f environment.yml
 conda activate dockmate-vs
 python -m pip install -e .
 ```
+
+Pose plausibility and native-contact similarity reports use PoseBusters and
+PLIP. They are installed by `environment.yml`. If you are updating an existing
+environment instead of recreating it, run:
+
+```bash
+python -m pip install -e ".[pose-quality]"
+```
+
+New runs save each prepared ligand variant as both PDBQT and SDF. PoseBusters
+uses the prepared SDF topology with the selected docked coordinates when
+available, avoiding misleading chemistry inferred from PDBQT alone.
 
 Your prompt should now begin with `(dockmate-vs)`. Verify:
 
@@ -262,13 +276,14 @@ Protocol-development runs produce an analogous manifest, condition-level CSV,
 summary, recommendations, and plots.
 
 For runs containing unknown compounds, **Results > Charts > Unknown docking
-scores** plots every available raw docking score by receptor structure and
-highlights the lowest-scoring compound in each group. Hover over a point for its
-compound name, target, structure, engine, and score. Use the structure selector
+scores** plots every available selected ranking score by receptor structure and
+highlights the lowest-scoring compound in each group. It uses the same score
+selection as the top-ranked-compound summary: GNINA score, then rescoring score,
+then the original docking score. Hover over a point for its compound name,
+target, structure, engine, score, and score source. Use the structure selector
 to focus on one group and the plot toolbar to zoom or export an image. Active
 controls and decoys are excluded; scored/total counts show missing or failed
-cases. These are original docking scores, which can differ from the rescoring
-values used in the top-ranked-compound summary.
+cases.
 
 The component boundaries, campaign flow, output contracts, and extension points
 are described in [`docs/architecture.md`](docs/architecture.md).

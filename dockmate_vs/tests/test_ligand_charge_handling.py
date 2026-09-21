@@ -102,11 +102,36 @@ def test_pipeline_forwards_charge_policy_to_preparation(monkeypatch, tmp_path, p
     def get(**kwargs):
         configs.append(kwargs["config"])
         return [SimpleNamespace(energy=0., smiles="CC[NH3+]",
-                                to_pdbqt_file=lambda path: None)]
+                                to_pdbqt_file=lambda path: None,
+                                to_sdf_file=lambda path: None)]
     monkeypatch.setattr(pipeline.ligand_cache, "get", get)
     pipeline._prepare_ligand("CC[NH3+]", "amine")
     pipeline._prepare_ligand_variants("CC[NH3+]", "amine", max_tautomers=1)
     assert [cfg.charge_handling for cfg in configs] == [policy, policy]
+
+
+def test_pipeline_writes_prepared_variant_sdf(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    pipeline = AdaptiveDockingPipeline(tmp_path / "run")
+
+    def _write_text(path, text):
+        with open(path, "w") as handle:
+            handle.write(text)
+
+    def get(**kwargs):
+        return [SimpleNamespace(
+            energy=0.,
+            smiles="CCO",
+            to_pdbqt_file=lambda path: _write_text(path, "pdbqt"),
+            to_sdf_file=lambda path: _write_text(path, "sdf"),
+        )]
+
+    monkeypatch.setattr(pipeline.ligand_cache, "get", get)
+    variants = pipeline._prepare_ligand_variants("CCO", "ethanol", max_tautomers=1)
+
+    assert variants[0]["pdbqt"].read_text() == "pdbqt"
+    assert variants[0]["sdf"].read_text() == "sdf"
+    assert variants[0]["sdf"].name == "ethanol_v1.sdf"
 
 
 @pytest.mark.parametrize("policy", [None, "preserve", "neutralize", "invalid"])

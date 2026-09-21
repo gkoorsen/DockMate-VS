@@ -10,6 +10,8 @@ from Conda packages. These tools remain governed by their own licences:
 - Open Babel: GNU General Public License v2.0, https://github.com/openbabel/openbabel
 - OpenMM: MIT and LGPL components, https://github.com/openmm/openmm
 - PDBFixer: MIT License, https://github.com/openmm/pdbfixer
+- PoseBusters: BSD License, https://github.com/maabuu/posebusters
+- PLIP: GNU General Public License v2.0, https://github.com/pharmai/plip
 
 The container is built from the `mambaorg/micromamba` image. Micromamba and the
 base-image components retain their own licences and notices:

@@ -46,6 +46,14 @@ conda activate dockmate-vs
 python -m pip install -e .
 ```
 
+PoseBusters and PLIP power the screening pose-plausibility/contact-similarity
+report and are installed by `environment.yml`. If you are updating an existing
+environment instead of recreating it, run:
+
+```bash
+python -m pip install -e ".[pose-quality]"
+```
+
 Your prompt should now begin with `(dockmate-vs)`. Verify the installation:
 
 ```bash
@@ -139,6 +147,7 @@ vina --version
 | rDock | Alternative docking engine | Optional | [rDock](https://rdock.github.io/installation/) |
 | Meeko (`mk_prepare_receptor.py`) | Flexible-receptor PDBQT preparation | Optional | [Meeko](https://meeko.readthedocs.io/en/develop/installation.html) |
 | fpocket | Apo binding-site prediction | Optional | [fpocket](https://github.com/Discngine/fpocket#installing) |
+| PoseBusters and PLIP | Pose plausibility and native-contact similarity in screening reports | Optional but recommended | Installed by `environment.yml`; existing environments can use `python -m pip install -e ".[pose-quality]"` |
 | PyMOL and LigPlot+ | Pose and interaction visualization | Optional | [PyMOL](https://pymol.org/) / [LigPlot+](https://www.ebi.ac.uk/thornton-srv/software/LigPlus/) |
 
 For advanced installer options or existing installations, run:
@@ -563,6 +572,24 @@ views plus controls to load a run folder or results file. Loading results or
 completing a campaign selects this tab. Reopening a run regenerates the summary
 with current reporting logic.
 
+For screening runs, the Summary view includes a **Pose Plausibility and
+Native-Contact Similarity** table for up to the top five unknown compounds per
+structure. PoseBusters reports ligand/receptor plausibility checks, while PLIP
+compares the selected unknown pose's protein contacts with the native/control
+ligand contact fingerprint. These metrics are triage aids for MD selection, not
+affinity predictions.
+
+The **Unknown docking scores** chart shows the same PoseBusters pass/fail result
+and percentage of native contacts recovered in each point's hover details. The
+top five analyzed compounds per structure show measured values; other compounds
+are marked **Not analyzed**.
+
+New campaigns save prepared ligand variants as SDF files alongside their PDBQT
+files. PoseBusters uses the prepared SDF topology with the selected docked
+coordinates when those files are available. Older runs without prepared SDF
+files fall back to topology inferred from the PDBQT pose, so chemistry-specific
+failures from those runs should be interpreted more cautiously.
+
 Single-receptor assay benchmarks show four panels: ROC discrimination,
 precision-recall, raw docking-score density distributions, and molecular weight
 versus raw docking score. ROC and precision-recall retain the campaign's selected
@@ -590,6 +617,15 @@ folder containing the `protocol_development` subfolder or that subfolder itself.
 Use **Load Results File...** only when selecting the exact
 `redock_results.json`, `redock_results.csv`, or
 `protocol_development_results.csv` file.
+
+Loaded Protocol Development results include a **Pose Recovery** tab with one
+row per crystal complex. Use its Top-1/5/10 control to compare best-generated,
+docking-ranked, rescored, and selected-ranking success rates and median RMSDs.
+The **Charts** tab retains the protocol-comparison dashboard and adds **Pose
+Recovery by Structure**, with success-rate and median-RMSD plots using the same
+ranking-cutoff control. Hover over a bar for the full complex and metric value.
+Each Results tab has vertical and horizontal scrollbars; the mouse wheel scrolls
+the results page currently under the pointer.
 
 The **Pose Viewer** tab loads a completed run folder or exact results file and can
 display:

@@ -1,4 +1,4 @@
-"""Raw docking scores for unknown screening compounds, grouped by structure."""
+"""Selected docking scores for unknown screening compounds, grouped by structure."""
 
 import math
 import textwrap
@@ -23,20 +23,107 @@ def unknown_docking_data(records) -> list:
         ))
         group = groups.setdefault(key, {
             "target": key[0], "pdb_id": key[1], "ligand": key[2],
-            "engine": key[3], "cases": 0, "points": [],
+            "engine": key[3], "cases": 0, "points": [], "score_source": None,
         })
         group["cases"] += 1
+        score_value = None
+        score_source = None
+        for field, label in (
+            ("rescore_cnn_affinity", "GNINA CNN affinity"),
+            ("rescore_cnn_score", "GNINA CNN score"),
+            ("rescore_score", "Vinardo score-only"),
+            ("best_score", "docking score"),
+        ):
+            if record.get(field) is not None:
+                score_value, score_source = record.get(field), label
+                break
         try:
-            score = float(record.get("best_score"))
+            score = float(score_value)
         except (TypeError, ValueError):
             continue
         if not math.isfinite(score) or str(record.get("docking_completed")).lower() in ("false", "0", "0.0"):
             continue
         group["points"].append({
             "compound": str(record.get("dock_name") or record.get("case_id") or "Unnamed"),
-            "score": score, "case_id": record.get("case_id"),
+            "score": score, "score_source": score_source,
+            "case_id": record.get("case_id"),
         })
+        group["score_source"] = score_source
     return [groups[key] for key in sorted(groups)]
+
+
+def attach_pose_quality(groups, quality_rows) -> list:
+    """Attach top-hit PoseBusters and PLIP results to matching chart points."""
+    quality_rows = list(quality_rows or [])
+
+    def _text(value) -> str:
+        return str(value or "").strip()
+
+    def _score(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return round(number, 8) if math.isfinite(number) else None
+
+    by_case = {
+        _text(row.get("case_id")): row
+        for row in quality_rows
+        if _text(row.get("case_id"))
+    }
+    by_identity = {}
+    for row in quality_rows:
+        key = (
+            _text(row.get("target_name")),
+            _text(row.get("pdb_id")),
+            _text(row.get("ligand")),
+            _text(row.get("compound")),
+            _score(row.get("score")),
+        )
+        by_identity.setdefault(key, []).append(row)
+
+    enriched = []
+    for group in groups or []:
+        updated_group = dict(group)
+        updated_points = []
+        for point in group.get("points") or []:
+            updated = dict(point)
+            case_id = _text(point.get("case_id"))
+            quality = by_case.get(case_id) if case_id else None
+            if quality is None:
+                key = (
+                    _text(group.get("target")),
+                    _text(group.get("pdb_id")),
+                    _text(group.get("ligand")),
+                    _text(point.get("compound")),
+                    _score(point.get("score")),
+                )
+                matches = by_identity.get(key) or []
+                compatible = [
+                    row
+                    for row in matches
+                    if not case_id
+                    or not _text(row.get("case_id"))
+                    or _text(row.get("case_id")) == case_id
+                ]
+                quality = compatible[0] if compatible else None
+            updated["pose_quality_analyzed"] = quality is not None
+            updated["posebusters_available"] = (
+                quality.get("posebusters_available") if quality is not None else None
+            )
+            updated["posebusters_pass"] = (
+                quality.get("posebusters_pass") if quality is not None else None
+            )
+            updated["native_contact_recovery"] = (
+                quality.get("native_contact_recovery") if quality is not None else None
+            )
+            updated["plip_available"] = (
+                quality.get("plip_available") if quality is not None else None
+            )
+            updated_points.append(updated)
+        updated_group["points"] = updated_points
+        enriched.append(updated_group)
+    return enriched
 
 
 def structure_label(group):
@@ -49,10 +136,12 @@ def unknown_score_figure(groups):
     axis = figure.add_subplot()
     figure.subplots_adjust(left=.20, right=.70, top=.89, bottom=.16)
     axis.spines[["top", "right"]].set_visible(False)
-    axis.set_title("Unknown-compound docking scores", loc="left", fontsize=12, pad=18)
+    sources = {g["score_source"] for g in groups if g.get("score_source")}
+    source_label = next(iter(sources), "Selected score") if len(sources) == 1 else "Selected score"
+    axis.set_title(f"Unknown-compound {source_label.lower()}s", loc="left", fontsize=12, pad=18)
     engines = {g["engine"].lower() for g in groups}
     units = " (kcal/mol)" if engines and engines <= {"smina", "vina"} else ""
-    axis.set_xlabel(f"Raw docking score{units}; lower is better", fontsize=9)
+    axis.set_xlabel(f"{source_label}{units}; lower is better", fontsize=9)
     axis.tick_params(labelsize=8)
     axis.grid(axis="x", color="#E7E7E7", linewidth=.7)
     axis.set_axisbelow(True)
@@ -142,10 +231,31 @@ class ScoreHover:
             return
         group = selected["group"]
         name = "\n".join(textwrap.wrap(selected["compound"], width=40))
+        analyzed = bool(selected.get("pose_quality_analyzed"))
+        pass_value = selected.get("posebusters_pass")
+        if not analyzed:
+            posebusters = "Not analyzed"
+        elif pass_value is True or str(pass_value).strip().lower() == "true":
+            posebusters = "Pass"
+        elif pass_value is False or str(pass_value).strip().lower() == "false":
+            posebusters = "Fail"
+        else:
+            posebusters = "Unavailable"
+        recovery_value = selected.get("native_contact_recovery")
+        try:
+            recovery = float(recovery_value)
+        except (TypeError, ValueError):
+            recovery = None
+        if recovery is not None and math.isfinite(recovery):
+            contacts = f"{100.0 * recovery:.1f}%"
+        else:
+            contacts = "Unavailable" if analyzed else "Not analyzed"
         text = (f"{name}\n{group['pdb_id']}/{group['ligand']}"
                 f"\nTarget: {group['target'] or 'unspecified'}"
-                f"\nRaw docking score: {selected['score']:.4f}"
-                f"\nEngine: {group['engine'] or 'unspecified'}")
+                f"\n{selected['score_source']}: {selected['score']:.4f}"
+                f"\nEngine: {group['engine'] or 'unspecified'}"
+                f"\nPoseBusters: {posebusters}"
+                f"\nNative contacts recovered: {contacts}")
         self.annotation.xy = (selected["x"], selected["y"])
         right = event.x > self.axis.bbox.x0 + self.axis.bbox.width / 2
         above = event.y < self.axis.bbox.y0 + self.axis.bbox.height / 2

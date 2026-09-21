@@ -648,6 +648,75 @@ def test_protocol_chart_data_switches_all_metrics_to_selected_top_n():
         DockMateVSApp._protocol_chart_data(frame, top_n=20)
 
 
+def test_protocol_structure_pose_data_reports_each_complex_and_selected_ranking():
+    frame = pd.DataFrame([
+        {
+            "status": "complete", "target_name": "Mpro", "pdb_id": "1ABC",
+            "ligand_resname": "LIG", "ligand_chain": "A", "engine": "smina",
+            "box_definition": "margin:3", "rescore_method": "vinardo",
+            "water_handling": "retain_all", "exhaustiveness": 8, "seed": 1,
+            "best_rmsd": 1.0, "top1_rmsd": 3.0, "top5_rmsd": 1.2,
+            "rescore_top1_rmsd": 1.5, "rescore_top5_rmsd": 1.0,
+        },
+        {
+            "status": "complete", "target_name": "Mpro", "pdb_id": "1ABC",
+            "ligand_resname": "LIG", "ligand_chain": "A", "engine": "smina",
+            "box_definition": "margin:3", "rescore_method": "vinardo",
+            "water_handling": "retain_all", "exhaustiveness": 8, "seed": 2,
+            "best_rmsd": 999.9, "top1_rmsd": 1.0, "top5_rmsd": 1.0,
+            "rescore_top1_rmsd": 2.5, "rescore_top5_rmsd": 1.1,
+        },
+        {
+            "status": "failed", "target_name": "Mpro", "pdb_id": "1ABC",
+            "ligand_resname": "LIG", "ligand_chain": "A", "engine": "smina",
+            "box_definition": "margin:3", "rescore_method": "vinardo",
+            "water_handling": "retain_all", "exhaustiveness": 8, "seed": 3,
+            "best_rmsd": 0.1, "top1_rmsd": 0.1, "top5_rmsd": 0.1,
+            "rescore_top1_rmsd": 0.1, "rescore_top5_rmsd": 0.1,
+        },
+        *[
+            {
+                "status": "complete", "target_name": "Mpro", "pdb_id": "2DEF",
+                "ligand_resname": "NAT", "ligand_chain": "B", "engine": "rdock",
+                "box_definition": "radius:6", "rescore_method": "none",
+                "water_handling": "remove_all", "exhaustiveness": exhaustiveness,
+                "seed": 42, "best_rmsd": 1.4, "top1_rmsd": 1.8,
+                "top5_rmsd": 1.4, "rescore_top1_rmsd": 0.2,
+                "rescore_top5_rmsd": 0.2,
+            }
+            for exhaustiveness in (8, 16)
+        ],
+    ])
+
+    top1 = DockMateVSApp._protocol_structure_pose_data(frame, top_n=1)
+
+    assert len(top1) == 2
+    first = next(row for row in top1 if row["pdb_id"] == "1ABC")
+    assert first["label"] == "Mpro | 1ABC/A/LIG"
+    assert first["conditions"] == 2
+    assert first["best_n"] == 1
+    assert first["best_success"] == 100.0
+    assert first["baseline_success"] == 50.0
+    assert first["rescore_success"] == 50.0
+    assert first["selected_success"] == 50.0
+    assert first["median_selected"] == 2.0
+
+    rdock = next(row for row in top1 if row["pdb_id"] == "2DEF")
+    assert rdock["conditions"] == 1
+    assert rdock["selected_success"] == 100.0
+    assert rdock["median_selected"] == 1.8
+    assert rdock["rescore_n"] == 0
+    assert rdock["rescore_success"] is None
+
+    top5 = DockMateVSApp._protocol_structure_pose_data(frame, top_n=5)
+    first_top5 = next(row for row in top5 if row["pdb_id"] == "1ABC")
+    assert first_top5["selected_success"] == 100.0
+    assert first_top5["median_selected"] == pytest.approx(1.05)
+
+    with pytest.raises(ValueError, match="Top-1, Top-5, or Top-10"):
+        DockMateVSApp._protocol_structure_pose_data(frame, top_n=20)
+
+
 def test_protocol_chart_data_collapses_legacy_rdock_exhaustiveness_duplicates():
     frame = pd.DataFrame([
         {
