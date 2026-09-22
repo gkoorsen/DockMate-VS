@@ -316,6 +316,43 @@ def test_protocol_completion_renders_and_opens_results(monkeypatch, tmp_path):
     assert app.progress_dialog is None
 
 
+def test_screening_completion_starts_logged_results_load(monkeypatch, tmp_path):
+    app = object.__new__(DockMateVSApp)
+    results = tmp_path / "redock_results.json"
+    results.write_text('{"results": []}')
+    calls = []
+
+    class FakeProgress:
+        cancelled = False
+
+        def log(self, message):
+            calls.append(("log", message))
+
+        def destroy(self):
+            calls.append(("destroy",))
+
+    app.progress_dialog = FakeProgress()
+    app._queue = queue.Queue()
+    app._queue.put(("done", results))
+    app._safe_call = lambda function: function
+    app._start_screening_results_load = lambda *args, **kwargs: calls.append(
+        ("load", args, kwargs)
+    )
+    app._set_status = lambda value: calls.append(("status", value))
+    app._set_busy = lambda value: calls.append(("busy", value))
+    monkeypatch.setattr(redock_module.messagebox, "showinfo", lambda *args: None)
+
+    app._poll_queue()
+
+    assert (
+        "load",
+        (results,),
+        {"open_results_dialog": True},
+    ) in calls
+    assert app.last_results_path == results
+    assert app.progress_dialog is None
+
+
 def _resume_manifest(tmp_path, scoring="vina"):
     return {
         "created_at": "ignored-for-compatibility",

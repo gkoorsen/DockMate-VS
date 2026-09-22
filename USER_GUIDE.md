@@ -597,6 +597,13 @@ beside a transferred `results` folder. A recovery audit is written as
 `prepared_sdf_backfill_auto_audit.json`. Poses that cannot be validated retain
 the PDBQT-topology fallback, and the GUI reports why they were skipped.
 
+Screening results are rebuilt in a separate progress window so the main GUI
+remains responsive. Its log identifies the current structure and compound and
+shows when DockMate-VS is loading the pose, running PoseBusters, calculating
+native and docked-pose PLIP contacts, or skipping a pose with missing inputs.
+Cancel stops before the next pose and does not replace the saved report with a
+partial reconstruction.
+
 Single-receptor assay benchmarks show four panels: ROC discrimination,
 precision-recall, raw docking-score density distributions, and molecular weight
 versus raw docking score. ROC and precision-recall retain the campaign's selected
@@ -633,6 +640,12 @@ Recovery by Structure**, with success-rate and median-RMSD plots using the same
 ranking-cutoff control. Hover over a bar for the full complex and metric value.
 Each Results tab has vertical and horizontal scrollbars; the mouse wheel scrolls
 the results page currently under the pointer.
+
+Every results table includes **Copy table** and **Export Excel...** controls.
+Copy includes the visible column headings and all currently displayed rows as
+tab-separated text. The same action is available from the table's context menu
+and with `Ctrl+C` or `Command+C` while the table has focus. Excel export writes
+the currently displayed table to an `.xlsx` workbook.
 
 The **Pose Viewer** tab loads a completed run folder or exact results file and can
 display:

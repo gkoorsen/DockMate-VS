@@ -3,8 +3,10 @@ DockMate-VS graphical application for docking protocol development and screening
 """
 
 import copy
+import csv
 import hashlib
 import importlib.metadata
+import io
 import json
 import os
 import math
@@ -96,6 +98,10 @@ CHARGE_HANDLING_OPTIONS = {
     "Preserve input charges": "preserve",
     "Neutralize removable charges": "neutralize",
 }
+
+
+class ResultsLoadCancelled(RuntimeError):
+    """Raised when a user cancels screening report reconstruction."""
 
 
 def _executable_default(explicit: Optional[str], command: str) -> str:
@@ -2689,9 +2695,10 @@ class DockMateVSApp(tk.Tk):
                 messagebox.showinfo("Completed", f"Docking analysis completed.\n{results_path}")
                 self._set_status("Run completed")
                 self.last_results_path = Path(results_path)
-                self._safe_call(self._render_results_from_path)(results_path)
-                self._safe_call(self._show_results)(results_path)
                 self._set_busy(False)
+                self._safe_call(self._start_screening_results_load)(
+                    Path(results_path), open_results_dialog=True
+                )
                 return
             elif msg_type == "protocol_done":
                 _, results_path, report_path = msg
@@ -3993,12 +4000,7 @@ class DockMateVSApp(tk.Tk):
             return
         self.last_results_path = results_path
         self._pose_viewer_loaded_path = None
-        if results_path.name == "protocol_development_results.csv":
-            report_path = results_path.with_name("protocol_development_summary.md")
-            self._render_protocol_results(results_path, report_path)
-        else:
-            self._render_results_from_path(results_path)
-        self._set_status(f"Loaded results from {results_path.parent}")
+        self._display_results_selection(results_path)
 
     @staticmethod
     def _result_file_for_selection(
@@ -4056,25 +4058,18 @@ class DockMateVSApp(tk.Tk):
             )
             return
 
-        if (
-            results_path.name != "protocol_development_results.csv"
-            and self._start_automatic_prepared_sdf_backfill(results_path)
-        ):
-            return
         self._display_results_selection(results_path)
 
     def _display_results_selection(self, results_path: Path) -> None:
-        """Render a resolved result file after any legacy repair has completed."""
+        """Render protocol results or start a logged screening-results load."""
         self.last_results_path = results_path
         if results_path.name == "protocol_development_results.csv":
             self._render_protocol_results(
                 results_path, results_path.with_name("protocol_development_summary.md")
             )
-            result_type = "Protocol Development"
-        else:
-            self._render_results_from_path(results_path)
-            result_type = "Screening"
-        self._set_status(f"Loaded {result_type} results from {results_path.parent}")
+            self._set_status(f"Loaded Protocol Development results from {results_path.parent}")
+            return
+        self._start_screening_results_load(results_path)
 
     @staticmethod
     def _portable_input_workbook(run_root: Path, configured_path: object) -> Path:
@@ -4276,96 +4271,168 @@ class DockMateVSApp(tk.Tk):
             "n_cpus": n_cpus,
         }
 
-    def _start_automatic_prepared_sdf_backfill(self, results_path: Path) -> bool:
-        """Backfill legacy topology sidecars in a worker before rendering results."""
-        plan = self._prepared_sdf_backfill_plan(results_path)
-        if plan is None:
-            return False
-        targets = plan.get("targets") or []
-        if not targets:
-            details = "\n".join(f"- {message}" for message in plan.get("errors", [])[:6])
-            messagebox.showwarning(
-                "Prepared ligand topology unavailable",
-                "Some legacy poses are missing prepared-ligand SDF files, but they "
-                "could not be recovered automatically. PoseBusters will use the older "
-                f"PDBQT reconstruction fallback.\n\n{details}",
-            )
-            return False
+    def _start_screening_results_load(
+        self, results_path: Path, *, open_results_dialog: bool = False
+    ) -> None:
+        """Load and rebuild screening results in a logged background worker."""
+        active_worker = getattr(self, "_results_load_worker", None)
+        if active_worker is not None and active_worker.is_alive():
+            self._set_status("Screening results are already loading")
+            return
 
-        unique_compounds = len({(target.compound, target.smiles) for target in targets})
         dialog = ProgressDialog(
             self,
-            total_ligands=unique_compounds,
-            title="Recovering prepared ligand topology",
-            operation_name="topology recovery",
-            initial_status="Checking legacy screening poses...",
+            total_ligands=0,
+            title="Loading screening results",
+            operation_name="results loading",
+            initial_status="Inspecting the selected run folder...",
         )
         self._results_load_dialog = dialog
-        self._set_status("Recovering prepared ligand topology for legacy results...")
+        self._set_status("Loading screening results and calculating pose quality...")
 
         def _progress(current: int, total: int, message: str) -> None:
             def _update() -> None:
                 active = self._results_load_dialog
-                if active is not None and active.winfo_exists():
-                    active.update_progress(current, total, message)
+                if active is not None:
+                    try:
+                        if active.winfo_exists():
+                            active.update_progress(current, total, message)
+                    except tk.TclError:
+                        pass
             self._run_on_ui(_update)
 
         def _cancelled() -> bool:
             return bool(dialog.cancelled)
 
-        def _worker() -> None:
-            report = backfill_prepared_ligand_sdfs(
-                targets,
-                plan["config"],
-                n_cpus=plan["n_cpus"],
-                progress=_progress,
-                is_cancelled=_cancelled,
-            )
-            all_errors = list(plan.get("errors") or []) + report.errors
-            audit = {
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "operation": "automatic_prepared_ligand_sdf_backfill",
-                "input_file": str(plan["workbook"]),
-                "requested_sdfs": len(targets),
-                "prepared_compounds": report.prepared_compounds,
-                "written_sdfs": [str(path) for path in report.written],
-                "already_present": [str(path) for path in report.already_present],
-                "errors": all_errors,
-                "cancelled": report.cancelled,
-            }
+        def _close_dialog() -> None:
+            active = self._results_load_dialog
+            self._results_load_dialog = None
+            if active is None:
+                return
             try:
-                self._write_json_atomic(
-                    plan["run_root"] / "prepared_sdf_backfill_auto_audit.json", audit
+                if active.winfo_exists():
+                    active.destroy()
+            except tk.TclError:
+                pass
+
+        def _worker() -> None:
+            warnings = []
+            written_sdfs = 0
+            try:
+                _progress(0, 0, "Inspecting legacy prepared-ligand files...")
+                plan = self._prepared_sdf_backfill_plan(results_path)
+                if plan is not None:
+                    targets = plan.get("targets") or []
+                    warnings.extend(plan.get("errors") or [])
+                    if targets:
+                        unique_compounds = len({
+                            (target.compound, target.smiles) for target in targets
+                        })
+                        _progress(
+                            0,
+                            unique_compounds,
+                            "Recovering missing prepared-ligand SDF files...",
+                        )
+                        report = backfill_prepared_ligand_sdfs(
+                            targets,
+                            plan["config"],
+                            n_cpus=plan["n_cpus"],
+                            progress=_progress,
+                            is_cancelled=_cancelled,
+                        )
+                        warnings.extend(report.errors)
+                        written_sdfs = len(report.written)
+                        audit = {
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "operation": "automatic_prepared_ligand_sdf_backfill",
+                            "input_file": str(plan["workbook"]),
+                            "requested_sdfs": len(targets),
+                            "prepared_compounds": report.prepared_compounds,
+                            "written_sdfs": [str(path) for path in report.written],
+                            "already_present": [
+                                str(path) for path in report.already_present
+                            ],
+                            "errors": warnings,
+                            "cancelled": report.cancelled,
+                        }
+                        try:
+                            self._write_json_atomic(
+                                plan["run_root"]
+                                / "prepared_sdf_backfill_auto_audit.json",
+                                audit,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Could not write automatic SDF backfill audit: {}", exc
+                            )
+                        if report.cancelled:
+                            raise ResultsLoadCancelled()
+
+                if _cancelled():
+                    raise ResultsLoadCancelled()
+                _progress(0, 0, "Reading docking results and rebuilding the report...")
+                summary, rmsd_values = self._results_display_data(
+                    results_path,
+                    pose_quality_progress=_progress,
+                    is_cancelled=_cancelled,
                 )
+            except ResultsLoadCancelled:
+                def _finish_cancelled() -> None:
+                    _close_dialog()
+                    self._results_load_worker = None
+                    self._set_status("Screening results loading cancelled")
+
+                self._run_on_ui(_finish_cancelled)
+                return
             except Exception as exc:
-                logger.warning("Could not write automatic SDF backfill audit: {}", exc)
+                logger.exception("Could not load screening results")
+                error = str(exc)
+
+                def _finish_failed() -> None:
+                    _close_dialog()
+                    self._results_load_worker = None
+                    messagebox.showerror(
+                        "Results loading failed",
+                        f"Screening results could not be loaded.\n\n{error}",
+                    )
+                    self._set_status("Screening results loading failed")
+
+                self._run_on_ui(_finish_failed)
+                return
 
             def _finish() -> None:
-                active = self._results_load_dialog
-                self._results_load_dialog = None
-                if active is not None:
-                    try:
-                        if active.winfo_exists():
-                            active.destroy()
-                    except tk.TclError:
-                        pass
-                if all_errors:
-                    details = "\n".join(f"- {message}" for message in all_errors[:6])
-                    remaining = len(all_errors) - 6
+                _close_dialog()
+                self._results_load_worker = None
+                if warnings:
+                    details = "\n".join(f"- {message}" for message in warnings[:6])
+                    remaining = len(warnings) - 6
                     if remaining > 0:
                         details += f"\n- ...and {remaining} more (see the audit JSON)"
                     messagebox.showwarning(
                         "Prepared ligand topology partly recovered",
-                        f"Recovered {len(report.written)} prepared SDF file(s), but some "
+                        f"Recovered {written_sdfs} prepared SDF file(s), but some "
                         f"poses could not be repaired.\n\n{details}",
                     )
-                self._display_results_selection(results_path)
+                if not summary:
+                    messagebox.showwarning(
+                        "Results missing", "Results could not be summarized."
+                    )
+                    self._set_status("Screening results could not be summarized")
+                    return
+                self.last_results_path = results_path
+                self._render_results(summary, rmsd_values)
+                if open_results_dialog:
+                    self._show_results(
+                        results_path,
+                        summary=summary,
+                        rmsd_values=rmsd_values,
+                    )
+                self._set_status(f"Loaded Screening results from {results_path.parent}")
 
             self._run_on_ui(_finish)
 
         self._results_load_worker = threading.Thread(target=_worker, daemon=True)
         self._results_load_worker.start()
-        return True
 
     def _browse_results_folder(self) -> None:
         """Load a campaign by selecting its run folder."""
@@ -4450,18 +4517,20 @@ class DockMateVSApp(tk.Tk):
         self.last_results_path = results_path
         self._show_pose_viewer(results_path)
 
-    def _show_results(self, results_path: Path) -> None:
-        summary_path = Path(results_path).with_name("redock_summary.json")
-        csv_path = Path(results_path).with_name("redock_results.csv")
-        summary = self._summary_for_display(Path(results_path), summary_path)
-        if not summary:
-            messagebox.showwarning("Results missing", "Results could not be summarized.")
-            return
-        rmsd_values = []
-        if csv_path.exists():
-            df = self._read_results_csv(csv_path)
-            if "best_rmsd" in df.columns:
-                rmsd_values = [v for v in df["best_rmsd"].tolist() if isinstance(v, (int, float)) and v < 900]
+    def _show_results(
+        self,
+        results_path: Path,
+        *,
+        summary: Optional[dict] = None,
+        rmsd_values: Optional[List[float]] = None,
+    ) -> None:
+        if summary is None or rmsd_values is None:
+            summary, rmsd_values = self._results_display_data(Path(results_path))
+            if not summary:
+                messagebox.showwarning(
+                    "Results missing", "Results could not be summarized."
+                )
+                return
 
         dialog = tk.Toplevel(self)
         dialog.title("DockMate-VS Results")
@@ -4635,6 +4704,114 @@ class DockMateVSApp(tk.Tk):
         )
 
     @staticmethod
+    def _treeview_table_data(table: ttk.Treeview) -> Tuple[List[str], List[List[str]]]:
+        """Return the headings and displayed rows from a results table."""
+        columns = list(table["columns"])
+        headings = [str(table.heading(column, "text") or column) for column in columns]
+        rows = []
+        for item_id in table.get_children(""):
+            values = [str(value) for value in table.item(item_id, "values")]
+            rows.append((values + [""] * len(columns))[:len(columns)])
+        return headings, rows
+
+    @staticmethod
+    def _table_data_to_tsv(headings: List[str], rows: List[List[str]]) -> str:
+        """Serialize displayed table data for spreadsheet-friendly clipboard use."""
+        output = io.StringIO()
+        writer = csv.writer(output, delimiter="\t", lineterminator="\n")
+        writer.writerow(headings)
+        writer.writerows(rows)
+        return output.getvalue()
+
+    @staticmethod
+    def _copy_treeview_table(
+        table: ttk.Treeview, status_var: Optional[tk.StringVar] = None
+    ) -> None:
+        headings, rows = DockMateVSApp._treeview_table_data(table)
+        table.clipboard_clear()
+        table.clipboard_append(DockMateVSApp._table_data_to_tsv(headings, rows))
+        if status_var is not None:
+            status_var.set(f"Copied {len(rows)} row(s)")
+
+    @staticmethod
+    def _export_treeview_table(
+        table: ttk.Treeview,
+        default_name: str,
+        status_var: Optional[tk.StringVar] = None,
+    ) -> Optional[Path]:
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", default_name).strip("._")
+        selected = filedialog.asksaveasfilename(
+            parent=table.winfo_toplevel(),
+            title="Export table to Excel",
+            defaultextension=".xlsx",
+            initialfile=f"{safe_name or 'dockmate_results'}.xlsx",
+            filetypes=[("Excel workbook", "*.xlsx")],
+        )
+        if not selected:
+            return None
+        output_path = Path(selected)
+        if output_path.suffix.lower() != ".xlsx":
+            output_path = output_path.with_suffix(".xlsx")
+        headings, rows = DockMateVSApp._treeview_table_data(table)
+        try:
+            pd.DataFrame(rows, columns=headings).to_excel(output_path, index=False)
+        except Exception as exc:
+            messagebox.showerror(
+                "Excel export failed",
+                f"The table could not be exported.\n\n{exc}",
+                parent=table.winfo_toplevel(),
+            )
+            return None
+        if status_var is not None:
+            status_var.set(f"Exported {len(rows)} row(s)")
+        messagebox.showinfo(
+            "Excel export complete",
+            f"Table saved to:\n{output_path}",
+            parent=table.winfo_toplevel(),
+        )
+        return output_path
+
+    @staticmethod
+    def _install_table_actions(
+        table: ttk.Treeview, toolbar: tk.Widget, export_name: str
+    ) -> None:
+        """Add copy/export controls and shortcuts to a results table."""
+        status_var = tk.StringVar(master=toolbar)
+
+        def _copy(_event=None):
+            DockMateVSApp._copy_treeview_table(table, status_var)
+            return "break"
+
+        def _export():
+            DockMateVSApp._export_treeview_table(table, export_name, status_var)
+
+        ttk.Button(toolbar, text="Copy table", command=_copy).pack(side="left", padx=(0, 5))
+        ttk.Button(toolbar, text="Export Excel...", command=_export).pack(side="left")
+        tk.Label(toolbar, textvariable=status_var, fg="#555555").pack(
+            side="left", padx=(10, 0)
+        )
+
+        menu = tk.Menu(table, tearoff=False)
+        menu.add_command(label="Copy table", command=_copy)
+        menu.add_command(label="Export Excel...", command=_export)
+
+        def _show_menu(event):
+            table.focus_set()
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+            return "break"
+
+        table.bind("<Control-c>", _copy, add="+")
+        table.bind("<Command-c>", _copy, add="+")
+        table.bind("<Button-2>", _show_menu, add="+")
+        table.bind("<Button-3>", _show_menu, add="+")
+        table.bind("<Control-Button-1>", _show_menu, add="+")
+        table._dockmate_table_menu = menu
+        table._dockmate_table_status = status_var
+
+    @staticmethod
     def _populate_markdown_report(
         parent: tk.Widget, report: str, source_text: Optional[str] = None
     ) -> None:
@@ -4682,12 +4859,19 @@ class DockMateVSApp(tk.Tk):
         for table_index, (title, headers, rows) in enumerate(tables):
             frame = tk.Frame(notebook)
             notebook.add(frame, text=title[:32])
+            toolbar = tk.Frame(frame)
+            toolbar.pack(fill="x", padx=5, pady=(5, 2))
+            table_frame = tk.Frame(frame)
+            table_frame.pack(fill="both", expand=True)
             column_ids = [f"table_{table_index}_column_{index}" for index in range(len(headers))]
             table = ttk.Treeview(
-                frame, columns=column_ids, show="headings", height=max(6, min(25, len(rows)))
+                table_frame,
+                columns=column_ids,
+                show="headings",
+                height=max(6, min(25, len(rows))),
             )
-            vertical = ttk.Scrollbar(frame, orient="vertical", command=table.yview)
-            horizontal = ttk.Scrollbar(frame, orient="horizontal", command=table.xview)
+            vertical = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
+            horizontal = ttk.Scrollbar(table_frame, orient="horizontal", command=table.xview)
             table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
             for column_id, heading in zip(column_ids, headers):
                 table.heading(column_id, text=heading)
@@ -4702,14 +4886,25 @@ class DockMateVSApp(tk.Tk):
             vertical.pack(side="right", fill="y")
             horizontal.pack(side="bottom", fill="x")
             table.pack(side="left", fill="both", expand=True)
+            DockMateVSApp._install_table_actions(
+                table, toolbar, f"dockmate_{title}"
+            )
 
-    def _render_results_from_path(self, results_path: Path) -> None:
+    def _results_display_data(
+        self,
+        results_path: Path,
+        pose_quality_progress: Optional[Callable[[int, int, str], None]] = None,
+        is_cancelled: Optional[Callable[[], bool]] = None,
+    ) -> Tuple[dict, List[float]]:
+        """Build screening report data without touching Tk widgets."""
         summary_path = Path(results_path).with_name("redock_summary.json")
         csv_path = Path(results_path).with_name("redock_results.csv")
-        summary = self._summary_for_display(Path(results_path), summary_path)
-        if not summary:
-            messagebox.showwarning("Results missing", "Results could not be summarized.")
-            return
+        summary = self._summary_for_display(
+            Path(results_path),
+            summary_path,
+            pose_quality_progress=pose_quality_progress,
+            is_cancelled=is_cancelled,
+        )
         rmsd_values = []
         if csv_path.exists():
             df = self._read_results_csv(csv_path)
@@ -4718,6 +4913,13 @@ class DockMateVSApp(tk.Tk):
                     v for v in df["best_rmsd"].tolist()
                     if isinstance(v, (int, float)) and v < 900
                 ]
+        return summary, rmsd_values
+
+    def _render_results_from_path(self, results_path: Path) -> None:
+        summary, rmsd_values = self._results_display_data(results_path)
+        if not summary:
+            messagebox.showwarning("Results missing", "Results could not be summarized.")
+            return
 
         self._render_results(summary, rmsd_values)
 
@@ -4892,6 +5094,8 @@ class DockMateVSApp(tk.Tk):
         tk.Label(controls, text="Ranking cutoff:").grid(row=0, column=0, sticky="w")
         selector = tk.Frame(controls)
         selector.grid(row=0, column=1, sticky="w", padx=(6, 0))
+        table_actions = tk.Frame(controls)
+        table_actions.grid(row=0, column=2, sticky="e")
         note_var = tk.StringVar(master=parent)
         note = tk.Label(
             controls,
@@ -4901,7 +5105,7 @@ class DockMateVSApp(tk.Tk):
             width=1,
             fg="#555555",
         )
-        note.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+        note.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(5, 0))
 
         table_frame = tk.Frame(parent)
         table_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
@@ -4941,6 +5145,9 @@ class DockMateVSApp(tk.Tk):
         table.grid(row=0, column=0, sticky="nsew")
         vertical.grid(row=0, column=1, sticky="ns")
         horizontal.grid(row=1, column=0, sticky="ew")
+        self._install_table_actions(
+            table, table_actions, "dockmate_protocol_pose_recovery"
+        )
 
         top_n_var = tk.IntVar(master=parent, value=1)
         parent._pose_recovery_top_n_var = top_n_var
@@ -4996,7 +5203,13 @@ class DockMateVSApp(tk.Tk):
             ).pack(side="left", padx=2)
         _refresh()
 
-    def _summary_for_display(self, results_path: Path, summary_path: Path) -> dict:
+    def _summary_for_display(
+        self,
+        results_path: Path,
+        summary_path: Path,
+        pose_quality_progress: Optional[Callable[[int, int, str], None]] = None,
+        is_cancelled: Optional[Callable[[], bool]] = None,
+    ) -> dict:
         """Rebuild and persist metrics so older runs use current reporting."""
         saved_summary = {}
         if summary_path.exists():
@@ -5025,13 +5238,19 @@ class DockMateVSApp(tk.Tk):
             if not results:
                 return saved_summary
             rebuilt_summary = self._build_summary(
-                results, float(saved_summary.get("threshold", 2.0)), json_path.parent
+                results,
+                float(saved_summary.get("threshold", 2.0)),
+                json_path.parent,
+                pose_quality_progress=pose_quality_progress,
+                is_cancelled=is_cancelled,
             )
             try:
                 self._write_summary_files(json_path, rebuilt_summary)
             except Exception as exc:
                 logger.warning("Could not update saved summary files: {}", exc)
             return rebuilt_summary
+        except ResultsLoadCancelled:
+            raise
         except Exception as exc:
             logger.warning("Could not rebuild summary for display: {}", exc)
             return saved_summary
@@ -9864,13 +10083,29 @@ class DockMateVSApp(tk.Tk):
         self,
         candidates: List[Tuple[int, RedockResult, Tuple[float, float, str, str], str]],
         results_root: Optional[Path] = None,
+        progress: Optional[Callable[[int, int, str], None]] = None,
+        is_cancelled: Optional[Callable[[], bool]] = None,
     ) -> List[dict]:
         rows: List[dict] = []
-        for rank, result, score_details, target_name in candidates:
+        total = len(candidates)
+        for candidate_index, (rank, result, score_details, target_name) in enumerate(
+            candidates
+        ):
+            if is_cancelled and is_cancelled():
+                raise ResultsLoadCancelled()
+            compound = result.dock_name or result.ligand_resname
+            pose_label = f"{result.pdb_id} / {compound} (rank {rank})"
+            if progress:
+                progress(candidate_index, total, f"Loading docked pose: {pose_label}")
             output_file = self._resolve_result_output_file(result, results_root)
             if output_file is None:
+                if progress:
+                    progress(
+                        candidate_index + 1,
+                        total,
+                        f"Skipped missing pose file: {pose_label}",
+                    )
                 continue
-            compound = result.dock_name or result.ligand_resname
             base = {
                 "target_name": target_name,
                 "pdb_id": result.pdb_id,
@@ -9930,13 +10165,31 @@ class DockMateVSApp(tk.Tk):
                 row["posebusters_topology_source"] = topology_source
                 row["prepared_ligand_sdf"] = prepared_ligand_sdf
                 row["posebusters_topology_error"] = topology_error
+                if progress:
+                    progress(candidate_index, total, f"PoseBusters: {pose_label}")
                 row.update(run_posebusters(ligand_sdf, receptor_pdb))
+                if is_cancelled and is_cancelled():
+                    raise ResultsLoadCancelled()
 
                 crystal_ligand = case_dir / "crystal_ligand.pdb"
                 if crystal_ligand.exists():
                     native_complex = quality_dir / "native_control_complex.pdb"
                     self._combine_complex(receptor_pdb, crystal_ligand, native_complex)
+                    if progress:
+                        progress(
+                            candidate_index,
+                            total,
+                            f"PLIP native contacts: {pose_label}",
+                        )
                     native_plip = plip_contact_fingerprint(native_complex)
+                    if is_cancelled and is_cancelled():
+                        raise ResultsLoadCancelled()
+                    if progress:
+                        progress(
+                            candidate_index,
+                            total,
+                            f"PLIP docked-pose contacts: {pose_label}",
+                        )
                     pose_plip = plip_contact_fingerprint(docked_complex)
                     row["plip_available"] = (
                         bool(native_plip.get("plip_available"))
@@ -9956,10 +10209,18 @@ class DockMateVSApp(tk.Tk):
                         pose_plip.get("plip_contacts") or [],
                     ))
                 else:
+                    if progress:
+                        progress(
+                            candidate_index,
+                            total,
+                            f"PLIP skipped; native pose missing: {pose_label}",
+                        )
                     row.update(contact_similarity([], []))
                     row["plip_available"] = False
                     row["plip_error"] = "Native/control ligand PDB not found"
                 rows.append(row)
+            except ResultsLoadCancelled:
+                raise
             except Exception as exc:
                 logger.warning(
                     "Could not compute pose quality for {} {}: {}",
@@ -9968,6 +10229,13 @@ class DockMateVSApp(tk.Tk):
                     exc,
                 )
                 rows.append(self._pose_quality_error_row(base, str(exc)))
+            finally:
+                if progress and not (is_cancelled and is_cancelled()):
+                    progress(
+                        candidate_index + 1,
+                        total,
+                        f"Completed pose quality: {pose_label}",
+                    )
         return rows
 
     def _build_summary(
@@ -9975,6 +10243,8 @@ class DockMateVSApp(tk.Tk):
         results: List[RedockResult],
         threshold: float,
         results_root: Optional[Path] = None,
+        pose_quality_progress: Optional[Callable[[int, int, str], None]] = None,
+        is_cancelled: Optional[Callable[[], bool]] = None,
     ) -> dict:
         """
         Build summary statistics using the enhanced RedockAnalyzer.
@@ -10566,6 +10836,8 @@ class DockMateVSApp(tk.Tk):
                 if item[0] <= SCREENING_POSE_QUALITY_LIMIT
             ],
             results_root,
+            progress=pose_quality_progress,
+            is_cancelled=is_cancelled,
         )
         summary["unknown_docking_scores"] = attach_pose_quality(
             summary["unknown_docking_scores"],

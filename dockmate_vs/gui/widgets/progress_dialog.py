@@ -142,15 +142,20 @@ class ProgressDialog(tk.Toplevel):
             message: Status message
         """
         self.current_ligand = current
+        self.total_ligands = total
 
         # Update progress bar
         if total > 0:
+            self.progress.stop()
+            self.progress.configure(mode='determinate')
             percent = (current / total) * 100
             self.progress['value'] = percent
             self.progress_label.config(text=f"{percent:.0f}%")
         else:
-            self.progress['mode'] = 'indeterminate'
-            self.progress.start()
+            if str(self.progress.cget('mode')) != 'indeterminate':
+                self.progress.configure(mode='indeterminate')
+                self.progress.start()
+            self.progress_label.config(text="Working")
 
         # Update status
         self.status_label.config(text=message)

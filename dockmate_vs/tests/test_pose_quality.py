@@ -9,7 +9,12 @@ from dockmate_vs.analysis.pose_quality import (
     contact_similarity,
     summarize_posebusters_row,
 )
-from dockmate_vs.gui.app import DockMateVSApp
+import dockmate_vs.gui.app as app_module
+from dockmate_vs.gui.app import (
+    DockMateVSApp,
+    RedockResult,
+    ResultsLoadCancelled,
+)
 
 
 def test_posebusters_summary_reports_grouped_pass_failures():
@@ -208,3 +213,116 @@ def test_posebusters_sdf_can_match_prepared_topology_by_heavy_atom_mcs(tmp_path)
     docked_position = docked_pose.GetConformer().GetAtomPosition(0)
     assert written_position.x == pytest.approx(docked_position.x, abs=1e-4)
     assert written_position.z == pytest.approx(docked_position.z, abs=1e-4)
+
+
+def test_pose_quality_reports_posebusters_and_plip_progress(monkeypatch, tmp_path):
+    app = object.__new__(DockMateVSApp)
+    case_dir = tmp_path / "case"
+    output_file = case_dir / "variants" / "hit_v1" / "docked.pdbqt"
+    output_file.parent.mkdir(parents=True)
+    output_file.write_text("MODEL 1\nENDMDL\n")
+    receptor = case_dir / "receptor_prepared.pdb"
+    crystal = case_dir / "crystal_ligand.pdb"
+    receptor.write_text("END\n")
+    crystal.write_text("END\n")
+    pose = Chem.MolFromSmiles("C")
+    result = RedockResult(
+        pdb_id="1ABC",
+        ligand_resname="LIG",
+        ligand_chain="",
+        mode="screening",
+        engine="smina",
+        protocol="single",
+        best_rmsd=999.9,
+        success=False,
+        runtime_sec=1.0,
+        output_file=str(output_file),
+        dock_name="hit",
+        best_score=-7.0,
+    )
+    messages = []
+
+    monkeypatch.setattr(app, "_resolve_result_output_file", lambda *_args: output_file)
+    monkeypatch.setattr(
+        app,
+        "_select_best_pose",
+        lambda *_args, **_kwargs: (None, pose, None, -7.0, 0, 1),
+    )
+    monkeypatch.setattr(app, "_case_dir_from_output_file", lambda _path: case_dir)
+    monkeypatch.setattr(app, "_ensure_receptor_pdb", lambda _case: receptor)
+    monkeypatch.setattr(
+        app, "_prepare_viewer_receptor", lambda _source, _ligand, _output: receptor
+    )
+    monkeypatch.setattr(
+        app,
+        "_write_ligand_pdb",
+        lambda _mol, _name, path: path.write_text("END\n"),
+    )
+    monkeypatch.setattr(
+        app,
+        "_write_posebusters_ligand_sdf",
+        lambda _output, _pose, quality_dir: (
+            quality_dir / "selected_pose.sdf",
+            "prepared_sdf",
+            str(quality_dir / "prepared.sdf"),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "_combine_complex",
+        lambda _receptor, _ligand, output: output.write_text("END\n"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "run_posebusters",
+        lambda _ligand, _receptor: {"posebusters_pass": True},
+    )
+    monkeypatch.setattr(
+        app_module,
+        "plip_contact_fingerprint",
+        lambda _complex: {
+            "plip_available": True,
+            "plip_contacts": ["hydrophobic:A:HIS41"],
+            "plip_error": None,
+        },
+    )
+
+    rows = app._screening_pose_quality_rows(
+        [(1, result, (7.0, -7.0, "vinardo", "lower"), "Target")],
+        tmp_path,
+        progress=lambda current, total, message: messages.append(
+            (current, total, message)
+        ),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["posebusters_pass"] is True
+    assert any("Loading docked pose" in message for _, _, message in messages)
+    assert any("PoseBusters" in message for _, _, message in messages)
+    assert any("PLIP native contacts" in message for _, _, message in messages)
+    assert any("PLIP docked-pose contacts" in message for _, _, message in messages)
+    assert messages[-1][0:2] == (1, 1)
+    assert "Completed pose quality" in messages[-1][2]
+
+
+def test_pose_quality_cancellation_stops_before_next_pose():
+    app = object.__new__(DockMateVSApp)
+    result = RedockResult(
+        pdb_id="1ABC",
+        ligand_resname="LIG",
+        ligand_chain="",
+        mode="screening",
+        engine="smina",
+        protocol="single",
+        best_rmsd=999.9,
+        success=False,
+        runtime_sec=1.0,
+        dock_name="hit",
+    )
+
+    with pytest.raises(ResultsLoadCancelled):
+        app._screening_pose_quality_rows(
+            [(1, result, (7.0, -7.0, "vinardo", "lower"), "Target")],
+            is_cancelled=lambda: True,
+        )

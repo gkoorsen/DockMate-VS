@@ -77,6 +77,9 @@ older screening run is opened in Results, DockMate-VS automatically attempts
 to recover the missing SDFs needed for the top-five unknown poses per
 structure. Recovery proceeds only when the original workbook is available and
 the regenerated variant exactly matches the saved preparation PDBQT.
+Loading screening results runs in a progress window that logs topology
+recovery, PoseBusters checks, and PLIP contact calculations for each pose.
+Results tables can be copied to the clipboard or exported directly to Excel.
 
 Your prompt should now begin with `(dockmate-vs)`. Verify:
 

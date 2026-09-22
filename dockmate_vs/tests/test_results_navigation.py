@@ -3,9 +3,102 @@
 from types import SimpleNamespace
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
+import dockmate_vs.gui.app as app_module
 from dockmate_vs.gui.app import DockMateVSApp
+
+
+class FakeResultsTable:
+    def __init__(self):
+        self.columns = ("compound", "score", "note")
+        self.headings = {
+            "compound": "Compound",
+            "score": "Docking score",
+            "note": "Note",
+        }
+        self.rows = {
+            "row1": ("Ligand A", "-7.5", "primary"),
+            "row2": ("Ligand B", "-6.8", "contains\ttab"),
+        }
+        self.clipboard = ""
+
+    def __getitem__(self, key):
+        assert key == "columns"
+        return self.columns
+
+    def heading(self, column, option):
+        assert option == "text"
+        return self.headings[column]
+
+    def get_children(self, parent=""):
+        assert parent == ""
+        return tuple(self.rows)
+
+    def item(self, item_id, option):
+        assert option == "values"
+        return self.rows[item_id]
+
+    def clipboard_clear(self):
+        self.clipboard = ""
+
+    def clipboard_append(self, value):
+        self.clipboard += value
+
+    def winfo_toplevel(self):
+        return None
+
+
+def test_results_table_copy_includes_displayed_headings_and_rows():
+    table = FakeResultsTable()
+    statuses = []
+
+    DockMateVSApp._copy_treeview_table(table, SimpleNamespace(set=statuses.append))
+
+    assert table.clipboard == (
+        "Compound\tDocking score\tNote\n"
+        "Ligand A\t-7.5\tprimary\n"
+        "Ligand B\t-6.8\t\"contains\ttab\"\n"
+    )
+    assert statuses == ["Copied 2 row(s)"]
+
+
+def test_results_table_exports_displayed_data_to_excel(monkeypatch, tmp_path):
+    table = FakeResultsTable()
+    output_path = tmp_path / "pose_recovery.xlsx"
+    statuses = []
+    messages = []
+    monkeypatch.setattr(
+        app_module.filedialog,
+        "asksaveasfilename",
+        lambda **_kwargs: str(output_path),
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showinfo",
+        lambda *args, **kwargs: messages.append((args, kwargs)),
+    )
+
+    exported = DockMateVSApp._export_treeview_table(
+        table,
+        "Protocol pose recovery",
+        SimpleNamespace(set=statuses.append),
+    )
+
+    frame = pd.read_excel(output_path, dtype=str)
+    assert exported == output_path
+    assert list(frame.columns) == ["Compound", "Docking score", "Note"]
+    assert frame.to_dict("records") == [
+        {"Compound": "Ligand A", "Docking score": "-7.5", "Note": "primary"},
+        {
+            "Compound": "Ligand B",
+            "Docking score": "-6.8",
+            "Note": "contains\ttab",
+        },
+    ]
+    assert statuses == ["Exported 2 row(s)"]
+    assert len(messages) == 1
 
 
 @pytest.mark.parametrize("protocol", [False, True])

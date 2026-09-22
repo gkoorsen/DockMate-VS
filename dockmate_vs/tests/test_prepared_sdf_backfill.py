@@ -189,35 +189,29 @@ def test_results_backfill_plan_finds_transferred_workbook_and_legacy_policy(tmp_
     assert plan["targets"][0].sdf_path == prepared_pdbqt.with_suffix(".sdf")
 
 
-def test_results_selection_waits_for_automatic_backfill(monkeypatch, tmp_path):
+def test_screening_results_selection_starts_logged_background_load(monkeypatch, tmp_path):
     results_path = tmp_path / "redock_results.json"
     results_path.write_text('{"results": []}')
     app = object.__new__(DockMateVSApp)
-    app.mode_var = SimpleNamespace(get=lambda: "screening")
     started = []
-    displayed = []
     monkeypatch.setattr(
         app,
-        "_start_automatic_prepared_sdf_backfill",
-        lambda path: started.append(path) or True,
+        "_start_screening_results_load",
+        started.append,
     )
-    monkeypatch.setattr(app, "_display_results_selection", displayed.append)
 
-    app._load_results_selection(tmp_path)
+    app._display_results_selection(results_path)
 
     assert started == [results_path]
-    assert displayed == []
+    assert app.last_results_path == results_path
 
 
-def test_results_selection_displays_immediately_when_no_backfill_is_needed(
-    monkeypatch, tmp_path
-):
+def test_folder_selection_routes_screening_results_to_logged_loader(monkeypatch, tmp_path):
     results_path = tmp_path / "redock_results.json"
     results_path.write_text('{"results": []}')
     app = object.__new__(DockMateVSApp)
     app.mode_var = SimpleNamespace(get=lambda: "screening")
     displayed = []
-    monkeypatch.setattr(app, "_start_automatic_prepared_sdf_backfill", lambda _path: False)
     monkeypatch.setattr(app, "_display_results_selection", displayed.append)
 
     app._load_results_selection(tmp_path)
