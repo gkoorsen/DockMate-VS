@@ -72,7 +72,11 @@ python -m pip install -e ".[pose-quality]"
 
 New runs save each prepared ligand variant as both PDBQT and SDF. PoseBusters
 uses the prepared SDF topology with the selected docked coordinates when
-available, avoiding misleading chemistry inferred from PDBQT alone.
+available, avoiding misleading chemistry inferred from PDBQT alone. When an
+older screening run is opened in Results, DockMate-VS automatically attempts
+to recover the missing SDFs needed for the top-five unknown poses per
+structure. Recovery proceeds only when the original workbook is available and
+the regenerated variant exactly matches the saved preparation PDBQT.
 
 Your prompt should now begin with `(dockmate-vs)`. Verify:
 

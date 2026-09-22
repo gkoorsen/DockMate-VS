@@ -586,9 +586,16 @@ are marked **Not analyzed**.
 
 New campaigns save prepared ligand variants as SDF files alongside their PDBQT
 files. PoseBusters uses the prepared SDF topology with the selected docked
-coordinates when those files are available. Older runs without prepared SDF
-files fall back to topology inferred from the PDBQT pose, so chemistry-specific
-failures from those runs should be interpreted more cautiously.
+coordinates when those files are available. When an older screening run is
+opened in Results, DockMate-VS automatically attempts to recover the missing
+SDFs required for the top-five unknown poses per structure. It reads the saved
+preparation settings from `run_manifest.json`, recovers each compound's SMILES
+from the original workbook, and writes an SDF only when the regenerated
+variant's atom types, torsion tree, and coordinates match the saved preparation
+PDBQT. The workbook may remain at its recorded path or in a `templates` folder
+beside a transferred `results` folder. A recovery audit is written as
+`prepared_sdf_backfill_auto_audit.json`. Poses that cannot be validated retain
+the PDBQT-topology fallback, and the GUI reports why they were skipped.
 
 Single-receptor assay benchmarks show four panels: ROC discrimination,
 precision-recall, raw docking-score density distributions, and molecular weight

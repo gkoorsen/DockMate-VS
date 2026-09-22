@@ -13,7 +13,15 @@ from datetime import datetime
 class ProgressDialog(tk.Toplevel):
     """Modal progress dialog with log output."""
 
-    def __init__(self, parent, total_ligands: int = 0):
+    def __init__(
+        self,
+        parent,
+        total_ligands: int = 0,
+        *,
+        title: str = "DockMate-VS Campaign Running...",
+        operation_name: str = "campaign",
+        initial_status: str = "Initializing campaign...",
+    ):
         """
         Initialize progress dialog.
 
@@ -23,7 +31,7 @@ class ProgressDialog(tk.Toplevel):
         """
         super().__init__(parent)
 
-        self.title("DockMate-VS Campaign Running...")
+        self.title(title)
         self.geometry("700x500")
         self.transient(parent)
         self.grab_set()  # Modal
@@ -35,6 +43,7 @@ class ProgressDialog(tk.Toplevel):
         self.geometry(f"700x500+{x}+{y}")
 
         self.total_ligands = total_ligands
+        self.operation_name = operation_name
         self.current_ligand = 0
         self.start_time = time.time()
         self.cancelled = False
@@ -46,7 +55,7 @@ class ProgressDialog(tk.Toplevel):
         # Status label
         self.status_label = tk.Label(
             self,
-            text="Initializing campaign...",
+            text=initial_status,
             font=('Arial', 11)
         )
         self.status_label.grid(row=0, column=0, pady=(20, 10), padx=20, sticky='w')
@@ -112,9 +121,9 @@ class ProgressDialog(tk.Toplevel):
         # Cancel button
         self.cancel_button = tk.Button(
             self,
-            text="Cancel Campaign",
+            text=f"Cancel {operation_name.title()}",
             command=self.cancel,
-            width=15,
+            width=max(15, len(operation_name) + 9),
             bg='#e74c3c',
             fg='white'
         )
@@ -191,20 +200,19 @@ class ProgressDialog(tk.Toplevel):
         self.after(1000, self._update_time)
 
     def cancel(self):
-        """Cancel campaign."""
+        """Cancel the active operation."""
         result = tk.messagebox.askyesno(
-            "Cancel Campaign",
-            "Are you sure you want to cancel the campaign?\n\n"
-            "This will stop the docking process."
+            f"Cancel {self.operation_name.title()}",
+            f"Are you sure you want to cancel the {self.operation_name}?"
         )
         if result:
             self.cancelled = True
-            self.log("Campaign cancelled by user")
+            self.log(f"{self.operation_name.title()} cancelled by user")
             self.destroy()
 
     def complete(self):
         """Mark campaign as complete."""
-        self.status_label.config(text="Campaign completed successfully!")
+        self.status_label.config(text=f"{self.operation_name.title()} completed successfully!")
         self.progress['value'] = 100
         self.progress_label.config(text="100%")
         self.cancel_button.config(
@@ -212,4 +220,4 @@ class ProgressDialog(tk.Toplevel):
             bg='#27ae60',
             command=self.destroy
         )
-        self.log("Campaign completed!")
+        self.log(f"{self.operation_name.title()} completed!")

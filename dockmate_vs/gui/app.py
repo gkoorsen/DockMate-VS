@@ -47,6 +47,11 @@ from dockmate_vs.gui.unknown_charts import (
     populate_unknown_charts,
 )
 from dockmate_vs.gui.widgets.progress_dialog import ProgressDialog
+from dockmate_vs.config.schema import LigandPreparationConfig
+from dockmate_vs.preparation.backfill import (
+    PreparedSdfBackfillTarget,
+    backfill_prepared_ligand_sdfs,
+)
 from dockmate_vs.preparation.protein import RECEPTOR_PREPARATION_SEED
 from dockmate_vs.analysis.pose_quality import (
     contact_similarity,
@@ -270,6 +275,8 @@ class DockMateVSApp(tk.Tk):
         self._sampling_widgets: List[tk.Widget] = []
         self._pose_viewer_session = None
         self._pose_viewer_loaded_path: Optional[Path] = None
+        self._results_load_worker = None
+        self._results_load_dialog = None
 
         self._load_filter_config()
         self._build_ui()
@@ -4049,6 +4056,15 @@ class DockMateVSApp(tk.Tk):
             )
             return
 
+        if (
+            results_path.name != "protocol_development_results.csv"
+            and self._start_automatic_prepared_sdf_backfill(results_path)
+        ):
+            return
+        self._display_results_selection(results_path)
+
+    def _display_results_selection(self, results_path: Path) -> None:
+        """Render a resolved result file after any legacy repair has completed."""
         self.last_results_path = results_path
         if results_path.name == "protocol_development_results.csv":
             self._render_protocol_results(
@@ -4059,6 +4075,297 @@ class DockMateVSApp(tk.Tk):
             self._render_results_from_path(results_path)
             result_type = "Screening"
         self._set_status(f"Loaded {result_type} results from {results_path.parent}")
+
+    @staticmethod
+    def _portable_input_workbook(run_root: Path, configured_path: object) -> Path:
+        """Find a run workbook after a campaign folder has been transferred."""
+        raw_path = str(configured_path or "").strip()
+        if not raw_path:
+            raise ValueError("The run manifest does not record its input workbook")
+        configured = Path(raw_path).expanduser()
+        if configured.is_file():
+            return configured.resolve()
+
+        filename = configured.name
+        candidates = []
+        search_roots = [run_root, run_root.parent, run_root.parent.parent]
+        for root in search_roots:
+            for candidate in (root / filename, root / "templates" / filename):
+                if candidate.is_file() and candidate not in candidates:
+                    candidates.append(candidate)
+            try:
+                for candidate in root.glob(f"*/{filename}"):
+                    if candidate.is_file() and candidate not in candidates:
+                        candidates.append(candidate)
+            except OSError:
+                continue
+
+        if len(candidates) == 1:
+            return candidates[0].resolve()
+        if not candidates:
+            raise ValueError(
+                f"Input workbook '{filename}' was not found at its recorded path or "
+                "beside the transferred run folder"
+            )
+        locations = ", ".join(str(path) for path in candidates)
+        raise ValueError(f"More than one possible input workbook was found: {locations}")
+
+    def _screening_sdf_backfill_requests(self, results_path: Path) -> Tuple[List[dict], List[str]]:
+        """Return missing topology sidecars needed by the Results pose-quality rows."""
+        json_path = (
+            results_path.with_name("redock_results.json")
+            if results_path.suffix.lower() == ".csv" else results_path
+        )
+        if not json_path.is_file():
+            return [], []
+        try:
+            payload = json.loads(json_path.read_text())
+            results = [RedockResult(**item) for item in payload.get("results", [])]
+        except Exception as exc:
+            return [], [f"Could not inspect screening results for prepared SDFs: {exc}"]
+
+        grouped: Dict[Tuple[str, str], List[RedockResult]] = {}
+        for result in results:
+            if result.mode == "screening" and result.control_label is None:
+                grouped.setdefault((result.pdb_id, result.ligand_resname), []).append(result)
+
+        requests = []
+        errors = []
+        seen = set()
+        for structure_results in grouped.values():
+            scored = []
+            for result in structure_results:
+                details = self._selected_score_details(result)
+                if details is not None:
+                    scored.append((result, details))
+            scored.sort(key=lambda item: item[1][0], reverse=True)
+            for result, _ in scored[:SCREENING_POSE_QUALITY_LIMIT]:
+                output_file = self._resolve_result_output_file(result, json_path.parent)
+                if output_file is None:
+                    continue
+                case_dir = self._case_dir_from_output_file(output_file)
+                variant_label = output_file.parent.name
+                match = re.search(r"_v(\d+)$", variant_label)
+                if match is None:
+                    continue
+                variant_index = int(match.group(1))
+                variants_dir = case_dir / "ligand_variants"
+                pdbqt_path = variants_dir / f"{variant_label}.pdbqt"
+                sdf_path = variants_dir / f"{variant_label}.sdf"
+                if sdf_path.exists() or sdf_path in seen:
+                    continue
+                seen.add(sdf_path)
+                if not pdbqt_path.is_file():
+                    errors.append(
+                        f"{result.case_id or result.dock_name or variant_label}: "
+                        f"saved preparation PDBQT not found ({pdbqt_path})"
+                    )
+                    continue
+                requests.append({
+                    "result": result,
+                    "variant_index": variant_index,
+                    "pdbqt_path": pdbqt_path,
+                    "sdf_path": sdf_path,
+                })
+        return requests, errors
+
+    def _prepared_sdf_backfill_plan(self, results_path: Path) -> Optional[dict]:
+        """Build a guarded repair plan from the run manifest and original workbook."""
+        requests, errors = self._screening_sdf_backfill_requests(results_path)
+        if not requests:
+            if errors:
+                return {"targets": [], "errors": errors}
+            return None
+
+        run_root = Path(results_path).parent
+        manifest_path = run_root / "run_manifest.json"
+        if not manifest_path.is_file():
+            return {
+                "targets": [],
+                "errors": errors + ["run_manifest.json is required for automatic SDF recovery"],
+            }
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            run_config = manifest.get("config") or {}
+            workbook = self._portable_input_workbook(run_root, run_config.get("input_file"))
+            filters = run_config.get("filters") or {}
+            pairs, _ = self._load_pairs_from_excel(
+                workbook,
+                exclude_additives=bool(filters.get("exclude_additives", False)),
+                exclude_cofactors=bool(filters.get("exclude_cofactors", False)),
+            )
+        except Exception as exc:
+            return {"targets": [], "errors": errors + [str(exc)]}
+
+        manifest_cases = list(manifest.get("cases") or [])
+        pair_by_case: Dict[str, List[dict]] = {}
+        for pair in pairs:
+            pair_by_case.setdefault(str(pair.get("case_id") or ""), []).append(pair)
+
+        targets = []
+        for request in requests:
+            result = request["result"]
+            case_id = str(result.case_id or "")
+            case_matches = [
+                case for case in manifest_cases
+                if (
+                    (case_id and str(case.get("case_id") or "") == case_id)
+                    or (
+                        str(case.get("pdb_id") or "") == str(result.pdb_id)
+                        and str(case.get("site_ligand") or "") == str(result.ligand_resname)
+                        and str(case.get("dock_name") or "")
+                        == str(result.dock_name or result.ligand_resname)
+                    )
+                )
+            ]
+            if len(case_matches) != 1:
+                errors.append(
+                    f"{case_id or result.dock_name}: could not identify one matching manifest case"
+                )
+                continue
+            manifest_case = case_matches[0]
+            saved_case_id = str(manifest_case.get("case_id") or case_id)
+            pair_matches = pair_by_case.get(saved_case_id, [])
+            if len(pair_matches) != 1:
+                pair_matches = [
+                    pair for pair in pairs
+                    if str(pair.get("pdb_id") or "") == str(manifest_case.get("pdb_id") or "")
+                    and str(pair.get("site_ligand") or "")
+                    == str(manifest_case.get("site_ligand") or "")
+                    and str(pair.get("dock_name") or "")
+                    == str(manifest_case.get("dock_name") or "")
+                ]
+            if len(pair_matches) != 1 or not pair_matches[0].get("smiles"):
+                errors.append(
+                    f"{saved_case_id}: could not recover one SMILES entry from {workbook.name}"
+                )
+                continue
+            pair = pair_matches[0]
+            targets.append(PreparedSdfBackfillTarget(
+                compound=str(pair.get("dock_name") or result.dock_name or result.ligand_resname),
+                smiles=str(pair["smiles"]),
+                variant_index=request["variant_index"],
+                pdbqt_path=request["pdbqt_path"],
+                sdf_path=request["sdf_path"],
+                case_id=saved_case_id,
+            ))
+
+        policy_key = "adaptive" if run_config.get("mode") == "adaptive" else "single"
+        preparation = run_config.get(policy_key) or {}
+        try:
+            ligand_config = LigandPreparationConfig(
+                charge_handling=preparation.get("charge_handling", "neutralize"),
+                max_tautomers=int(preparation.get("max_tautomers", 8)),
+                max_conformers=int(preparation.get("max_conformers", 10)),
+                use_etkdg_v3=True,
+                mmff_minimize=True,
+            )
+            n_cpus = max(1, int(preparation.get("n_cpus") or preparation.get("cpu") or 1))
+        except (TypeError, ValueError) as exc:
+            return {
+                "targets": [],
+                "errors": errors + [f"Saved ligand-preparation settings are invalid: {exc}"],
+            }
+
+        return {
+            "run_root": run_root,
+            "workbook": workbook,
+            "targets": targets,
+            "errors": errors,
+            "config": ligand_config,
+            "n_cpus": n_cpus,
+        }
+
+    def _start_automatic_prepared_sdf_backfill(self, results_path: Path) -> bool:
+        """Backfill legacy topology sidecars in a worker before rendering results."""
+        plan = self._prepared_sdf_backfill_plan(results_path)
+        if plan is None:
+            return False
+        targets = plan.get("targets") or []
+        if not targets:
+            details = "\n".join(f"- {message}" for message in plan.get("errors", [])[:6])
+            messagebox.showwarning(
+                "Prepared ligand topology unavailable",
+                "Some legacy poses are missing prepared-ligand SDF files, but they "
+                "could not be recovered automatically. PoseBusters will use the older "
+                f"PDBQT reconstruction fallback.\n\n{details}",
+            )
+            return False
+
+        unique_compounds = len({(target.compound, target.smiles) for target in targets})
+        dialog = ProgressDialog(
+            self,
+            total_ligands=unique_compounds,
+            title="Recovering prepared ligand topology",
+            operation_name="topology recovery",
+            initial_status="Checking legacy screening poses...",
+        )
+        self._results_load_dialog = dialog
+        self._set_status("Recovering prepared ligand topology for legacy results...")
+
+        def _progress(current: int, total: int, message: str) -> None:
+            def _update() -> None:
+                active = self._results_load_dialog
+                if active is not None and active.winfo_exists():
+                    active.update_progress(current, total, message)
+            self._run_on_ui(_update)
+
+        def _cancelled() -> bool:
+            return bool(dialog.cancelled)
+
+        def _worker() -> None:
+            report = backfill_prepared_ligand_sdfs(
+                targets,
+                plan["config"],
+                n_cpus=plan["n_cpus"],
+                progress=_progress,
+                is_cancelled=_cancelled,
+            )
+            all_errors = list(plan.get("errors") or []) + report.errors
+            audit = {
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "operation": "automatic_prepared_ligand_sdf_backfill",
+                "input_file": str(plan["workbook"]),
+                "requested_sdfs": len(targets),
+                "prepared_compounds": report.prepared_compounds,
+                "written_sdfs": [str(path) for path in report.written],
+                "already_present": [str(path) for path in report.already_present],
+                "errors": all_errors,
+                "cancelled": report.cancelled,
+            }
+            try:
+                self._write_json_atomic(
+                    plan["run_root"] / "prepared_sdf_backfill_auto_audit.json", audit
+                )
+            except Exception as exc:
+                logger.warning("Could not write automatic SDF backfill audit: {}", exc)
+
+            def _finish() -> None:
+                active = self._results_load_dialog
+                self._results_load_dialog = None
+                if active is not None:
+                    try:
+                        if active.winfo_exists():
+                            active.destroy()
+                    except tk.TclError:
+                        pass
+                if all_errors:
+                    details = "\n".join(f"- {message}" for message in all_errors[:6])
+                    remaining = len(all_errors) - 6
+                    if remaining > 0:
+                        details += f"\n- ...and {remaining} more (see the audit JSON)"
+                    messagebox.showwarning(
+                        "Prepared ligand topology partly recovered",
+                        f"Recovered {len(report.written)} prepared SDF file(s), but some "
+                        f"poses could not be repaired.\n\n{details}",
+                    )
+                self._display_results_selection(results_path)
+
+            self._run_on_ui(_finish)
+
+        self._results_load_worker = threading.Thread(target=_worker, daemon=True)
+        self._results_load_worker.start()
+        return True
 
     def _browse_results_folder(self) -> None:
         """Load a campaign by selecting its run folder."""
