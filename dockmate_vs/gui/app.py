@@ -4015,7 +4015,15 @@ class DockMateVSApp(tk.Tk):
             "protocol_development_results.csv",
         }
         if selected_path.is_file():
-            return selected_path if selected_path.name in valid_names else None
+            is_named_redock_csv = (
+                selected_path.suffix.lower() == ".csv"
+                and selected_path.name.startswith("redock_results")
+            )
+            return (
+                selected_path
+                if selected_path.name in valid_names or is_named_redock_csv
+                else None
+            )
         if not selected_path.is_dir():
             return None
 
@@ -9055,10 +9063,15 @@ class DockMateVSApp(tk.Tk):
     @staticmethod
     def _pose_results_csv(results_path: Path) -> Path:
         results_path = Path(results_path)
-        return (
-            results_path if results_path.suffix.lower() == ".csv"
-            else results_path.with_name("redock_results.csv")
-        )
+        if results_path.suffix.lower() == ".csv":
+            return results_path
+
+        canonical = results_path.with_name("redock_results.csv")
+        if canonical.is_file():
+            return canonical
+
+        alternatives = sorted(results_path.parent.glob("redock_results*.csv"))
+        return alternatives[0] if len(alternatives) == 1 else canonical
 
     @staticmethod
     def _resolve_pose_output_file(output_file_value: str, csv_path: Path) -> Optional[Path]:

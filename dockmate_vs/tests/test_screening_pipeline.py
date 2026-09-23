@@ -1441,6 +1441,15 @@ def test_pose_viewer_uses_protocol_development_csv_directly(tmp_path):
     assert DockMateVSApp._pose_results_csv(redock_json) == tmp_path / "redock_results.csv"
 
 
+def test_pose_viewer_uses_single_renamed_redock_csv(tmp_path):
+    redock_json = tmp_path / "redock_results.json"
+    renamed_csv = tmp_path / "redock_results_remove_vina.csv"
+    redock_json.write_text('{"results": []}')
+    renamed_csv.write_text("output_file\n")
+
+    assert DockMateVSApp._pose_results_csv(redock_json) == renamed_csv
+
+
 def test_results_loader_resolves_screening_run_folder(tmp_path):
     run_dir = tmp_path / "screening_run"
     run_dir.mkdir()
@@ -1464,6 +1473,13 @@ def test_results_loader_resolves_protocol_run_and_results_folders(tmp_path):
 def test_results_loader_accepts_exact_supported_file(tmp_path):
     results = tmp_path / "redock_results.csv"
     results.write_text("best_score\n")
+
+    assert DockMateVSApp._result_file_for_selection(results) == results
+
+
+def test_results_loader_accepts_exact_renamed_redock_csv(tmp_path):
+    results = tmp_path / "redock_results_remove_vina.csv"
+    results.write_text("output_file\n")
 
     assert DockMateVSApp._result_file_for_selection(results) == results
 
