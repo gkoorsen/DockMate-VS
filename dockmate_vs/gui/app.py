@@ -5211,6 +5211,19 @@ class DockMateVSApp(tk.Tk):
             ).pack(side="left", padx=2)
         _refresh()
 
+    @staticmethod
+    def _run_docking_scoring(results_root: Optional[Path]) -> Optional[str]:
+        if results_root is None:
+            return None
+        manifest = Path(results_root) / "run_manifest.json"
+        if not manifest.is_file():
+            return None
+        try:
+            config = json.loads(manifest.read_text()).get("config") or {}
+            return str((config.get("single") or {}).get("scoring") or "").strip() or None
+        except (OSError, ValueError, AttributeError):
+            return None
+
     def _summary_for_display(
         self,
         results_path: Path,
@@ -5230,10 +5243,11 @@ class DockMateVSApp(tk.Tk):
             if results_path.suffix.lower() == ".csv" else results_path
         )
         if not json_path.exists():
-            csv_path = results_path.with_name("redock_results.csv")
+            csv_path = self._pose_results_csv(results_path)
             if csv_path.exists():
                 saved_summary["unknown_docking_scores"] = unknown_docking_data(
-                    self._read_results_csv(csv_path).to_dict("records")
+                    self._read_results_csv(csv_path).to_dict("records"),
+                    docking_scoring=self._run_docking_scoring(csv_path.parent),
                 )
             if saved_summary.get("assay_benchmark_charts") and csv_path.exists():
                 saved_summary["assay_benchmark_charts"]["docking_diagnostics"] = (
@@ -10763,7 +10777,8 @@ class DockMateVSApp(tk.Tk):
             if result.mode == "screening" and result.control_label is None
         ]
         summary["unknown_docking_scores"] = unknown_docking_data(
-            asdict(result) for result in screening_results
+            (asdict(result) for result in screening_results),
+            docking_scoring=self._run_docking_scoring(results_root),
         )
         screening_scored = []
         for result in screening_results:

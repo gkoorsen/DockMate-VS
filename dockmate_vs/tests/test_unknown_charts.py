@@ -8,8 +8,10 @@ from dockmate_vs.gui.app import DockMateVSApp
 from dockmate_vs.gui.unknown_charts import (
     ScoreHover,
     attach_pose_quality,
+    select_unknown_score_method,
     unknown_docking_data,
     unknown_score_figure,
+    unknown_score_methods,
 )
 
 
@@ -18,6 +20,7 @@ def record(name="sample", **overrides):
         mode="screening", control_label=None, pdb_id="1ABC", ligand_resname="LIG",
         target_name="Target", engine="smina", dock_name=name, best_score=-7.0,
         docking_completed=True, rescore_score=-12.0,
+        rescore_method="smina_score_only:vinardo",
     )
     row.update(overrides)
     return row
@@ -52,6 +55,81 @@ def test_groups_preserve_structures_engines_and_missing_score_rows():
     assert sum(len(g["points"]) for g in groups) == 5
     assert groups[-1]["cases"] == 1
     assert groups[-1]["points"] == []
+
+
+def test_unknown_scores_can_switch_between_vina_and_vinardo():
+    groups = unknown_docking_data([
+        record("compound A", best_score=-7.0, rescore_score=-9.0),
+        record("compound B", best_score=-8.0, rescore_score=-6.0),
+    ], docking_scoring="vina")
+
+    assert unknown_score_methods(groups) == ["Vina (docking)", "Vinardo (rescore)"]
+    vina = select_unknown_score_method(groups, "Vina (docking)")
+    vinardo = select_unknown_score_method(groups, "Vinardo (rescore)")
+
+    assert [point["score"] for point in vina[0]["points"]] == [-7.0, -8.0]
+    assert [point["score"] for point in vinardo[0]["points"]] == [-9.0, -6.0]
+    assert vina[0]["score_source"] == "Vina (docking) score"
+    assert vinardo[0]["score_source"] == "Vinardo (rescore) score"
+
+
+def test_chart_uses_recorded_scoring_methods_without_conflating_stages():
+    groups = unknown_docking_data([
+        record("A", best_score=-7, rescore_score=-8,
+               rescore_method="smina_score_only:ad4_scoring"),
+        record("B", best_score=-6, rescore_score=-9,
+               rescore_method="smina_score_only:dkoes_fast"),
+        record("C", best_score=-5, rescore_score=-7,
+               rescore_method="smina_score_only:vinardo"),
+    ], docking_scoring="vinardo")
+    methods = unknown_score_methods(groups)
+    assert set(methods) == {
+        "Vinardo (docking)", "ad4_scoring (rescore)",
+        "dkoes_fast (rescore)", "Vinardo (rescore)",
+    }
+    assert len(select_unknown_score_method(groups, "Vinardo (docking)")[0]["points"]) == 3
+    assert len(select_unknown_score_method(groups, "Vinardo (rescore)")[0]["points"]) == 1
+    assert select_unknown_score_method(groups, "ad4_scoring (rescore)")[0]["points"][0]["score"] == -8
+    assert groups[0]["points"][0]["selected_method"] == "ad4_scoring (rescore)"
+
+
+def test_docking_scoring_comes_from_run_manifest(tmp_path):
+    (tmp_path / "run_manifest.json").write_text(json.dumps({
+        "config": {"single": {"scoring": "dkoes_scoring"}}
+    }))
+    scoring = DockMateVSApp._run_docking_scoring(tmp_path)
+    groups = unknown_docking_data([
+        record(rescore_score=None),
+    ], docking_scoring=scoring)
+
+    assert scoring == "dkoes_scoring"
+    assert unknown_score_methods(groups) == ["dkoes_scoring (docking)"]
+
+
+def test_missing_scoring_metadata_is_not_labelled_vinardo():
+    groups = unknown_docking_data([
+        record(rescore_method=None),
+    ])
+
+    assert unknown_score_methods(groups) == [
+        "Rescore (method unknown)", "Smina docking (method unknown)",
+    ]
+
+
+def test_gnina_cnn_score_highlights_highest_value():
+    groups = unknown_docking_data([
+        record("lower", rescore_cnn_affinity=4.0),
+        record("higher", rescore_cnn_affinity=7.0),
+    ], docking_scoring="vina")
+    selected = select_unknown_score_method(groups, "GNINA CNN affinity")
+    figure, axis, points = unknown_score_figure(selected)
+    FigureCanvasAgg(figure).draw()
+
+    assert selected[0]["score_direction"] == "higher"
+    assert not axis.xaxis_inverted()
+    assert next(point for point in points if point["best"])["compound"] == "higher"
+    assert "higher is better" in axis.get_xlabel()
+    assert "kcal/mol" not in axis.get_xlabel()
 
 
 def test_figure_plots_every_score_highlights_minimum_and_keeps_ties_hoverable():

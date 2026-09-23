@@ -2,16 +2,40 @@
 
 import math
 import textwrap
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import numpy as np
 from matplotlib.figure import Figure
 
 
 COLORS = ("#1876A3", "#C56B23", "#348447", "#C53D4B", "#8660A8", "#428C8C", "#BD599B")
+SCORE_METHOD_ORDER = (
+    "Vina (docking)", "Vinardo (docking)",
+    "Vina (rescore)", "Vinardo (rescore)",
+    "GNINA CNN affinity", "GNINA CNN score",
+)
 
 
-def unknown_docking_data(records) -> list:
+def _method_label(value) -> str:
+    method = str(value or "").strip()
+    if method.startswith("smina_score_only:"):
+        method = method.split(":", 1)[1]
+    if method.lower() in {"none", "nan"}:
+        return ""
+    return {"vina": "Vina", "vinardo": "Vinardo"}.get(method.lower(), method)
+
+
+def _docking_method(record, docking_scoring) -> str:
+    engine = str(record.get("engine") or "").strip().lower()
+    if engine == "vina":
+        return "Vina (docking)"
+    if engine == "smina":
+        method = _method_label(docking_scoring)
+        return f"{method} (docking)" if method else "Smina docking (method unknown)"
+    return f"{engine.capitalize()} (docking)" if engine else "Docking (method unknown)"
+
+
+def unknown_docking_data(records, docking_scoring=None) -> list:
     groups = {}
     for record in records:
         label = record.get("control_label")
@@ -26,30 +50,82 @@ def unknown_docking_data(records) -> list:
             "engine": key[3], "cases": 0, "points": [], "score_source": None,
         })
         group["cases"] += 1
-        score_value = None
+        score = None
         score_source = None
-        for field, label in (
+        selected_method = None
+        score_options = {}
+        rescore_method = _method_label(record.get("rescore_method"))
+        rescore_method = (
+            f"{rescore_method} (rescore)" if rescore_method
+            else "Rescore (method unknown)"
+        )
+        docking_method = _docking_method(record, docking_scoring)
+        for field, method_label in (
             ("rescore_cnn_affinity", "GNINA CNN affinity"),
             ("rescore_cnn_score", "GNINA CNN score"),
-            ("rescore_score", "Vinardo score-only"),
-            ("best_score", "docking score"),
+            ("rescore_score", rescore_method),
+            ("best_score", docking_method),
         ):
-            if record.get(field) is not None:
-                score_value, score_source = record.get(field), label
-                break
-        try:
-            score = float(score_value)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(score) or str(record.get("docking_completed")).lower() in ("false", "0", "0.0"):
+            try:
+                value = float(record.get(field))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            score_options[method_label] = value
+            if score is None:
+                score, score_source, selected_method = value, f"{method_label} score", method_label
+        if score is None or str(record.get("docking_completed")).lower() in ("false", "0", "0.0"):
             continue
         group["points"].append({
             "compound": str(record.get("dock_name") or record.get("case_id") or "Unnamed"),
             "score": score, "score_source": score_source,
+            "score_options": score_options,
+            "selected_method": selected_method,
             "case_id": record.get("case_id"),
         })
         group["score_source"] = score_source
+        group["score_direction"] = (
+            "higher" if _higher_is_better(selected_method) else "lower"
+        )
     return [groups[key] for key in sorted(groups)]
+
+
+def unknown_score_methods(groups) -> list:
+    """Return score methods available in serialized unknown-chart groups."""
+    available = {
+        method
+        for group in groups or []
+        for point in group.get("points") or []
+        for method in (point.get("score_options") or {})
+    }
+    ordered = [method for method in SCORE_METHOD_ORDER if method in available]
+    return ordered + sorted(available - set(ordered))
+
+
+def _higher_is_better(method: str) -> bool:
+    return method in {"GNINA CNN affinity", "GNINA CNN score"}
+
+
+def select_unknown_score_method(groups, method: str) -> list:
+    """Project unknown-chart groups onto one scoring method."""
+    selected = []
+    for group in groups or []:
+        updated_group = dict(group)
+        updated_points = []
+        for point in group.get("points") or []:
+            options = point.get("score_options") or {}
+            if method not in options:
+                continue
+            updated = dict(point)
+            updated["score"] = options[method]
+            updated["score_source"] = f"{method} score"
+            updated_points.append(updated)
+        updated_group["points"] = updated_points
+        updated_group["score_source"] = f"{method} score"
+        updated_group["score_direction"] = "higher" if _higher_is_better(method) else "lower"
+        selected.append(updated_group)
+    return selected
 
 
 def attach_pose_quality(groups, quality_rows) -> list:
@@ -140,8 +216,11 @@ def unknown_score_figure(groups):
     source_label = next(iter(sources), "Selected score") if len(sources) == 1 else "Selected score"
     axis.set_title(f"Unknown-compound {source_label.lower()}s", loc="left", fontsize=12, pad=18)
     engines = {g["engine"].lower() for g in groups}
-    units = " (kcal/mol)" if engines and engines <= {"smina", "vina"} else ""
-    axis.set_xlabel(f"{source_label}{units}; lower is better", fontsize=9)
+    directions = {g.get("score_direction", "lower") for g in groups}
+    direction = next(iter(directions)) if len(directions) == 1 else "lower"
+    is_cnn = "GNINA CNN" in source_label
+    units = " (kcal/mol)" if not is_cnn and engines and engines <= {"smina", "vina"} else ""
+    axis.set_xlabel(f"{source_label}{units}; {direction} is better", fontsize=9)
     axis.tick_params(labelsize=8)
     axis.grid(axis="x", color="#E7E7E7", linewidth=.7)
     axis.set_axisbelow(True)
@@ -154,7 +233,10 @@ def unknown_score_figure(groups):
         if len(engines) > 1:
             label += f" ({group['engine'] or 'unspecified'})"
         labels.append(label)
-        ordered = sorted(group["points"], key=lambda p: (p["score"], p["compound"]))
+        ordered = sorted(
+            group["points"],
+            key=lambda p: ((-1 if direction == "higher" else 1) * p["score"], p["compound"]),
+        )
         color = COLORS[y % len(COLORS)]
         tied = defaultdict(list)
         for point in ordered:
@@ -187,9 +269,11 @@ def unknown_score_figure(groups):
     if points:
         low, high = min(p["x"] for p in points), max(p["x"] for p in points)
         pad = max((high - low) * .08, .5)
-        axis.set_xlim(high + pad, low - pad)
+        axis.set_xlim(
+            (low - pad, high + pad) if direction == "higher" else (high + pad, low - pad)
+        )
     else:
-        axis.set_xlim(1, -1)
+        axis.set_xlim((-1, 1) if direction == "higher" else (1, -1))
     return figure, axis, points
 
 
@@ -276,6 +360,22 @@ def populate_unknown_charts(parent, groups):
     parent.grid_rowconfigure(1, weight=1)
     controls = ttk.Frame(parent)
     controls.grid(row=0, column=0, sticky="ew", padx=10, pady=6)
+    methods = unknown_score_methods(groups)
+    method_selection = None
+    if methods:
+        ttk.Label(controls, text="Scoring method:").pack(side="left", padx=(0, 6))
+        method_selection = ttk.Combobox(
+            controls, values=methods, state="readonly",
+            width=max(20, min(36, max(map(len, methods)))),
+        )
+        selected = Counter(
+            point.get("selected_method")
+            for group in groups for point in group.get("points") or []
+            if point.get("selected_method") in methods
+        )
+        initial_method = selected.most_common(1)[0][0] if selected else methods[0]
+        method_selection.current(methods.index(initial_method))
+        method_selection.pack(side="left", padx=(0, 14))
     ttk.Label(controls, text="Structure:").pack(side="left", padx=(0, 6))
     choices = ["All structures"] + [structure_label(g) for g in groups]
     selection = ttk.Combobox(controls, values=choices, state="readonly", width=48)
@@ -287,7 +387,13 @@ def populate_unknown_charts(parent, groups):
     scrollbar = ttk.Scrollbar(parent, orient="vertical", command=viewport.yview)
     scrollbar.grid(row=1, column=1, sticky="ns")
     viewport.configure(yscrollcommand=scrollbar.set)
-    figure, axis, points = unknown_score_figure(groups)
+    def method_groups():
+        if method_selection is None:
+            return groups
+        return select_unknown_score_method(groups, method_selection.get())
+
+    visible = method_groups()
+    figure, axis, points = unknown_score_figure(visible)
     canvas = FigureCanvasTkAgg(figure, master=viewport)
     widget = canvas.get_tk_widget()
     window = viewport.create_window(0, 0, anchor="nw", window=widget)
@@ -296,8 +402,6 @@ def populate_unknown_charts(parent, groups):
     toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
     toolbar.pack(fill="x")
     hover = ScoreHover(canvas, axis, points)
-    visible = groups
-
     def resize(_event=None):
         width = max(viewport.winfo_width(), 400)
         height = max(viewport.winfo_height(), 140 + 50 * len(visible), 420)
@@ -307,7 +411,8 @@ def populate_unknown_charts(parent, groups):
     def redraw(_event=None):
         nonlocal hover, visible
         index = selection.current()
-        visible = groups if index <= 0 else [groups[index - 1]]
+        scored_groups = method_groups()
+        visible = scored_groups if index <= 0 else [scored_groups[index - 1]]
         updated, axis, points = unknown_score_figure(visible)
         old = canvas.figure
         updated.set_size_inches(old.get_size_inches(), forward=False)
@@ -327,6 +432,8 @@ def populate_unknown_charts(parent, groups):
             hover.disconnect()
 
     selection.bind("<<ComboboxSelected>>", redraw)
+    if method_selection is not None:
+        method_selection.bind("<<ComboboxSelected>>", redraw)
     viewport.bind("<Configure>", resize)
     parent.bind("<Destroy>", destroy, add="+")
     parent.after_idle(resize)
