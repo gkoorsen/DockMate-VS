@@ -29,6 +29,16 @@ questions while producing resumable, machine-readable campaigns.
 
 ## Installation
 
+Linux and macOS are supported directly. CI runs on Linux with Python 3.9, 3.11,
+and 3.12; the documented examples were executed on macOS 26.5.2 (Apple M1 Pro).
+Windows is not officially supported. Docker (`linux/amd64`) and WSL are
+community-supported routes on Windows. The platform-dependent components are
+the external docking and visualization executables, rather than the Python
+workflow alone.
+
+The GUI's **View** menu offers persistent **100%, 125%, and 150% UI scale**
+settings for fonts, tables, dialogs, and charts.
+
 ### 1. Install conda (if you don't have it)
 
 We recommend **Miniforge**, which defaults to the conda-forge channel that DockMate-VS builds against. The one-liner below picks the right installer for your OS and architecture:
@@ -53,7 +63,10 @@ From Github:
 git clone https://github.com/gkoorsen/DockMate-VS.git
 cd DockMate-VS
 ```
-Alternatively, download the Zenodo distribution at https://zenodo.org/records/22283782
+Alternatively, download the source archive from the
+[current GitHub release](https://github.com/gkoorsen/DockMate-VS/releases/latest).
+The archived v0.1.1 distribution is available on
+[Zenodo](https://zenodo.org/records/22685196).
 
 Set up the environment:
 ```bash
@@ -80,6 +93,10 @@ the regenerated variant exactly matches the saved preparation PDBQT.
 Loading screening results runs in a progress window that logs topology
 recovery, PoseBusters checks, and PLIP contact calculations for each pose.
 Results tables can be copied to the clipboard or exported directly to Excel.
+
+For file formats and conversion to downstream simulation inputs, see
+[Outputs and MD handoff](docs/md_handoff.md). Contributors adding an engine
+should follow [Adding a docking engine](docs/architecture.md#adding-a-docking-engine).
 
 Your prompt should now begin with `(dockmate-vs)`. Verify:
 
@@ -332,7 +349,13 @@ This supplement is hosted on GitHub separately from the Zenodo software archive.
 ## Citation and support
 
 Citation metadata are provided in [`CITATION.cff`](CITATION.cff). Please cite
-the version used in your work. The current software version is **0.1.1**:
+the version used in your work. The current software version is **0.1.2**:
+
+> Koorsen, G. (2026). DockMate-VS (v0.1.2). GitHub.
+> https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.2
+
+The DOI below identifies **v0.1.1**, not v0.1.2. No version-specific Zenodo DOI
+has yet been assigned to v0.1.2:
 
 > Koorsen, G. (2026). DockMate-VS (v0.1.1). Zenodo.
 > https://doi.org/10.5281/zenodo.22685196

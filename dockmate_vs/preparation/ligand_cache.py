@@ -103,6 +103,9 @@ class LigandCache:
             config_payload = config.model_dump(mode="json")
         else:
             config_payload = config.dict()
+        # Execution limits do not change successful ligand chemistry, and must
+        # not invalidate caches written before this option was introduced.
+        config_payload.pop("obabel_timeout_sec", None)
         cache_input = json.dumps(
             {
                 "schema_version": LIGAND_CACHE_SCHEMA_VERSION,

@@ -805,7 +805,7 @@ class LigandPreparation:
             logger.debug(f"        → Starting subprocess.run() NOW...")
             
             import time
-            start_time = time.time()
+            start_time = time.monotonic()
             
             try:
                 # Use preexec_fn to create a new process group for proper timeout handling
@@ -816,10 +816,10 @@ class LigandPreparation:
                     text=True,
                     preexec_fn=os.setsid if hasattr(os, 'setsid') else None
                 )
-                elapsed = time.time() - start_time
+                elapsed = time.monotonic() - start_time
                 logger.debug(f"        ✓ obabel completed in {elapsed:.1f}s with returncode: {result.returncode}")
             except subprocess.TimeoutExpired as e:
-                elapsed = time.time() - start_time
+                elapsed = time.monotonic() - start_time
                 logger.error(f"        ✗ obabel TIMEOUT after {elapsed:.1f}s (limit: {timeout_secs}s)")
                 # Try to kill the process group
                 try:
@@ -828,7 +828,10 @@ class LigandPreparation:
                         logger.debug(f"        → Process group killed")
                 except Exception as kill_err:
                     logger.debug(f"        → Could not kill process group: {kill_err}")
-                raise
+                raise LigandPreparationError(
+                    f"Open Babel (obabel) ligand conversion timed out after {elapsed:.1f}s "
+                    f"(limit {timeout_secs:g}s). Increase obabel_timeout_sec for slow tool startup."
+                ) from e
             
             try:
                 pdbqt_data = Path(output_path).read_text()
@@ -868,7 +871,7 @@ class LigandPreparation:
             
             # Adjust timeout based on molecule size
             num_atoms = mol.GetNumHeavyAtoms()
-            timeout = 60 if num_atoms > 40 else 30  # Longer timeout for complex molecules
+            timeout = self.config.obabel_timeout_sec * (2 if num_atoms > 40 else 1)
             
             logger.info(f"      Charge model strategy for {mol_id}:")
             logger.info(f"        - Models to try: {charge_models}")

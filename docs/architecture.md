@@ -78,6 +78,17 @@ rescoring metrics, preparation descriptors, output paths, and error messages.
 Fields that do not apply, such as RMSD for an unknown screening compound, remain
 null rather than being assigned a numerical sentinel.
 
+`utils/result_records.py` normalizes all exported native-pose RMSD fields,
+including adaptive attempt records and restart checkpoints. `rmsd_status` is
+`ok`, `not_computable`, or `not_applicable`; `error_message` explains applicable
+failures. CSV uses empty cells and JSON uses null. Legacy sentinels remain
+readable. A completed docking with failed RMSD can still resume, and the failed
+comparison remains in the applicable recovery denominator. Do not infer
+experimental activity from successful pose mapping.
+
+The molecular coordinate formats and downstream simulation boundary are
+documented in [Outputs and MD handoff](md_handoff.md).
+
 ### Protocol Development
 
 The `protocol_development/` directory contains:
@@ -113,12 +124,56 @@ terms. A favourable summary alone is not sufficient provenance.
 
 ## Extension points
 
-### Docking engines
+### Adding a docking engine
 
-New engines should implement the interface in `dockmate_vs/docking/base.py`,
-return explicit pose/score records, expose version information, and add tests for
-command construction, failure handling, and ranking direction. Add the engine to
-configuration validation and both GUI/headless selection paths.
+Engine extensions currently require source changes. Installing another binary
+or adding a name to a YAML file does not register an engine. There is no public
+plugin registry or entry-point discovery API in this release.
+
+1. Implement `DockingEngine` in `dockmate_vs/docking/base.py`: `dock()` accepts
+   receptor/ligand paths, box center and size, and an output path;
+   `parse_output()` reads the saved poses; `get_version()` reports the binary
+   version. Return the `DockingPose`/`DockingResult` types from that same module.
+   `docking/smina.py` is the existing adapter example. The similarly named
+   dataclass in `adaptive_docking.py` represents an adaptive protocol attempt,
+   not this adapter interface.
+2. Preserve pose order and the score for each pose. The current adapter contract
+   and campaign baseline ranking assume **lower is better**. Do not pass a
+   higher-is-better score through unchanged. Document any normalization, retain
+   raw values in metadata, and avoid calling unitless scores kcal/mol. Save
+   poses in a format supported by `_load_poses_and_scores()` in `gui/app.py`, or
+   extend that reader and the viewer/topology conversion tests.
+3. Wire the adapter into `DockMateVSApp._run_single_case()`, used by both GUI and
+   `HeadlessDockMateRunner` campaigns. Handle its actual receptor/ligand format,
+   binding-site preparation, sampling controls, timeout, and output path.
+   Headless campaigns reuse this method without constructing Tk. Separately
+   update `AdaptiveDockingPipeline._run_single_protocol()` if the engine will
+   participate in the adaptive protocol cascade.
+4. Add selection and validation in `headless.load_campaign_config()` and the
+   GUI's engine selectors, `_collect_single_config()`, and protocol-sweep
+   expansion. Update the `DockingEngine` enum in `config/schema.py` for the
+   standalone configuration API. Exhaustiveness does not apply to all engines;
+   rDock additionally needs cavity preparation, runs, and cavity provenance.
+   Implement only the controls the new engine supports. Score-only rescoring
+   remains a separate Smina operation and needs compatible pose files.
+5. Record version, preparation, sampling, and score semantics in the manifest.
+   Review `_protocol_resume_signature()` and condition identities in `gui/app.py`
+   so incompatible results cannot be reused. Update score-source labels and
+   units in `gui/unknown_charts.py`, dependency reporting in `headless.doctor()`,
+   installation instructions, and third-party notices where applicable.
+
+At minimum, add two kinds of tests:
+
+- An adapter test with mocked subprocess calls covering command arguments,
+  timeout/nonzero exit, parsed pose order/scores, and version reporting.
+- A campaign test using `HeadlessDockMateRunner` and a tiny local workbook,
+  covering Protocol Development expansion, exported results, and resume. Follow
+  `tests/test_headless_cli.py` and `tests/test_screening_integration.py`; prove
+  the engine is reached through the campaign path without initializing Tk.
+
+Also perform a real-binary smoke run and a GUI selection check before claiming
+support. A dummy adapter test establishes integration, not scientific validation
+of the external program.
 
 ### Preparation and binding sites
 

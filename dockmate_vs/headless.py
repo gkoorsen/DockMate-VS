@@ -22,6 +22,7 @@ from loguru import logger
 
 from dockmate_vs.gui.app import DockMateVSApp, RedockResult
 from dockmate_vs.adaptive_docking import AdaptiveDockingPipeline
+from dockmate_vs.config.schema import LigandPreparationConfig
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -52,6 +53,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "cpu": 4,
         "seed": 42,
         "timeout": 1200,
+        "obabel_timeout_sec": 30.0,
         "scoring": "vina",
         "smina_binary": "smina",
         "vina_binary": "vina",
@@ -183,6 +185,9 @@ def load_campaign_config(path: Path, mode: str) -> dict:
     single["cpu"] = int(single["cpu"])
     single["seed"] = int(single["seed"])
     single["timeout"] = int(single["timeout"])
+    single["obabel_timeout_sec"] = LigandPreparationConfig(
+        obabel_timeout_sec=single["obabel_timeout_sec"]
+    ).obabel_timeout_sec
     single["n_cpus"] = int(single.get("n_cpus") or single["cpu"])
     single["max_tautomers"] = int(single["max_tautomers"])
     single["max_conformers"] = int(single["max_conformers"])

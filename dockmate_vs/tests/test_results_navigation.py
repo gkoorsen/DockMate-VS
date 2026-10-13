@@ -106,7 +106,8 @@ def test_rendering_selects_results_and_summary(monkeypatch, tmp_path, protocol):
     app = object.__new__(DockMateVSApp)
     app.results_tab = "results"
     app.results_summary_tab = "summary"
-    app.results_charts_tab = "charts"
+    layout_updates = []
+    app.results_charts_tab = SimpleNamespace(update_idletasks=lambda: layout_updates.append("charts"))
     selected = []
     app.workflow_notebook = SimpleNamespace(select=lambda tab: selected.append(("main", tab)))
     app.results_notebook = SimpleNamespace(select=lambda tab: selected.append(("results", tab)))
@@ -118,6 +119,7 @@ def test_rendering_selects_results_and_summary(monkeypatch, tmp_path, protocol):
         app._render_protocol_results(tmp_path / "results.csv", tmp_path / "summary.md")
     else:
         app._render_results({}, [])
+    assert layout_updates == ([] if protocol else ["charts"])
     assert selected == [("results", "summary"), ("main", "results")]
 
 

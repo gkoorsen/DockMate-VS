@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import argparse
 from dataclasses import dataclass, asdict
 import logging
+from dockmate_vs.utils.result_records import normalize_rmsd_record, rmsd_value
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -72,16 +73,11 @@ class RedockAnalyzer:
         """
         df = df.copy()
         
-        # Strategy: If RMSD = 999.9, it's likely a decoy (molecule mismatch)
-        # If RMSD < 999, it's likely an active (same molecule)
         def classify_row(row):
-            rmsd = row.get('best_rmsd', 999.9)
-            
-            # Check if RMSD calculation failed (999.9 is sentinel)
-            if pd.isna(rmsd) or rmsd >= 999:
-                return 'decoy'
-            else:
+            record = normalize_rmsd_record(row)
+            if record['rmsd_status'] != 'not_applicable':
                 return 'active'
+            return 'decoy' if row.get('control_label') in (0, 'decoy') else 'unknown'
         
         df['molecule_type'] = df.apply(classify_row, axis=1)
         
@@ -107,8 +103,12 @@ class RedockAnalyzer:
             ActiveStatistics object
         """
         # Filter to actives with valid RMSD
-        actives = df[df['molecule_type'] == 'active'].copy()
-        valid_actives = actives[actives['best_rmsd'] < 999].copy()
+        applicable = df.apply(
+            lambda row: normalize_rmsd_record(row)['rmsd_status'] != 'not_applicable', axis=1
+        )
+        actives = df[(df['molecule_type'] == 'active') & applicable].copy()
+        actives['best_rmsd'] = actives['best_rmsd'].map(rmsd_value)
+        valid_actives = actives[actives['best_rmsd'].notna()].copy()
         
         if len(valid_actives) == 0:
             logger.warning("No valid active cases found")
@@ -125,7 +125,7 @@ class RedockAnalyzer:
         
         # Calculate success rate
         valid_actives['success'] = valid_actives['best_rmsd'] < self.rmsd_threshold
-        success_rate = valid_actives['success'].mean() * 100
+        success_rate = valid_actives['success'].sum() / len(actives) * 100
         
         return ActiveStatistics(
             n_cases=len(actives),

@@ -5,8 +5,16 @@ uses semantic versioning after the initial public release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-13
+
 ### Added
 
+- A persisted View menu preference for 100%, 125%, and 150% interface scaling,
+  covering named fonts, table rows/columns, progress dialogs, and charts.
+- Configurable `obabel_timeout_sec` for receptor and ligand conversion, defaulting
+  to 30 seconds; timeout diagnostics include the executable and elapsed time.
+- Output-format and downstream MD handoff documentation, a source-level engine
+  extension guide, and explicit Linux/macOS/Windows support statements.
 - Screening summaries now include a pose-quality table for top unknown hits per
   structure, combining PoseBusters plausibility checks with PLIP native-contact
   similarity to support MD candidate triage.
@@ -19,6 +27,22 @@ uses semantic versioning after the initial public release.
   and hoverable success-rate and median-RMSD plots for Top-1/5/10 rankings.
 - Results tabs in the main application and completion dialogs now provide
   independent vertical and horizontal scrolling.
+- Table copying and Excel export, results-loading progress logs, prepared-ligand
+  SDF backfilling for historical screening runs, and a scoring-method selector
+  for unknown-compound charts.
+
+### Fixed
+
+- Unavailable RMSDs are exported as null/empty values with `rmsd_status` and an
+  error reason where applicable, never as the internal 999.9 sentinel. Failed
+  reference-pose calculations remain in recovery denominators, but not means.
+  Decoys and compounds without a native reference are excluded from recovery.
+- Ligand-selection failures list the chains containing the requested residue
+  and the HETATM residues in the requested chain.
+- Canvas charts redraw on resize; Matplotlib charts provide sufficient
+  scrollable space for enlarged labels.
+- Pose Viewer resolves copied run paths and renamed result CSVs; pose labels
+  distinguish complexes that share structure or ligand names.
 
 ## [0.1.1] - 2026-09-10
 
@@ -109,6 +133,7 @@ uses semantic versioning after the initial public release.
 - Restart metadata invalidates pre-0.1 campaign progress that could mix
   independently prepared receptor copies.
 
-[Unreleased]: https://github.com/gkoorsen/DockMate-VS/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/gkoorsen/DockMate-VS/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/gkoorsen/DockMate-VS/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/gkoorsen/DockMate-VS/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.0

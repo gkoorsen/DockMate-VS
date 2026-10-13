@@ -120,6 +120,7 @@ class AdaptiveDockingPipeline:
         molecule_type: str = "active",
         skip_rmsd_for_decoys: bool = True,
         charge_handling: str = "preserve",
+        obabel_timeout_sec: float = 30.0,
     ):
         """
         Initialize adaptive pipeline.
@@ -143,6 +144,7 @@ class AdaptiveDockingPipeline:
             molecule_type: Type of molecule ('active' or 'decoy')
             skip_rmsd_for_decoys: Whether to skip RMSD calculation for decoys
             charge_handling: Preserve input formal charges or use legacy neutralization
+            obabel_timeout_sec: Base Open Babel conversion timeout in seconds
         """
         self.validate_variant_mode(ligand_variant_mode)
         self.output_dir = Path(output_dir)
@@ -161,6 +163,9 @@ class AdaptiveDockingPipeline:
         self.variant_select_by = variant_select_by
         self.max_tautomers = max_tautomers
         self.max_conformers = max_conformers
+        self.obabel_timeout_sec = LigandPreparationConfig(
+            obabel_timeout_sec=obabel_timeout_sec
+        ).obabel_timeout_sec
         self.charge_handling = LigandPreparationConfig(
             charge_handling=charge_handling
         ).charge_handling
@@ -461,6 +466,7 @@ class AdaptiveDockingPipeline:
             logger.info("  Using cached receptor PDBQT: %s", receptor_pdbqt)
         else:
             prep_protein = ProteinPreparation(ProteinPreparationConfig(
+                obabel_timeout_sec=getattr(self, "obabel_timeout_sec", 30.0),
                 ph=7.4,
                 water_handling=WaterHandling.REMOVE_ALL,  # Critical: no waters!
                 # Equally critical: strip the site ligand, or it blocks its own
@@ -479,6 +485,7 @@ class AdaptiveDockingPipeline:
         else:
             # Use cache for ligand preparation
             config = LigandPreparationConfig(
+                obabel_timeout_sec=getattr(self, "obabel_timeout_sec", 30.0),
                 charge_handling=self.charge_handling,
                 max_tautomers=self.max_tautomers,
                 max_conformers=self.max_conformers,
@@ -614,6 +621,7 @@ class AdaptiveDockingPipeline:
         """Prepare ligand once per pipeline run and return PDBQT path."""
         # Define config first
         config = LigandPreparationConfig(
+            obabel_timeout_sec=getattr(self, "obabel_timeout_sec", 30.0),
             charge_handling=self.charge_handling,
             max_tautomers=self.max_tautomers,
             max_conformers=self.max_conformers,
@@ -657,6 +665,7 @@ class AdaptiveDockingPipeline:
     ) -> List[dict]:
         # Explicit per-call limits override the pipeline's preparation settings.
         config = LigandPreparationConfig(
+            obabel_timeout_sec=getattr(self, "obabel_timeout_sec", 30.0),
             charge_handling=self.charge_handling,
             max_tautomers=self.max_tautomers if max_tautomers is None else max_tautomers,
             max_conformers=self.max_conformers if max_conformers is None else max_conformers,
@@ -840,6 +849,7 @@ class AdaptiveDockingPipeline:
 
         strip = [site_ligand_resname] if site_ligand_resname else None
         prep_protein = ProteinPreparation(ProteinPreparationConfig(
+            obabel_timeout_sec=getattr(self, "obabel_timeout_sec", 30.0),
             ph=7.4,
             water_handling=water_handling,
             remove_hetero_residues=strip
@@ -1023,6 +1033,7 @@ class AdaptiveDockingPipeline:
                 logger.info("Using cached receptor PDB for rDock: %s", receptor_pdb_path)
             else:
                 prep = ProteinPreparation(ProteinPreparationConfig(
+                    obabel_timeout_sec=getattr(self, "obabel_timeout_sec", 30.0),
                     ph=7.4,
                     water_handling=WaterHandling.REMOVE_ALL
                 ))
@@ -1280,6 +1291,8 @@ END_SECTION
         in_first_model = True
 
         selected_lines = []
+        available_chains = set()
+        requested_chain_residues = set()
         with open(pdb_file) as f_in:
             for line in f_in:
                 if line.startswith('MODEL'):
@@ -1297,9 +1310,13 @@ END_SECTION
                     continue
 
                 res = line[17:20].strip()
+                chain = line[21:22].strip()
+                if res == ligand_resname:
+                    available_chains.add(chain or "<blank>")
+                if line.startswith('HETATM') and (ligand_chain is None or chain == ligand_chain):
+                    requested_chain_residues.add(f"{res} {line[22:26].strip()}{line[26:27].strip()}")
                 if res != ligand_resname:
                     continue
-                chain = line[21:22].strip()
                 if ligand_chain is not None and chain != ligand_chain:
                     continue
                 res_seq = line[22:26].strip()
@@ -1334,7 +1351,10 @@ END_SECTION
 
         if output_pdb.stat().st_size == 0:
             raise ValueError(
-                f"No ligand found: resname={ligand_resname}, chain={ligand_chain}"
+                f"No ligand found: resname={ligand_resname}, chain={ligand_chain}. "
+                f"Available chains for {ligand_resname}: {', '.join(sorted(available_chains)) or 'none'}. "
+                f"HETATM residues in requested chain: {', '.join(sorted(requested_chain_residues)) or 'none'}. "
+                "The workbook Chain column selects the ligand copy."
             )
 
         return output_pdb
@@ -1393,6 +1413,7 @@ def run_adaptive_docking(
     max_conformers: int = 10,
     n_cpus: Optional[int] = None,
     charge_handling: str = "preserve",
+    obabel_timeout_sec: float = 30.0,
 ) -> Tuple[DockingResult, List[DockingResult]]:
     """
     Convenience function to run adaptive docking pipeline.
@@ -1445,6 +1466,7 @@ def run_adaptive_docking(
         max_tautomers=max_tautomers,
         max_conformers=max_conformers,
         charge_handling=charge_handling,
+        obabel_timeout_sec=obabel_timeout_sec,
         n_cpus=n_cpus
     )
 

@@ -50,6 +50,7 @@ def test_campaign_config_resolves_paths_and_forces_screening_score_selection(tmp
                 "single": {
                     "variant_select_by": "rmsd",
                     "size_override": [20, 22, 24],
+                    "obabel_timeout_sec": 120,
                 },
                 "protocol_sweep": {"box_definitions": ["margin:3", "20x22x24"]},
             }
@@ -62,6 +63,7 @@ def test_campaign_config_resolves_paths_and_forces_screening_score_selection(tmp
     assert config["input_file"] == str(workbook)
     assert config["output_dir"] == tmp_path / "results"
     assert config["single"]["variant_select_by"] == "score"
+    assert config["single"]["obabel_timeout_sec"] == 120
     assert config["single"]["size_override"].tolist() == [20.0, 22.0, 24.0]
     assert [box["label"] for box in config["protocol_sweep"]["box_definitions"]] == [
         "margin:3",

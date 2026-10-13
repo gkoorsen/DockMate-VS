@@ -4,6 +4,7 @@ from typing import Iterable, Mapping, Optional
 
 import numpy as np
 from matplotlib.figure import Figure
+from dockmate_vs.gui.ui_scale import scale_figure, widget_scale
 from scipy.stats import spearmanr
 
 
@@ -170,25 +171,35 @@ def populate_assay_charts(parent, summary: dict) -> None:
     entry.pack(side="left", padx=5)
     error = ttk.Label(controls, foreground="#A32929")
     figure = screening_figure(summary)
-    # Retina canvas resize requests must not enlarge the surrounding notebook.
-    plot_frame = ttk.Frame(parent, width=640, height=480)
-    plot_frame.grid(row=1, column=0, sticky="nsew")
-    plot_frame.grid_propagate(False)
-    plot_frame.grid_rowconfigure(0, weight=1)
-    plot_frame.grid_columnconfigure(0, weight=1)
-    canvas = FigureCanvasTkAgg(figure, master=plot_frame)
+    scale_figure(figure, widget_scale(parent))
+    # Keep labels readable at larger UI scales without enlarging the notebook.
+    viewport = tk.Canvas(parent, highlightthickness=0, width=640, height=480)
+    viewport.grid(row=1, column=0, sticky="nsew")
+    vertical = ttk.Scrollbar(parent, orient="vertical", command=viewport.yview)
+    vertical.grid(row=1, column=1, sticky="ns")
+    horizontal = ttk.Scrollbar(parent, orient="horizontal", command=viewport.xview)
+    horizontal.grid(row=2, column=0, sticky="ew")
+    viewport.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+    canvas = FigureCanvasTkAgg(figure, master=viewport)
     widget = canvas.get_tk_widget()
-    widget.configure(width=640, height=480)
-    widget.grid(row=0, column=0, sticky="nsew")
+    window = viewport.create_window(0, 0, anchor="nw", window=widget)
     toolbar_frame = ttk.Frame(parent)
-    toolbar_frame.grid(row=2, column=0, sticky="ew")
+    toolbar_frame.grid(row=3, column=0, sticky="ew")
     toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
     toolbar.pack(fill="x")
+
+    def resize(_event=None):
+        scale = widget_scale(parent)
+        width = max(viewport.winfo_width(), round(1020 * scale))
+        height = max(viewport.winfo_height(), round(750 * scale))
+        viewport.itemconfigure(window, width=width, height=height)
+        viewport.configure(scrollregion=(0, 0, width, height))
 
     def redraw(_event=None):
         try:
             upper = float(upper_var.get()) if upper_var.get().strip() else None
             updated = screening_figure(summary, upper)
+            scale_figure(updated, widget_scale(parent))
         except ValueError as exc:
             error.configure(text=str(exc))
             return
@@ -200,6 +211,7 @@ def populate_assay_charts(parent, summary: dict) -> None:
         canvas.figure = updated
         updated.set_canvas(canvas)
         toolbar.update()
+        resize()
         canvas.draw_idle()
 
     def full_range():
@@ -210,4 +222,8 @@ def populate_assay_charts(parent, summary: dict) -> None:
     ttk.Button(controls, text="Full range", command=full_range).pack(side="left", padx=5)
     error.pack(side="left", padx=5)
     entry.bind("<Return>", redraw)
+    viewport.bind("<Configure>", resize)
+    viewport.bind("<Map>", resize)
+    parent.bind("<<UIScaleChanged>>", redraw, add="+")
+    parent.after_idle(resize)
     canvas.draw_idle()

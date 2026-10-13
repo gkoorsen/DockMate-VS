@@ -43,6 +43,7 @@ from dockmate_vs.docking.smina import SminaDockingEngine
 from dockmate_vs.gui.utils import download_pdb_structure
 from dockmate_vs.gui.assay_charts import docking_diagnostics, populate_assay_charts
 from dockmate_vs.gui.folder_picker import choose_directory
+from dockmate_vs.gui.ui_scale import UIScale, ui_font, save_ui_scale, widget_scale, canvas_size, scale_table
 from dockmate_vs.gui.unknown_charts import (
     attach_pose_quality,
     unknown_docking_data,
@@ -61,6 +62,7 @@ from dockmate_vs.analysis.pose_quality import (
     run_posebusters,
 )
 from dockmate_vs.utils.rmsd import calculate_rmsd
+from dockmate_vs.utils.result_records import normalize_rmsd_record, rmsd_value
 
 
 COFACTORS = {
@@ -130,7 +132,7 @@ class RedockResult:
     mode: str
     engine: str
     protocol: str
-    best_rmsd: float
+    best_rmsd: Optional[float]
     success: bool
     runtime_sec: float
     output_file: Optional[str] = None
@@ -177,6 +179,10 @@ class RedockResult:
     tpsa: Optional[float] = None
     rotatable_bonds: Optional[int] = None
     target_name: Optional[str] = None
+    rmsd_status: Optional[str] = None
+
+    def to_record(self) -> dict:
+        return normalize_rmsd_record(asdict(self))
 
 
 class DockMateVSApp(tk.Tk):
@@ -189,6 +195,18 @@ class DockMateVSApp(tk.Tk):
         smina_binary_default: Optional[str] = None
     ):
         super().__init__()
+
+        self._ui_style = UIScale(self)
+        self.ui_scale_var = tk.DoubleVar(value=self.ui_scale)
+        menu = tk.Menu(self)
+        view_menu = tk.Menu(menu, tearoff=False)
+        for scale in (1.0, 1.25, 1.5):
+            view_menu.add_radiobutton(
+                label=f"UI scale: {scale:.0%}", value=scale, variable=self.ui_scale_var,
+                command=self._change_ui_scale,
+            )
+        menu.add_cascade(label="View", menu=view_menu)
+        self.configure(menu=menu)
 
         self.title("DockMate-VS")
         self.geometry("1000x780")
@@ -210,6 +228,7 @@ class DockMateVSApp(tk.Tk):
         self.variant_mode_var = tk.StringVar(value="all_score")
         self.max_tautomers_var = tk.StringVar(value="8")
         self.max_conformers_var = tk.StringVar(value="10")
+        self.obabel_timeout_var = tk.StringVar(value="30")
         self.charge_handling_var = tk.StringVar(value="Preserve input charges")
         self.enable_rescore_var = tk.BooleanVar(value=False)
         self.rescore_scoring_var = tk.StringVar(value="vina")
@@ -291,6 +310,14 @@ class DockMateVSApp(tk.Tk):
         self._start_ui_queue()
         self.after(200, self._bring_to_front)
 
+    def _change_ui_scale(self) -> None:
+        scale = self.ui_scale_var.get()
+        self._ui_style.apply(scale)
+        try:
+            save_ui_scale(scale)
+        except OSError as exc:
+            messagebox.showwarning("UI scale", f"Could not save the preference: {exc}", parent=self)
+
     def _build_ui(self) -> None:
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -299,19 +326,29 @@ class DockMateVSApp(tk.Tk):
         canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
         self._main_canvas = canvas
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        horizontal = ttk.Scrollbar(self, orient="horizontal", command=canvas.xview)
 
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        horizontal.grid(row=1, column=0, sticky="ew")
+        canvas.configure(yscrollcommand=scrollbar.set, xscrollcommand=horizontal.set)
 
         container = tk.Frame(canvas, padx=20, pady=20)
         container_id = canvas.create_window((0, 0), window=container, anchor="nw")
 
+        def _content_width(available):
+            notebook = self.__dict__.get("workflow_notebook")
+            results = self.__dict__.get("results_tab")
+            if notebook is not None and notebook.select() == str(results):
+                return available
+            return max(available, round(940 * self.ui_scale))
+
         def _on_container_configure(event: tk.Event) -> None:
             canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(container_id, width=_content_width(canvas.winfo_width()))
 
         def _on_canvas_configure(event: tk.Event) -> None:
-            canvas.itemconfigure(container_id, width=event.width)
+            canvas.itemconfigure(container_id, width=_content_width(event.width))
             if hasattr(self, "results_notebook"):
                 self.after_idle(self._resize_workflow_notebook)
 
@@ -685,6 +722,10 @@ class DockMateVSApp(tk.Tk):
         )
         charge_handling.grid(row=6, column=1, columnspan=2, sticky="w", pady=(8, 0))
         self._register_busy_widget(charge_handling)
+        tk.Label(variant_frame, text="Open Babel timeout (s):").grid(row=7, column=0, sticky="w", pady=(8, 0))
+        obabel_timeout = ttk.Spinbox(variant_frame, from_=1, to=3600, textvariable=self.obabel_timeout_var, width=8)
+        obabel_timeout.grid(row=7, column=1, sticky="w", pady=(8, 0))
+        self._register_busy_widget(obabel_timeout)
 
         settings_row += 1
         self.adaptive_frame = tk.LabelFrame(
@@ -2057,6 +2098,7 @@ class DockMateVSApp(tk.Tk):
                     raise ValueError(f"Ligand chain not found for {pdb_id}/{site_ligand}")
                 if self._has_covalent_ligand_link(pdb_file, site_ligand, ligand_chain):
                     row["status"] = "unsupported"
+                    row["rmsd_status"] = "not_applicable"
                     row["error_message"] = (
                         "Covalent receptor-ligand LINK: standard Vina/Smina docking is invalid"
                     )
@@ -2157,6 +2199,7 @@ class DockMateVSApp(tk.Tk):
             rows = [old for old in rows if condition_identity(old) != key[:-2]]
             rows.append(row)
             temporary = results_path.with_suffix(".tmp")
+            rows = [normalize_rmsd_record(row) for row in rows]
             pd.DataFrame(rows).to_csv(temporary, index=False)
             temporary.replace(results_path)
             self._queue.put(("progress", index, len(conditions), label))
@@ -2344,7 +2387,7 @@ class DockMateVSApp(tk.Tk):
         rows: List[dict], output_dir: Path, threshold: float = 2.0
     ) -> Path:
         report_path = output_dir / "protocol_development_summary.md"
-        frame = pd.DataFrame(rows)
+        frame = pd.DataFrame([normalize_rmsd_record(row) for row in rows])
         complete = frame[frame.get("status") == "complete"].copy() if not frame.empty else frame
         lines = ["# Protocol Development Summary", ""]
         if not frame.empty and "status" in frame:
@@ -2884,8 +2927,12 @@ class DockMateVSApp(tk.Tk):
                 logger.error("Single config invalid: rDock radius")
                 return None
 
+        obabel_timeout = self._collect_obabel_timeout()
+        if obabel_timeout is None:
+            return None
         return {
             "engine": engine,
+            "obabel_timeout_sec": obabel_timeout,
             "box_margin": box_margin,
             "apo_site_mode": self.apo_site_mode_var.get(),
             "site_definition_mode": self.site_definition_mode_var.get(),
@@ -2943,8 +2990,12 @@ class DockMateVSApp(tk.Tk):
             logger.warning("Adaptive config: rDock root not found: {}", rdock_root_text)
             enable_rdock = False
 
+        obabel_timeout = self._collect_obabel_timeout()
+        if obabel_timeout is None:
+            return None
         return {
             "enable_rdock": enable_rdock,
+            "obabel_timeout_sec": obabel_timeout,
             "rdock_root": rdock_root,
             "use_vina": self.use_vina_var.get(),
             "smina_binary": self.smina_bin_var.get(),
@@ -2956,6 +3007,16 @@ class DockMateVSApp(tk.Tk):
             "charge_handling": CHARGE_HANDLING_OPTIONS[self.charge_handling_var.get()],
             "n_cpus": self._parse_int(self.cpu_var.get(), "CPU") or 4
         }
+
+    def _collect_obabel_timeout(self) -> Optional[float]:
+        variable = self.__dict__.get("obabel_timeout_var")
+        value = self._parse_float(variable.get() if variable else "30", "Open Babel timeout")
+        if value is None:
+            return None
+        if not math.isfinite(value) or value <= 0:
+            messagebox.showerror("Input error", "Open Babel timeout must be a positive finite number.")
+            return None
+        return value
 
     def _run_worker(self, pairs: List[Dict[str, str]], config: dict) -> None:
         config = self._config_with_charge_handling(config)
@@ -3205,7 +3266,7 @@ class DockMateVSApp(tk.Tk):
                                 for field, value in rescored_metrics.items():
                                     setattr(result, field, value)
                 results_by_case[case_id] = result
-                if result.best_rmsd >= 900 and result.best_score is not None:
+                if rmsd_value(result.best_rmsd) is None and result.best_score is not None:
                     self._queue.put((
                         "log",
                         f"{pdb_id} {dock_name} score={result.best_score:.2f} site={result.site_method or site_mode}"
@@ -3222,6 +3283,11 @@ class DockMateVSApp(tk.Tk):
                     engine=config["single"].get("engine", "adaptive"),
                     protocol="N/A",
                     best_rmsd=999.9,
+                    rmsd_status=(
+                        "not_applicable" if config["mode"] == "screening"
+                        and item.get("is_reference_ligand") is not True
+                        else "not_computable"
+                    ),
                     success=False,
                     runtime_sec=0.0,
                     error_message=str(exc),
@@ -3273,6 +3339,7 @@ class DockMateVSApp(tk.Tk):
             variant_select_by=adaptive_cfg.get("variant_select_by", "rmsd"),
             max_tautomers=adaptive_cfg.get("max_tautomers", 8),
             max_conformers=adaptive_cfg.get("max_conformers", 10),
+            obabel_timeout_sec=adaptive_cfg.get("obabel_timeout_sec", 30.0),
             charge_handling=adaptive_cfg.get("charge_handling", "preserve"),
             n_cpus=adaptive_cfg.get("n_cpus")
         )
@@ -3519,6 +3586,7 @@ class DockMateVSApp(tk.Tk):
             variant_select_by=single_cfg.get("variant_select_by", "rmsd"),
             max_tautomers=single_cfg.get("max_tautomers", 8),
             max_conformers=single_cfg.get("max_conformers", 10),
+            obabel_timeout_sec=single_cfg.get("obabel_timeout_sec", 30.0),
             charge_handling=single_cfg.get("charge_handling", "preserve"),
             n_cpus=single_cfg.get("n_cpus")
         )
@@ -3726,7 +3794,12 @@ class DockMateVSApp(tk.Tk):
             site_method=site_method,
             docking_completed=True,
             variants_prepared=variants_prepared,
-            variants_docked=variants_docked
+            variants_docked=variants_docked,
+            rmsd_status=(
+                None if crystal_ligand_pdb.exists()
+                and (run_mode != "screening" or is_reference_ligand is True)
+                else "not_applicable"
+            ),
         )
 
     @staticmethod
@@ -3748,6 +3821,9 @@ class DockMateVSApp(tk.Tk):
         for key in ("single", "adaptive"):
             if normalized.get(key) or key == active_key:
                 options = normalized.setdefault(key, {})
+                options["obabel_timeout_sec"] = LigandPreparationConfig(
+                    obabel_timeout_sec=options.get("obabel_timeout_sec", 30.0)
+                ).obabel_timeout_sec
                 policy = options.setdefault("charge_handling", default)
                 if policy not in {"preserve", "neutralize"}:
                     raise ValueError(f"{key}.charge_handling must be preserve or neutralize")
@@ -3928,7 +4004,7 @@ class DockMateVSApp(tk.Tk):
         )
 
     def _write_progress(self, progress_path: Path, results: List[RedockResult]) -> None:
-        payload = {"results": [asdict(r) for r in results]}
+        payload = {"results": [r.to_record() for r in results]}
         self._write_json_atomic(progress_path, payload)
 
     @staticmethod
@@ -3948,11 +4024,11 @@ class DockMateVSApp(tk.Tk):
         results: List[RedockResult],
         threshold: float
     ) -> None:
-        payload = {"results": [asdict(r) for r in results]}
+        payload = {"results": [r.to_record() for r in results]}
         self._write_json_atomic(json_path, payload)
 
         if results:
-            df = pd.DataFrame([asdict(r) for r in results])
+            df = pd.DataFrame(payload["results"])
             df.to_csv(csv_path, index=False)
 
         summary = self._build_summary(results, threshold, json_path.parent)
@@ -4260,6 +4336,7 @@ class DockMateVSApp(tk.Tk):
                 charge_handling=preparation.get("charge_handling", "neutralize"),
                 max_tautomers=int(preparation.get("max_tautomers", 8)),
                 max_conformers=int(preparation.get("max_conformers", 10)),
+                obabel_timeout_sec=preparation.get("obabel_timeout_sec", 30.0),
                 use_etkdg_v3=True,
                 mmff_minimize=True,
             )
@@ -4784,6 +4861,7 @@ class DockMateVSApp(tk.Tk):
         table: ttk.Treeview, toolbar: tk.Widget, export_name: str
     ) -> None:
         """Add copy/export controls and shortcuts to a results table."""
+        scale_table(table)
         status_var = tk.StringVar(master=toolbar)
 
         def _copy(_event=None):
@@ -4839,7 +4917,7 @@ class DockMateVSApp(tk.Tk):
         for index, line in enumerate(prose):
             if index == 0:
                 tk.Label(
-                    parent, text=line, anchor="w", font=("TkDefaultFont", 13, "bold")
+                    parent, text=line, anchor="w", font=ui_font("title")
                 ).pack(fill="x", pady=(0, 5))
             else:
                 is_bullet = line.startswith("- ")
@@ -5818,7 +5896,7 @@ class DockMateVSApp(tk.Tk):
             ).pack(side="left", padx=2)
 
         _update_note()
-        for canvas, draw in zip(
+        for index, (canvas, draw) in enumerate(zip(
             (
                 pose_canvas,
                 rescore_canvas,
@@ -5828,8 +5906,8 @@ class DockMateVSApp(tk.Tk):
                 structure_rmsd_canvas,
             ),
             draw_callbacks,
-        ):
-            self._install_chart(canvas, draw)
+        )):
+            draw_callbacks[index] = self._install_chart(canvas, draw)
 
     def _render_results(self, summary: dict, rmsd_values: List[float]) -> None:
         self._clear_frame(self.results_summary_tab)
@@ -5840,6 +5918,9 @@ class DockMateVSApp(tk.Tk):
         self._set_protocol_pose_tab_visible(False)
         self._populate_summary_tab(self.results_summary_tab, summary)
         self._populate_charts_tab(self.results_charts_tab, summary, rmsd_values)
+        # Finish geometry changes before switching pages; Tk Aqua can otherwise
+        # leave newly created chart widgets unmapped after a protocol report.
+        self.results_charts_tab.update_idletasks()
         summary_page = self.__dict__.get(
             "results_summary_page", self.__dict__.get("results_summary_tab")
         )
@@ -6219,7 +6300,7 @@ class DockMateVSApp(tk.Tk):
 
         canvas1 = tk.Canvas(chart_frame, height=240, bg="white")
         canvas1.grid(row=0, column=0, sticky="ew")
-        self._draw_bar_chart(canvas1, "Success Rate by Protocol (%)", protocol_rates)
+        self._install_chart(canvas1, lambda: self._draw_bar_chart(canvas1, "Success Rate by Protocol (%)", protocol_rates))
 
         hist_frame = tk.Frame(parent)
         hist_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
@@ -6227,7 +6308,7 @@ class DockMateVSApp(tk.Tk):
         hist_frame.grid_rowconfigure(0, weight=1)
         canvas2 = tk.Canvas(hist_frame, height=260, bg="white")
         canvas2.grid(row=0, column=0, sticky="nsew")
-        self._draw_histogram(canvas2, "Best RMSD Distribution", rmsd_values)
+        self._install_chart(canvas2, lambda: self._draw_histogram(canvas2, "Best RMSD Distribution", rmsd_values))
 
         if summary.get("charge_count"):
             charge_frame = tk.Frame(parent)
@@ -6248,11 +6329,11 @@ class DockMateVSApp(tk.Tk):
 
             canvas3 = tk.Canvas(charge_frame, height=220, bg="white")
             canvas3.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-            self._draw_bar_chart(canvas3, "Charge Distribution (%)", overall)
+            self._install_chart(canvas3, lambda: self._draw_bar_chart(canvas3, "Charge Distribution (%)", overall))
 
             canvas4 = tk.Canvas(charge_frame, height=220, bg="white")
             canvas4.grid(row=0, column=1, sticky="ew")
-            self._draw_bar_chart(canvas4, "Charge Distribution Top-10% (%)", top10)
+            self._install_chart(canvas4, lambda: self._draw_bar_chart(canvas4, "Charge Distribution Top-10% (%)", top10))
 
     def _build_table(self, parent: tk.Frame, columns: List[str], rows: List[Tuple]) -> ttk.Treeview:
         table = ttk.Treeview(parent, columns=columns, show="headings", height=6)
@@ -6261,16 +6342,34 @@ class DockMateVSApp(tk.Tk):
             table.column(col, width=120, anchor="center")
         for row in rows:
             table.insert("", "end", values=row)
+        scale_table(table)
         return table
 
     @staticmethod
-    def _install_chart(canvas: tk.Canvas, draw: Callable[[], None]) -> None:
+    def _install_chart(canvas: tk.Canvas, draw: Callable[[], None]) -> Callable[[], None]:
         """Draw now and redraw when a result window is resized."""
         pending = {"job": None}
+        base_height = max(280, int(canvas.cget("height")))
+
+        def _resize(_event=None):
+            scale = widget_scale(canvas)
+            canvas.configure(height=round(base_height * scale), width=round(460 * scale))
+            _redraw()
 
         def _draw() -> None:
             pending["job"] = None
+            if not canvas.winfo_exists():
+                return
             draw()
+            scale = widget_scale(canvas)
+            canvas.scale("all", 0, 0, scale, scale)
+            for item in canvas.find_all():
+                if canvas.type(item) == "text":
+                    if not canvas.itemcget(item, "font"):
+                        canvas.itemconfigure(item, font=ui_font("body"))
+                    width = float(canvas.itemcget(item, "width"))
+                    if width:
+                        canvas.itemconfigure(item, width=width * scale)
 
         def _redraw(_event=None) -> None:
             if pending["job"] is not None:
@@ -6278,12 +6377,13 @@ class DockMateVSApp(tk.Tk):
             pending["job"] = canvas.after_idle(_draw)
 
         canvas.bind("<Configure>", _redraw)
-        _redraw()
+        canvas.bind("<<UIScaleChanged>>", _resize, add="+")
+        _resize()
+        return _redraw
 
     @staticmethod
     def _chart_dimensions(canvas: tk.Canvas) -> Tuple[int, int, int, int, int, int]:
-        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 420)
-        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 260)
+        width, height = canvas_size(canvas, (460, 280))
         label_width = min(245, max(145, int(width * 0.40)))
         left = label_width
         right = 58
@@ -6309,11 +6409,13 @@ class DockMateVSApp(tk.Tk):
         canvas: tk.Canvas, event: tk.Event, text: str, width: int, height: int
     ) -> None:
         canvas.delete("chart_tooltip")
-        x = min(max(event.x + 12, 8), max(width - 310, 8))
-        y = min(max(event.y + 12, 8), max(height - 66, 8))
+        scale = widget_scale(canvas)
+        width, height = width * scale, height * scale
+        x = min(max(event.x + 12 * scale, 8), max(width - 310 * scale, 8))
+        y = min(max(event.y + 12 * scale, 8), max(height - 100 * scale, 8))
         text_id = canvas.create_text(
-            x + 7, y + 6, text=text, anchor="nw", width=285,
-            fill="#202020", font=("TkDefaultFont", 8), tags="chart_tooltip",
+            x + 7 * scale, y + 6 * scale, text=text, anchor="nw", width=285 * scale,
+            fill="#202020", font=ui_font("body"), tags="chart_tooltip",
         )
         bounds = canvas.bbox(text_id)
         if bounds:
@@ -6342,13 +6444,12 @@ class DockMateVSApp(tk.Tk):
     ) -> None:
         """Render a responsive condition-level scatter plot with hover details."""
         canvas.delete("all")
-        width = int(canvas.winfo_width()) if canvas.winfo_width() > 1 else 460
-        height = int(canvas.winfo_height()) if canvas.winfo_height() > 1 else 280
+        width, height = canvas_size(canvas, (460, 280))
         left, right, top, bottom = 64, 24, 95, 48
         plot_width = max(100, width - left - right)
         plot_height = max(90, height - top - bottom)
         canvas.create_text(
-            14, 12, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold")
+            14, 12, text=title, anchor="nw", font=ui_font("heading")
         )
         if not points:
             canvas.create_text(
@@ -6441,11 +6542,11 @@ class DockMateVSApp(tk.Tk):
             canvas.create_text(
                 x_coord, top + plot_height + 5,
                 text=_tick_text(x_value, max(x_values)),
-                anchor="n", fill="#555555", font=("TkDefaultFont", 8),
+                anchor="n", fill="#555555", font=ui_font("body"),
             )
             canvas.create_text(
                 left - 7, y_coord, text=_tick_text(y_value, y_max),
-                anchor="e", fill="#555555", font=("TkDefaultFont", 8),
+                anchor="e", fill="#555555", font=ui_font("body"),
             )
 
         if x_threshold is not None:
@@ -6456,7 +6557,7 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 x_coord + 3, top + 2, text=f"{x_threshold:g} A", anchor="nw",
-                fill="#9C3D24", font=("TkDefaultFont", 8),
+                fill="#9C3D24", font=ui_font("body"),
             )
         if y_threshold is not None:
             y_coord = _y(float(y_threshold))
@@ -6466,7 +6567,7 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 left + 3, y_coord - 2, text=f"{y_threshold:g} A", anchor="sw",
-                fill="#9C3D24", font=("TkDefaultFont", 8),
+                fill="#9C3D24", font=ui_font("body"),
             )
         if diagonal:
             diagonal_max = min(x_axis_max, y_max)
@@ -6477,30 +6578,30 @@ class DockMateVSApp(tk.Tk):
             canvas.create_text(
                 _x(diagonal_max * 0.74), _y(diagonal_max * 0.74) - 5,
                 text="no change", anchor="sw", fill="#555555",
-                font=("TkDefaultFont", 8),
+                font=ui_font("body"),
             )
             canvas.create_text(
                 _x(diagonal_max * 0.22), _y(diagonal_max * 0.70),
                 text="rescoring worsens", anchor="center", fill="#8A4A3B",
-                font=("TkDefaultFont", 8),
+                font=ui_font("body"),
             )
             canvas.create_text(
                 _x(diagonal_max * 0.72), _y(diagonal_max * 0.23),
                 text="rescoring improves", anchor="center", fill="#356B39",
-                font=("TkDefaultFont", 8),
+                font=ui_font("body"),
             )
         if quadrant_labels and x_threshold is not None and y_threshold is not None:
             canvas.create_text(
                 left + 8, top + 8, text="pose generated; ranking failed",
-                anchor="nw", fill="#666666", font=("TkDefaultFont", 8),
+                anchor="nw", fill="#666666", font=ui_font("body"),
             )
             canvas.create_text(
                 left + 8, _y(y_threshold) + 8, text=recovery_label,
-                anchor="nw", fill="#356B39", font=("TkDefaultFont", 8),
+                anchor="nw", fill="#356B39", font=ui_font("body"),
             )
             canvas.create_text(
                 width - right - 8, top + 22, text="search and\nranking failed",
-                anchor="ne", fill="#8A4A3B", font=("TkDefaultFont", 8),
+                anchor="ne", fill="#8A4A3B", font=ui_font("body"),
             )
 
         if pareto:
@@ -6525,7 +6626,7 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 legend_x + 13, 43.5, text=engine, anchor="w",
-                font=("TkDefaultFont", 8),
+                font=ui_font("body"),
             )
             legend_x += max(62, len(engine) * 7 + 28)
         legend_notes = []
@@ -6537,7 +6638,7 @@ class DockMateVSApp(tk.Tk):
             legend_notes.append("outlined=Pareto-efficient")
         canvas.create_text(
             14, 57, text="; ".join(legend_notes), width=width - 28,
-            anchor="nw", fill="#555555", font=("TkDefaultFont", 8),
+            anchor="nw", fill="#555555", font=ui_font("body"),
         )
 
         for index, point in enumerate(valid_points):
@@ -6578,11 +6679,11 @@ class DockMateVSApp(tk.Tk):
         )
         canvas.create_text(
             left + plot_width / 2, height - 9, text=x_label, anchor="s",
-            font=("TkDefaultFont", 8),
+            font=ui_font("body"),
         )
         canvas.create_text(
             13, top + plot_height / 2, text=y_label, anchor="s", angle=90,
-            font=("TkDefaultFont", 8),
+            font=ui_font("body"),
         )
 
     def _draw_factor_effect_chart(
@@ -6595,18 +6696,17 @@ class DockMateVSApp(tk.Tk):
     ) -> None:
         """Show median, IQR, and range for each protocol factor level."""
         canvas.delete("all")
-        width = int(canvas.winfo_width()) if canvas.winfo_width() > 1 else 460
-        height = int(canvas.winfo_height()) if canvas.winfo_height() > 1 else 280
+        width, height = canvas_size(canvas, (460, 280))
         left, right, top, bottom = 142, 42, 48, 34
         plot_width = max(100, width - left - right)
         plot_height = max(100, height - top - bottom)
         canvas.create_text(
-            14, 12, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold")
+            14, 12, text=title, anchor="nw", font=ui_font("heading")
         )
         canvas.create_text(
             14, 29,
             text="Each level pools other tested factors. Line=range; box=IQR; tick=median.",
-            anchor="nw", fill="#666666", font=("TkDefaultFont", 8),
+            anchor="nw", fill="#666666", font=ui_font("body"),
         )
         if not rows:
             canvas.create_text(
@@ -6629,7 +6729,7 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 x_coord, top + plot_height + 4, text=f"{value:.1f}",
-                anchor="n", fill="#555555", font=("TkDefaultFont", 8),
+                anchor="n", fill="#555555", font=ui_font("body"),
             )
 
         threshold_x = _x(threshold)
@@ -6639,7 +6739,7 @@ class DockMateVSApp(tk.Tk):
         )
         canvas.create_text(
             threshold_x + 3, top + 2, text=f"{threshold:g} A", anchor="nw",
-            fill="#9C3D24", font=("TkDefaultFont", 8),
+            fill="#9C3D24", font=ui_font("body"),
         )
 
         factor_colors = {
@@ -6659,7 +6759,7 @@ class DockMateVSApp(tk.Tk):
             color = factor_colors.get(factor, "#60758A")
             canvas.create_text(
                 left - 7, y_coord, text=self._short_chart_label(row["label"], 24),
-                anchor="e", fill="#252525", font=("TkDefaultFont", 8),
+                anchor="e", fill="#252525", font=ui_font("body"),
             )
             canvas.create_line(
                 _x(row["minimum"]), y_coord, _x(row["maximum"]), y_coord,
@@ -6682,11 +6782,11 @@ class DockMateVSApp(tk.Tk):
             canvas.create_text(
                 value_x, y_coord,
                 text=f"{row['median']:.2f} (n={row['n']})", anchor=value_anchor,
-                fill="#333333", font=("TkDefaultFont", 7),
+                fill="#333333", font=ui_font("small"),
             )
         canvas.create_text(
             left + plot_width / 2, height - 4, text=x_label,
-            anchor="s", font=("TkDefaultFont", 8),
+            anchor="s", font=ui_font("body"),
         )
 
     def _draw_xy_line_chart(
@@ -6703,13 +6803,12 @@ class DockMateVSApp(tk.Tk):
     ) -> None:
         """Render a unit-scale screening-performance curve."""
         canvas.delete("all")
-        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 460)
-        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 280)
+        width, height = canvas_size(canvas, (460, 280))
         left, right, top, bottom = 62, 24, 54, 48
         plot_width = max(100, width - left - right)
         plot_height = max(90, height - top - bottom)
         canvas.create_text(
-            14, 12, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold")
+            14, 12, text=title, anchor="nw", font=ui_font("heading")
         )
 
         valid = [
@@ -6742,11 +6841,11 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 x_coord, top + plot_height + 5, text=f"{tick:.1f}",
-                anchor="n", fill="#555555", font=("TkDefaultFont", 7),
+                anchor="n", fill="#555555", font=ui_font("small"),
             )
             canvas.create_text(
                 left - 7, y_coord, text=f"{tick:.1f}", anchor="e",
-                fill="#555555", font=("TkDefaultFont", 7),
+                fill="#555555", font=ui_font("small"),
             )
 
         if reference_diagonal:
@@ -6756,7 +6855,7 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 _x(0.76), _y(0.70), text="random", anchor="nw",
-                fill="#777777", font=("TkDefaultFont", 7),
+                fill="#777777", font=ui_font("small"),
             )
         if horizontal_reference is not None and np.isfinite(horizontal_reference):
             baseline = min(max(float(horizontal_reference), 0.0), 1.0)
@@ -6767,7 +6866,7 @@ class DockMateVSApp(tk.Tk):
             canvas.create_text(
                 _x(1.0) - 3, _y(baseline) - 3,
                 text=f"prevalence {baseline:.3f}", anchor="se",
-                fill="#666666", font=("TkDefaultFont", 7),
+                fill="#666666", font=ui_font("small"),
             )
         for guide in vertical_guides:
             if not np.isfinite(guide) or guide <= 0 or guide >= 1:
@@ -6779,7 +6878,7 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 x_coord + 2, top + 2, text=f"{100 * guide:g}%",
-                anchor="nw", fill="#666666", font=("TkDefaultFont", 7),
+                anchor="nw", fill="#666666", font=ui_font("small"),
             )
 
         coordinates = []
@@ -6802,11 +6901,11 @@ class DockMateVSApp(tk.Tk):
         )
         canvas.create_text(
             left + plot_width / 2, height - 4, text=x_label,
-            anchor="s", font=("TkDefaultFont", 8),
+            anchor="s", font=ui_font("body"),
         )
         canvas.create_text(
             12, top + plot_height / 2, text=y_label, angle=90,
-            anchor="center", font=("TkDefaultFont", 8),
+            anchor="center", font=ui_font("body"),
         )
 
     def _draw_score_distribution_chart(
@@ -6819,13 +6918,12 @@ class DockMateVSApp(tk.Tk):
     ) -> None:
         """Compare active and inactive score distributions on equal class scales."""
         canvas.delete("all")
-        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 460)
-        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 280)
+        width, height = canvas_size(canvas, (460, 280))
         left, right, top, bottom = 62, 24, 62, 48
         plot_width = max(100, width - left - right)
         plot_height = max(90, height - top - bottom)
         canvas.create_text(
-            14, 12, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold")
+            14, 12, text=title, anchor="nw", font=ui_font("heading")
         )
 
         edges = [float(value) for value in histogram.get("edges") or []]
@@ -6856,7 +6954,7 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 left - 7, y_coord, text=f"{tick:.0f}", anchor="e",
-                fill="#555555", font=("TkDefaultFont", 7),
+                fill="#555555", font=ui_font("small"),
             )
         for tick in np.linspace(score_min, score_max, 5):
             x_coord = _x(float(tick))
@@ -6865,7 +6963,7 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 x_coord, top + plot_height + 5, text=f"{tick:.1f}",
-                anchor="n", fill="#555555", font=("TkDefaultFont", 7),
+                anchor="n", fill="#555555", font=ui_font("small"),
             )
 
         colors = (("Actives", "#177E89"), ("Inactives", "#D97732"))
@@ -6876,7 +6974,7 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 legend_x + 14, 42, text=label, anchor="w",
-                font=("TkDefaultFont", 8),
+                font=ui_font("body"),
             )
             legend_x += 82
 
@@ -6907,11 +7005,11 @@ class DockMateVSApp(tk.Tk):
         )
         canvas.create_text(
             left + plot_width / 2, height - 4, text=x_label,
-            anchor="s", font=("TkDefaultFont", 8),
+            anchor="s", font=ui_font("body"),
         )
         canvas.create_text(
             12, top + plot_height / 2, text=y_label, angle=90,
-            anchor="center", font=("TkDefaultFont", 8),
+            anchor="center", font=ui_font("body"),
         )
 
     def _draw_horizontal_chart(
@@ -6924,7 +7022,7 @@ class DockMateVSApp(tk.Tk):
     ) -> None:
         canvas.delete("all")
         width, height, left, right, top, bottom = self._chart_dimensions(canvas)
-        canvas.create_text(14, 14, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold"))
+        canvas.create_text(14, 14, text=title, anchor="nw", font=ui_font("heading"))
         if not data:
             canvas.create_text(left, height // 2, text="No applicable data", anchor="w", fill="#666666")
             return
@@ -6941,13 +7039,13 @@ class DockMateVSApp(tk.Tk):
         for threshold, label in thresholds or []:
             x = left + min(max(float(threshold) / axis_max, 0.0), 1.0) * plot_width
             canvas.create_line(x, top - 7, x, height - bottom, fill="#8B8B83", dash=(4, 3))
-            canvas.create_text(x + 3, top - 9, text=label, anchor="sw", fill="#666666", font=("TkDefaultFont", 8))
+            canvas.create_text(x + 3, top - 9, text=label, anchor="sw", fill="#666666", font=ui_font("body"))
 
         for index, (label, raw_value) in enumerate(data):
             y = top + (index + 0.5) * row_height
             canvas.create_text(
                 left - 8, y, text=self._short_chart_label(label), anchor="e",
-                fill="#252525", font=("TkDefaultFont", 8),
+                fill="#252525", font=ui_font("body"),
             )
             if raw_value is None or not np.isfinite(raw_value):
                 canvas.create_text(left + 4, y, text="N/A", anchor="w", fill="#888888")
@@ -6961,7 +7059,7 @@ class DockMateVSApp(tk.Tk):
             )
             canvas.create_text(
                 min(x1 + 5, width - right + 3), y, text=f"{value:.2f}",
-                anchor="w", fill="#252525", font=("TkDefaultFont", 8),
+                anchor="w", fill="#252525", font=ui_font("body"),
             )
         canvas.create_line(left, height - bottom, width - right, height - bottom, fill="#777777")
 
@@ -6976,7 +7074,7 @@ class DockMateVSApp(tk.Tk):
     ) -> None:
         canvas.delete("all")
         width, height, left, right, top, bottom = self._chart_dimensions(canvas)
-        canvas.create_text(14, 14, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold"))
+        canvas.create_text(14, 14, text=title, anchor="nw", font=ui_font("heading"))
         if not data:
             canvas.create_text(left, height // 2, text="No applicable data", anchor="w", fill="#666666")
             return
@@ -6986,7 +7084,7 @@ class DockMateVSApp(tk.Tk):
         for index, name in enumerate(series_names):
             fill, _ = colors[index % len(colors)]
             canvas.create_rectangle(legend_x, 34, legend_x + 10, 44, fill=fill, outline=fill)
-            canvas.create_text(legend_x + 14, 39, text=name, anchor="w", font=("TkDefaultFont", 8))
+            canvas.create_text(legend_x + 14, 39, text=name, anchor="w", font=ui_font("body"))
             legend_x += max(95, len(name) * 7 + 30)
 
         valid = [
@@ -7004,14 +7102,14 @@ class DockMateVSApp(tk.Tk):
         for threshold, label in thresholds or []:
             x = left + min(max(float(threshold) / axis_max, 0.0), 1.0) * plot_width
             canvas.create_line(x, top - 2, x, height - bottom, fill="#8B8B83", dash=(4, 3))
-            canvas.create_text(x + 3, top, text=label, anchor="nw", fill="#666666", font=("TkDefaultFont", 8))
+            canvas.create_text(x + 3, top, text=label, anchor="nw", fill="#666666", font=ui_font("body"))
 
         series_count = max(len(series_names), 1)
         for row_index, (label, values) in enumerate(data):
             center_y = top + (row_index + 0.5) * group_height
             canvas.create_text(
                 left - 8, center_y, text=self._short_chart_label(label), anchor="e",
-                fill="#252525", font=("TkDefaultFont", 8),
+                fill="#252525", font=ui_font("body"),
             )
             bar_height = max(2.0, min(7.0, group_height * 0.28))
             separation = bar_height * 2 + 2
@@ -7020,7 +7118,7 @@ class DockMateVSApp(tk.Tk):
                 value = values[series_index] if series_index < len(values) else None
                 y = first_y + series_index * separation
                 if value is None or not np.isfinite(value):
-                    canvas.create_text(left + 4, y, text="N/A", anchor="w", fill="#888888", font=("TkDefaultFont", 8))
+                    canvas.create_text(left + 4, y, text="N/A", anchor="w", fill="#888888", font=ui_font("body"))
                     continue
                 numeric = float(value)
                 x1 = left + min(max(numeric / axis_max, 0.0), 1.0) * plot_width
@@ -7047,7 +7145,7 @@ class DockMateVSApp(tk.Tk):
                 )
                 canvas.create_text(
                     min(x1 + 4, width - right + 3), y, text=f"{numeric:.2f}",
-                    anchor="w", fill="#252525", font=("TkDefaultFont", 8),
+                    anchor="w", fill="#252525", font=ui_font("body"),
                 )
         canvas.create_line(left, height - bottom, width - right, height - bottom, fill="#777777")
 
@@ -7056,7 +7154,7 @@ class DockMateVSApp(tk.Tk):
     ) -> None:
         canvas.delete("all")
         width, height, left, right, top, bottom = self._chart_dimensions(canvas)
-        canvas.create_text(14, 14, text=title, anchor="nw", font=("TkDefaultFont", 10, "bold"))
+        canvas.create_text(14, 14, text=title, anchor="nw", font=ui_font("heading"))
         if not data:
             canvas.create_text(left, height // 2, text="No applicable data", anchor="w", fill="#666666")
             return
@@ -7068,14 +7166,14 @@ class DockMateVSApp(tk.Tk):
         center = left + plot_width / 2
         row_height = max(70, height - top - bottom) / max(len(data), 1)
         canvas.create_line(center, top - 8, center, height - bottom, fill="#555555", width=2)
-        canvas.create_text(center - 5, top - 10, text="decoy wins", anchor="se", fill="#9C3D24", font=("TkDefaultFont", 8))
-        canvas.create_text(center + 5, top - 10, text="active wins", anchor="sw", fill="#0E5961", font=("TkDefaultFont", 8))
+        canvas.create_text(center - 5, top - 10, text="decoy wins", anchor="se", fill="#9C3D24", font=ui_font("body"))
+        canvas.create_text(center + 5, top - 10, text="active wins", anchor="sw", fill="#0E5961", font=ui_font("body"))
 
         for index, (label, raw_value) in enumerate(data):
             y = top + (index + 0.5) * row_height
             canvas.create_text(
                 left - 8, y, text=self._short_chart_label(label), anchor="e",
-                fill="#252525", font=("TkDefaultFont", 8),
+                fill="#252525", font=ui_font("body"),
             )
             if raw_value is None or not np.isfinite(raw_value):
                 continue
@@ -7089,13 +7187,12 @@ class DockMateVSApp(tk.Tk):
             offset = 4 if value >= 0 else -4
             canvas.create_text(
                 center + delta + offset, y, text=f"{value:+.2f}", anchor=anchor,
-                fill="#252525", font=("TkDefaultFont", 8),
+                fill="#252525", font=ui_font("body"),
             )
 
     def _draw_bar_chart(self, canvas: tk.Canvas, title: str, data: List[Tuple[str, float]]) -> None:
         canvas.delete("all")
-        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 300)
-        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 200)
+        width, height = canvas_size(canvas)
         margin = 40
 
         canvas.create_text(margin, 10, text=title, anchor="w")
@@ -7119,8 +7216,7 @@ class DockMateVSApp(tk.Tk):
 
     def _draw_histogram(self, canvas: tk.Canvas, title: str, values: List[float]) -> None:
         canvas.delete("all")
-        width = max(int(canvas.winfo_width()), int(canvas.winfo_reqwidth()), 300)
-        height = max(int(canvas.winfo_height()), int(canvas.winfo_reqheight()), 200)
+        width, height = canvas_size(canvas)
         margin = 40
 
         canvas.create_text(margin, 10, text=title, anchor="w")
@@ -7770,10 +7866,9 @@ class DockMateVSApp(tk.Tk):
     def _aggregate_pose_metrics(results: list, threshold: float) -> dict:
         """Aggregate per-case pose metrics into summary-level statistics.
 
-        Only cases carrying a real RMSD contribute: decoys and failed cases
-        have no reference pose, and the 999.9 sentinel would otherwise poison
-        every mean. Returns None for a field when no case supplies it, so the
-        summary still renders N/A rather than a misleading zero.
+        Only measured distances contribute to means. Applicable reference cases
+        with failed RMSD still contribute to the recovery denominator; compounds
+        without a reference are excluded. Optional unrecorded metrics remain N/A.
         """
         def _vals(attr):
             out = []
@@ -7798,9 +7893,16 @@ class DockMateVSApp(tk.Tk):
 
         def _rate(attr):
             vals = _vals(attr)
-            if not vals:
+            applicable = [
+                r for r in results
+                if r.to_record()["rmsd_status"] != "not_applicable"
+                and r.control_label != 0
+            ]
+            if not applicable:
                 return None
-            return 100.0 * sum(1 for v in vals if v < threshold) / len(vals)
+            if not vals and not any(r.to_record()["rmsd_status"] == "not_computable" for r in applicable):
+                return None
+            return 100.0 * sum(1 for v in vals if v < threshold) / len(applicable)
 
         top1 = _vals("top1_rmsd")
         return {
@@ -10297,7 +10399,8 @@ class DockMateVSApp(tk.Tk):
                 "by_engine": {},
             }
         
-        # Convert RedockResult to DataFrame for analyzer
+        # Use the same applicability and missing-value rules as saved results.
+        results = [RedockResult(**r.to_record()) for r in results]
         results_data = []
         for r in results:
             results_data.append({
@@ -10332,6 +10435,7 @@ class DockMateVSApp(tk.Tk):
                 'tpsa': r.tpsa,
                 'rotatable_bonds': r.rotatable_bonds,
                 'site_method': r.site_method,
+                'rmsd_status': r.rmsd_status,
             })
         
         df = pd.DataFrame(results_data)
@@ -10452,7 +10556,7 @@ class DockMateVSApp(tk.Tk):
 
         pose_results_by_target: Dict[str, List[RedockResult]] = {}
         for result in results:
-            if result.control_label == 0 or result.best_rmsd is None or result.best_rmsd >= 900:
+            if result.control_label == 0 or result.rmsd_status == "not_applicable":
                 continue
             target_name = result.target_name or result.pdb_id
             pose_results_by_target.setdefault(target_name, []).append(result)
@@ -10462,9 +10566,9 @@ class DockMateVSApp(tk.Tk):
                 getattr(result, field) for result in target_results
                 if getattr(result, field) is not None and getattr(result, field) < 900
             ]
-            if not values:
+            if not values and not any(r.rmsd_status == "not_computable" for r in target_results):
                 return None
-            return float(100.0 * sum(value < threshold for value in values) / len(values))
+            return float(100.0 * sum(value < threshold for value in values) / len(target_results))
 
         target_pose_rows = []
         for target_name, target_results in sorted(pose_results_by_target.items()):
@@ -10476,8 +10580,8 @@ class DockMateVSApp(tk.Tk):
                 "success_rate_top5": _target_pose_rate(target_results, "top5_rmsd"),
                 "success_rate_top10": _target_pose_rate(target_results, "top10_rmsd"),
                 "mean_best_rmsd": float(np.mean([
-                    result.best_rmsd for result in target_results
-                ])),
+                    result.best_rmsd for result in target_results if result.best_rmsd is not None
+                ])) if any(r.best_rmsd is not None for r in target_results) else None,
                 "mean_top1_rmsd": (
                     float(np.mean([
                         result.top1_rmsd for result in target_results
@@ -10884,7 +10988,7 @@ class DockMateVSApp(tk.Tk):
 
         actives = [
             r for r in results 
-            if r.best_rmsd is not None and r.best_rmsd < 900
+            if r.rmsd_status != "not_applicable" and r.control_label != 0
         ]
         if not actives:
             # Unknown screening compounds have no experimental reference pose.
@@ -10899,9 +11003,10 @@ class DockMateVSApp(tk.Tk):
                 {"count": 0, "success": 0, "mean_rmsd": []}
             )
             stats["count"] += 1
-            if result.best_rmsd < threshold:
+            if result.best_rmsd is not None and result.best_rmsd < threshold:
                 stats["success"] += 1
-            stats["mean_rmsd"].append(result.best_rmsd)
+            if result.best_rmsd is not None:
+                stats["mean_rmsd"].append(result.best_rmsd)
         
         for proto, stats in by_protocol.items():
             rmsds = stats.pop("mean_rmsd")
@@ -10916,9 +11021,10 @@ class DockMateVSApp(tk.Tk):
                 {"count": 0, "success": 0, "mean_rmsd": []}
             )
             stats["count"] += 1
-            if result.best_rmsd < threshold:
+            if result.best_rmsd is not None and result.best_rmsd < threshold:
                 stats["success"] += 1
-            stats["mean_rmsd"].append(result.best_rmsd)
+            if result.best_rmsd is not None:
+                stats["mean_rmsd"].append(result.best_rmsd)
         
         for eng, stats in by_engine.items():
             rmsds = stats.pop("mean_rmsd")

@@ -32,6 +32,11 @@ fields when possible; document any schema change in `CHANGELOG.md`. Consult
 `docs/architecture.md` before changing component boundaries, campaign flow, or
 output contracts.
 
+For another docking program, follow
+[Adding a docking engine](docs/architecture.md#adding-a-docking-engine), including
+adapter and headless campaign tests. Engine integration currently requires
+source changes; there is no configuration-only plugin registration mechanism.
+
 ## Pull-request checklist
 
 - Tests pass locally and new behaviour has coverage.

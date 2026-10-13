@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk
 import time
 from datetime import datetime
+from dockmate_vs.gui.ui_scale import ui_font, widget_scale
 
 
 class ProgressDialog(tk.Toplevel):
@@ -32,15 +33,18 @@ class ProgressDialog(tk.Toplevel):
         super().__init__(parent)
 
         self.title(title)
-        self.geometry("700x500")
+        scale = widget_scale(self)
+        width = min(round(700 * scale), parent.winfo_screenwidth() - 80)
+        height = min(round(500 * scale), parent.winfo_screenheight() - 100)
+        self.geometry(f"{width}x{height}")
         self.transient(parent)
         self.grab_set()  # Modal
 
         # Center on parent
         self.update_idletasks()
-        x = parent.winfo_x() + (parent.winfo_width() // 2) - (700 // 2)
-        y = parent.winfo_y() + (parent.winfo_height() // 2) - (500 // 2)
-        self.geometry(f"700x500+{x}+{y}")
+        x = max(0, parent.winfo_x() + (parent.winfo_width() - width) // 2)
+        y = max(0, parent.winfo_y() + (parent.winfo_height() - height) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
 
         self.total_ligands = total_ligands
         self.operation_name = operation_name
@@ -56,7 +60,9 @@ class ProgressDialog(tk.Toplevel):
         self.status_label = tk.Label(
             self,
             text=initial_status,
-            font=('Arial', 11)
+            font=ui_font("heading"),
+            wraplength=width - 40,
+            justify="left",
         )
         self.status_label.grid(row=0, column=0, pady=(20, 10), padx=20, sticky='w')
 
@@ -75,7 +81,7 @@ class ProgressDialog(tk.Toplevel):
         self.progress_label = tk.Label(
             progress_frame,
             text="0%",
-            font=('Arial', 9),
+            font=ui_font("body"),
             width=10
         )
         self.progress_label.grid(row=0, column=1, padx=(10, 0))
@@ -90,7 +96,7 @@ class ProgressDialog(tk.Toplevel):
             log_frame,
             height=15,
             state='disabled',
-            font=('Courier', 9),
+            font="TkFixedFont",
             wrap='word'
         )
         self.log_text.grid(row=0, column=0, sticky='nsew')
@@ -107,14 +113,14 @@ class ProgressDialog(tk.Toplevel):
         self.elapsed_label = tk.Label(
             time_frame,
             text="Elapsed: 0:00",
-            font=('Arial', 9)
+            font=ui_font("body")
         )
         self.elapsed_label.pack(side='left')
 
         self.remaining_label = tk.Label(
             time_frame,
             text="Remaining: --:--",
-            font=('Arial', 9)
+            font=ui_font("body")
         )
         self.remaining_label.pack(side='right')
 

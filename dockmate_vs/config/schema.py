@@ -106,6 +106,11 @@ class WaterRetentionConfig(BaseModel):
 class LigandPreparationConfig(BaseModel):
     """Configuration for ligand preparation."""
 
+    obabel_timeout_sec: float = Field(
+        default=30.0, gt=0, allow_inf_nan=False,
+        description="Open Babel timeout per attempt; doubled above 40 heavy atoms (seconds)",
+    )
+
     charge_handling: Literal["preserve", "neutralize"] = Field(
         default="preserve",
         description=(
@@ -158,6 +163,11 @@ class LigandPreparationConfig(BaseModel):
 
 class ProteinPreparationConfig(BaseModel):
     """Configuration for protein preparation."""
+
+    obabel_timeout_sec: float = Field(
+        default=30.0, gt=0, allow_inf_nan=False,
+        description="Open Babel receptor-conversion timeout (seconds)",
+    )
 
     add_missing_atoms: bool = Field(
         default=True,

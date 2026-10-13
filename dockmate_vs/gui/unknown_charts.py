@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 
 import numpy as np
 from matplotlib.figure import Figure
+from dockmate_vs.gui.ui_scale import scale_figure, widget_scale
 
 
 COLORS = ("#1876A3", "#C56B23", "#348447", "#C53D4B", "#8660A8", "#428C8C", "#BD599B")
@@ -386,7 +387,9 @@ def populate_unknown_charts(parent, groups):
     viewport.grid(row=1, column=0, sticky="nsew")
     scrollbar = ttk.Scrollbar(parent, orient="vertical", command=viewport.yview)
     scrollbar.grid(row=1, column=1, sticky="ns")
-    viewport.configure(yscrollcommand=scrollbar.set)
+    horizontal = ttk.Scrollbar(parent, orient="horizontal", command=viewport.xview)
+    horizontal.grid(row=2, column=0, sticky="ew")
+    viewport.configure(yscrollcommand=scrollbar.set, xscrollcommand=horizontal.set)
     def method_groups():
         if method_selection is None:
             return groups
@@ -398,13 +401,15 @@ def populate_unknown_charts(parent, groups):
     widget = canvas.get_tk_widget()
     window = viewport.create_window(0, 0, anchor="nw", window=widget)
     toolbar_frame = ttk.Frame(parent)
-    toolbar_frame.grid(row=2, column=0, sticky="ew")
+    toolbar_frame.grid(row=3, column=0, sticky="ew")
     toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
     toolbar.pack(fill="x")
     hover = ScoreHover(canvas, axis, points)
+    scale_figure(figure, widget_scale(parent))
     def resize(_event=None):
-        width = max(viewport.winfo_width(), 400)
-        height = max(viewport.winfo_height(), 140 + 50 * len(visible), 420)
+        scale = widget_scale(parent)
+        width = max(viewport.winfo_width(), round(700 * scale))
+        height = max(viewport.winfo_height(), round((180 + 65 * len(visible)) * scale), round(420 * scale))
         viewport.itemconfigure(window, width=width, height=height)
         viewport.configure(scrollregion=(0, 0, width, height))
 
@@ -422,6 +427,7 @@ def populate_unknown_charts(parent, groups):
         canvas.figure = updated
         updated.set_canvas(canvas)
         hover = ScoreHover(canvas, axis, points)
+        scale_figure(updated, widget_scale(parent))
         toolbar.update()
         viewport.yview_moveto(0)
         resize()
@@ -435,6 +441,7 @@ def populate_unknown_charts(parent, groups):
     if method_selection is not None:
         method_selection.bind("<<ComboboxSelected>>", redraw)
     viewport.bind("<Configure>", resize)
+    parent.bind("<<UIScaleChanged>>", redraw, add="+")
     parent.bind("<Destroy>", destroy, add="+")
     parent.after_idle(resize)
     canvas.draw_idle()

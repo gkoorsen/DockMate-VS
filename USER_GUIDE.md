@@ -166,8 +166,17 @@ Existing installations can be registered with `--vina-bin`, `--smina-bin`,
 `--rdock-root`, `--pymol-bin`, and `--ligplus-root`. The installer writes conda
 activation hooks rather than editing `.zshrc`, `.bashrc`, or other shell startup
 files. Reactivate the environment after registering tools as described above.
-The installer supports macOS and Linux; Windows users should use Docker, WSL,
-or the linked manual installation instructions.
+Linux and macOS are supported directly. CI runs on Linux with Python 3.9, 3.11,
+and 3.12; the documented examples were executed on macOS 26.5.2 (Apple M1 Pro).
+Windows is not officially supported. Docker (`linux/amd64`) and WSL are
+community-supported routes on Windows. The platform-dependent components are
+the external docking and visualization executables, rather than the Python
+workflow alone.
+
+Use **View > UI scale** to select 100%, 125%, or 150%. The preference is saved in
+`~/.dockmate-vs/preferences.json` and applies to fonts, table rows, progress
+dialogs, and charts. Enlarging a window gives plots more space; the scale menu
+controls text size. Scrollbars keep larger layouts accessible on small screens.
 
 DockMate-VS discovers `vina`, `smina`, and `rbdock` from the active executable
 `PATH`. The GUI can override Vina/Smina executable paths and the rDock root
@@ -291,8 +300,16 @@ scale.
 | `Target_Ligand` | Human-readable compound or case name |
 | `PDB_ID` | Four-character PDB identifier |
 | `Ligand` | Co-crystal/site ligand residue name |
-| `Chain` | Ligand/receptor chain where needed |
+| `Chain` | Chain containing the desired copy of the co-crystal ligand |
 | `Notes` | Free-text provenance notes |
+
+`Chain` selects the **ligand copy**, not just a protein chain. Check the PDB
+HETATM records: a protein in chain A may have its ligand in chain B or H, and a
+structure may contain several copies. When Chain is omitted, DockMate-VS detects
+a matching chain; when a residue occurs several times within that chain, it
+uses the first matching residue in the first model. Select the intended chain
+explicitly for reproducible pose recovery. A failed selection reports the
+available chains for `Ligand` and the HETATM residues in the requested chain.
 
 ### Matched-control rows
 
@@ -457,6 +474,23 @@ toolchain or policy.
 
 ### Preparation records
 
+The **Open Babel timeout (s)** field controls receptor conversion and each
+ligand charge-model conversion attempt. The default is 30 seconds; ligands
+with more than 40 heavy atoms receive twice this limit, preserving the previous
+60-second default. Increase it when an external binary starts slowly. Headless
+campaigns use `single.obabel_timeout_sec` (or `adaptive.obabel_timeout_sec` for
+the Python adaptive workflow), and both preparation configuration classes expose
+`obabel_timeout_sec`. The docking-engine timeout is a separate setting.
+
+```yaml
+single:
+  obabel_timeout_sec: 120
+```
+
+The value must be positive and finite. Errors report the tool, elapsed seconds,
+and configured timeout. Successful ligand caches remain reusable when this
+execution limit changes; existing completed-case resume rules still apply.
+
 Useful case-level files include:
 
 | Path | Meaning |
@@ -465,13 +499,19 @@ Useful case-level files include:
 | `receptor_prepared.pdb` | PDB representation used by viewers and other engines |
 | `crystal_ligand.pdb` | Extracted site ligand and RMSD reference when applicable |
 | `ligand_variants/*.pdbqt` | Prepared tautomer/conformer candidates |
+| `ligand_variants/*.sdf` | Prepared ligand topology and pre-docking coordinates |
 | `variants/<variant>/docked.pdbqt` | Engine poses for a docked variant |
+| `variants/<variant>/docked.sd` | rDock poses with molecule records and score properties |
 | `run_manifest.json` | Frozen settings, versions, paths, and case identities |
 | `prepared_receptors/<cache-version>/...` | Shared receptor preparation and its input/tool signature |
 
 Always inspect representative prepared receptors and ligands before a large
 campaign. A completed conversion proves file compatibility, not chemical
 correctness.
+
+See [Outputs and MD handoff](docs/md_handoff.md) for score-table schemas,
+selected-pose SDF/PDB files, conversion examples, and the additional preparation
+required by GROMACS, NAMD, AMBER, BFEE2, and BAT.py.
 
 ## 6. Protocol Development
 
@@ -500,6 +540,16 @@ compounds and document any externally curated charge-state policy used to create
 the input library.
 
 ### Interpret pose recovery
+
+Exported RMSD distances use JSON `null` or an empty CSV cell when unavailable.
+`rmsd_status` is `ok`, `not_computable` (an applicable reference comparison
+failed), or `not_applicable` (for example an unknown compound without a native
+pose). A non-computable result includes a reason in `error_message`. Docking
+completion is recorded separately: a pose may have a score even when its RMSD
+cannot be calculated. Readers continue to recognize historical `999.9` values.
+Applicable failures count against recovery success; only finite measured
+distances contribute to RMSD means and medians. Unknown compounds are excluded
+from the recovery denominator.
 
 - **Best RMSD:** lowest RMSD generated anywhere in the saved poses.
 - **Top-1 RMSD:** RMSD of the top-ranked pose.

@@ -14,6 +14,7 @@ import copy
 import shutil
 import logging
 import inspect
+import time
 
 import numpy as np
 from loguru import logger
@@ -860,6 +861,7 @@ class ProteinPreparation:
 
         logger.debug(f"Saved clean structure to: {temp_pdb}")
 
+        conversion_started = time.monotonic()
         try:
             # Use Open Babel for PDBQT conversion (more forgiving than Meeko)
             # The -xr flag preserves charges and makes it rigid
@@ -871,13 +873,13 @@ class ProteinPreparation:
                     '-xr'  # Make receptor rigid (required for docking)
                 ],
                 capture_output=True,
-                timeout=30,
+                timeout=self.config.obabel_timeout_sec,
                 text=True
             )
 
             # Check if conversion succeeded
             if result.returncode != 0:
-                error_msg = f"Open Babel conversion failed: {result.stderr}"
+                error_msg = f"Open Babel (obabel) failed after {time.monotonic() - conversion_started:.1f}s: {result.stderr}"
                 raise ProteinPreparationError(error_msg)
 
             if not Path(output_path).exists():
@@ -895,10 +897,15 @@ class ProteinPreparation:
 
             return output_path
 
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             logger.error("PDBQT conversion timed out")
             Path(temp_pdb).unlink()
-            raise ProteinPreparationError("PDBQT conversion timed out after 30 seconds")
+            raise ProteinPreparationError(
+                f"Open Babel (obabel) receptor conversion timed out after "
+                f"{time.monotonic() - conversion_started:.1f}s "
+                f"(limit {self.config.obabel_timeout_sec:g}s). "
+                "Increase obabel_timeout_sec for slow tool startup."
+            ) from exc
         except Exception as e:
             logger.error(f"PDBQT conversion failed: {e}")
             if Path(temp_pdb).exists():
