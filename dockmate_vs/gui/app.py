@@ -39,7 +39,9 @@ from Bio import PDB
 
 from dockmate_vs.adaptive_docking import AdaptiveDockingPipeline
 from dockmate_vs.binding_site.cocrystal import BindingSite, BindingSiteDefinition
-from dockmate_vs.docking.smina import SminaDockingEngine
+from dockmate_vs.docking.registry import (
+    capabilities_for, create_engine, get_engine, registered_engines, validate_engine_options,
+)
 from dockmate_vs.gui.utils import download_pdb_structure
 from dockmate_vs.gui.assay_charts import docking_diagnostics, populate_assay_charts
 from dockmate_vs.gui.folder_picker import choose_directory
@@ -234,6 +236,7 @@ class DockMateVSApp(tk.Tk):
         self.rescore_scoring_var = tk.StringVar(value="vina")
 
         self.engine_var = tk.StringVar(value="vina")
+        self.engine_options_var = tk.StringVar(value="{}")
         self.box_margin_var = tk.StringVar(value="4.0")
         self.apo_site_mode_var = tk.StringVar(value="auto")
         self.site_definition_mode_var = tk.StringVar(value="auto")
@@ -273,9 +276,8 @@ class DockMateVSApp(tk.Tk):
         self.protocol_exhaustiveness_var = tk.StringVar(value="8, 16, 32")
         self.protocol_seeds_var = tk.StringVar(value="42")
         self.protocol_engine_vars = {
-            "smina": tk.BooleanVar(value=True),
-            "vina": tk.BooleanVar(value=False),
-            "rdock": tk.BooleanVar(value=False),
+            name: tk.BooleanVar(value=index == 0)
+            for index, name in enumerate(registered_engines())
         }
         self.protocol_box_definitions_var = tk.StringVar(value="margin:4.0")
         self.protocol_rescore_methods_var = tk.StringVar(value="none")
@@ -594,9 +596,10 @@ class DockMateVSApp(tk.Tk):
         tk.Label(self.protocol_tab, text="Docking engines:").grid(
             row=3, column=0, sticky="w", pady=(8, 0)
         )
-        for column, engine in enumerate(("smina", "vina", "rdock"), start=1):
+        for column, engine in enumerate(registered_engines(), start=1):
             widget = tk.Checkbutton(
-                self.protocol_tab, text=engine, variable=self.protocol_engine_vars[engine]
+                self.protocol_tab, text=engine, variable=self.protocol_engine_vars[engine],
+                command=self._update_engine,
             )
             widget.grid(row=3, column=column, sticky="w", padx=(5, 10), pady=(8, 0))
             self._register_busy_widget(widget)
@@ -792,7 +795,7 @@ class DockMateVSApp(tk.Tk):
         engine_menu = ttk.Combobox(
             self.single_frame,
             textvariable=self.engine_var,
-            values=["smina", "vina", "rdock"],
+            values=registered_engines(),
             state="readonly",
             width=12
         )
@@ -867,7 +870,7 @@ class DockMateVSApp(tk.Tk):
         timeout_entry.grid(row=5, column=3, sticky="w")
         self._register_busy_widget(timeout_entry)
 
-        tk.Label(self.single_frame, text="Scoring (smina only):").grid(row=6, column=0, sticky="w", pady=(5, 0))
+        tk.Label(self.single_frame, text="Docking scoring:").grid(row=6, column=0, sticky="w", pady=(5, 0))
         scoring_menu = ttk.Combobox(
             self.single_frame,
             textvariable=self.scoring_var,
@@ -876,6 +879,8 @@ class DockMateVSApp(tk.Tk):
             width=12
         )
         scoring_menu.grid(row=6, column=1, sticky="w")
+        self._scoring_menu = scoring_menu
+        self._exhaustiveness_entry = exhaust_entry
         self._register_busy_widget(scoring_menu)
 
         rescore_enable_label = tk.Label(self.single_frame, text="Rescore (smina --score_only):")
@@ -886,6 +891,7 @@ class DockMateVSApp(tk.Tk):
             variable=self.enable_rescore_var
         )
         rescore_chk.grid(row=6, column=3, sticky="w")
+        self._rescore_checkbox = rescore_chk
         self._register_busy_widget(rescore_chk)
 
         rescore_method_label = tk.Label(self.single_frame, text="Rescore scoring:")
@@ -898,6 +904,7 @@ class DockMateVSApp(tk.Tk):
             width=12
         )
         rescore_menu.grid(row=7, column=1, sticky="w", padx=5, pady=(5, 0))
+        self._rescore_menu = rescore_menu
         self._register_busy_widget(rescore_menu)
         self._protocol_swept_widgets.extend([
             rescore_enable_label, rescore_chk, rescore_method_label, rescore_menu,
@@ -965,6 +972,11 @@ class DockMateVSApp(tk.Tk):
         site_residues_entry = tk.Entry(self.single_frame, textvariable=self.site_residues_var)
         site_residues_entry.grid(row=12, column=1, columnspan=3, sticky="ew", pady=(5, 0))
         self._register_busy_widget(site_residues_entry)
+
+        tk.Label(self.single_frame, text="Engine options (JSON):").grid(row=13, column=0, sticky="w", pady=(5, 0))
+        engine_options_entry = tk.Entry(self.single_frame, textvariable=self.engine_options_var)
+        engine_options_entry.grid(row=13, column=1, columnspan=3, sticky="ew", pady=(5, 0))
+        self._register_busy_widget(engine_options_entry)
 
         settings_row += 1
         button_frame = tk.Frame(self.run_configuration_frame)
@@ -1258,6 +1270,7 @@ class DockMateVSApp(tk.Tk):
             self.single_frame.configure(text="Base docking protocol (shared by all sweep conditions)")
         else:
             self.single_frame.configure(text="Docking protocol (single protocol / screening)")
+        self._update_engine()
         if self._run_button:
             labels = {
                 "adaptive": "Run Redock",
@@ -1268,14 +1281,28 @@ class DockMateVSApp(tk.Tk):
             self._run_button.configure(text=labels.get(mode, "Run Analysis"))
 
     def _update_engine(self) -> None:
-        engine = self.engine_var.get()
-        if engine == "rdock":
+        mode = self.__dict__.get("mode_var")
+        engines = ([name for name, variable in self.protocol_engine_vars.items() if variable.get()]
+                   if mode is not None and mode.get() == "protocol_development"
+                   else [self.engine_var.get()])
+        capabilities = [get_engine(engine).capabilities for engine in engines]
+        scoring_functions = tuple(dict.fromkeys(function for capability in capabilities
+                                               for function in capability.scoring_functions))
+        if any(capability.requires_cavity_preparation for capability in capabilities):
             self.rdock_single_frame.grid()
         else:
             self.rdock_single_frame.grid_remove()
 
-        if engine == "vina":
-            self.scoring_var.set("vina")
+        if scoring_functions and self.scoring_var.get() not in scoring_functions:
+            self.scoring_var.set(scoring_functions[0])
+        self._scoring_menu.configure(values=scoring_functions,
+                                     state="readonly" if len(scoring_functions) > 1 else "disabled")
+        self._exhaustiveness_entry.configure(state="normal" if any(c.supports_exhaustiveness for c in capabilities) else "disabled")
+        rescore_supported = bool(capabilities) and all(c.supports_score_only_rescoring for c in capabilities)
+        self._rescore_checkbox.configure(state="normal" if rescore_supported else "disabled")
+        self._rescore_menu.configure(state="readonly" if rescore_supported else "disabled")
+        if not rescore_supported:
+            self.enable_rescore_var.set(False)
 
     def _update_execution_backend(self) -> None:
         if not hasattr(self, "docker_backend_options"):
@@ -1836,10 +1863,13 @@ class DockMateVSApp(tk.Tk):
         conditions = []
         for pair in actives:
             for engine in sweep["engines"]:
+                capability = get_engine(engine).capabilities
+                if not capability.supports_score_only_rescoring and any(method != "none" for method in sweep["rescore_methods"]):
+                    raise ValueError(f"Engine {engine} does not support score-only rescoring")
                 # Exhaustiveness is a Vina/Smina parameter. rDock sampling is
                 # controlled independently by rdock_runs, so sweep it once.
                 exhaustiveness_values = (
-                    [None] if engine == "rdock" else sweep["exhaustiveness"]
+                    [None] if not capabilities_for(engine).supports_exhaustiveness else sweep["exhaustiveness"]
                 )
                 for box in sweep["box_definitions"]:
                     for water in sweep["water_modes"]:
@@ -1891,9 +1921,10 @@ class DockMateVSApp(tk.Tk):
             "input_file": str(Path(config["input_file"]).expanduser().resolve()),
             "threshold": config.get("threshold"),
             "active_cases": active_cases,
-            "single": {
-                key: single.get(key) for key in invariant_single_keys
-            },
+            "single": dict(
+                {key: single.get(key) for key in invariant_single_keys},
+                **({"engine_options": single["engine_options"]} if single.get("engine_options") else {}),
+            ),
         })
 
     @classmethod
@@ -1997,7 +2028,7 @@ class DockMateVSApp(tk.Tk):
                 exhaustiveness = int(float(raw_exhaustiveness))
             except (TypeError, ValueError):
                 exhaustiveness = -1
-            if engine == "rdock":
+            if not capabilities_for(engine).supports_exhaustiveness:
                 exhaustiveness = -1
             return (
                 str(row.get("pdb_id", "")), str(row.get("ligand_resname", row.get("site_ligand", ""))),
@@ -2014,7 +2045,7 @@ class DockMateVSApp(tk.Tk):
             rescore_method = identity[4]
             cavity_version = row.get("rdock_cavity_version")
             if not cavity_version:
-                cavity_version = "legacy" if engine == "rdock" else "not_applicable"
+                cavity_version = "legacy" if capabilities_for(engine).requires_cavity_preparation else "not_applicable"
             pose_version = row.get("rescore_pose_version")
             if not pose_version:
                 pose_version = "legacy"
@@ -2029,8 +2060,8 @@ class DockMateVSApp(tk.Tk):
         for pair in actives:
             has_pending_condition = any(
                 (pair["pdb_id"], pair["site_ligand"], engine, box["label"], rescore_method,
-                 water, -1 if engine == "rdock" else exhaustiveness, seed,
-                 "crystal_or_center_v2" if engine == "rdock" else "not_applicable",
+                 water, -1 if not capabilities_for(engine).supports_exhaustiveness else exhaustiveness, seed,
+                 capabilities_for(engine).site_definition_label,
                  "all_poses_v2" if rescore_method != "none" else "baseline_v2")
                 not in completed
                 for candidate_pair, engine, box, rescore_method, water, exhaustiveness, seed
@@ -2061,15 +2092,15 @@ class DockMateVSApp(tk.Tk):
             site_ligand = pair["site_ligand"]
             key = (
                 pdb_id, site_ligand, engine_name, box["label"], rescore_method,
-                water, -1 if engine_name == "rdock" else exhaustiveness, seed,
-                "crystal_or_center_v2" if engine_name == "rdock" else "not_applicable",
+                water, -1 if not capabilities_for(engine_name).supports_exhaustiveness else exhaustiveness, seed,
+                capabilities_for(engine_name).site_definition_label,
                 "all_poses_v2" if rescore_method != "none" else "baseline_v2",
             )
             label = (
                 f"{pdb_id} {site_ligand}: {engine_name}, {box['label']}, "
                 f"rescore={rescore_method}, "
                 f"{water}, "
-                f"{'rDock runs=' + str(config['single'].get('rdock_runs', 20)) if engine_name == 'rdock' else 'e' + str(exhaustiveness)}, "
+                f"{'rDock runs=' + str(config['single'].get('rdock_runs', 20)) if capabilities_for(engine_name).requires_cavity_preparation else 'e' + str(exhaustiveness)}, "
                 f"seed {seed}"
             )
             self._queue.put(("progress", index - 1, len(conditions), label))
@@ -2083,7 +2114,7 @@ class DockMateVSApp(tk.Tk):
                 "engine": engine_name, "box_definition": box["label"],
                 "rescore_method": rescore_method,
                 "rdock_cavity_version": (
-                    "crystal_or_center_v2" if engine_name == "rdock" else "not_applicable"
+                    capabilities_for(engine_name).site_definition_label
                 ),
                 "rescore_pose_version": (
                     "all_poses_v2" if rescore_method != "none" else "baseline_v2"
@@ -2119,6 +2150,7 @@ class DockMateVSApp(tk.Tk):
                     "size_override": box["size_override"],
                     "water_handling": water,
                     "seed": seed,
+                    "rdock_seed": seed,
                     "variant_select_by": "rmsd",
                 })
                 if exhaustiveness is not None:
@@ -2126,11 +2158,11 @@ class DockMateVSApp(tk.Tk):
                 case_id = self._safe_case_id(
                     f"{pdb_id}_{site_ligand}_{engine_name}_{box['label']}_"
                     f"{water}_"
-                    f"{'runs' + str(single_cfg.get('rdock_runs', 20)) if engine_name == 'rdock' else 'e' + str(exhaustiveness)}_s{seed}"
+                    f"{'runs' + str(single_cfg.get('rdock_runs', 20)) if capabilities_for(engine_name).requires_cavity_preparation else 'e' + str(exhaustiveness)}_s{seed}"
                 )
                 docking_key = (
                     pdb_id, site_ligand, engine_name, box["label"], water,
-                    -1 if engine_name == "rdock" else exhaustiveness, seed,
+                    -1 if not capabilities_for(engine_name).supports_exhaustiveness else exhaustiveness, seed,
                 )
                 if docking_key in docking_cache:
                     result = copy.deepcopy(docking_cache[docking_key])
@@ -2158,6 +2190,7 @@ class DockMateVSApp(tk.Tk):
                     )
                     docking_cache[docking_key] = copy.deepcopy(result)
                 result.target_name = pair.get("target_name")
+                result.case_id = case_id
                 row.update(asdict(result))
                 if rescore_method != "none":
                     if not rescore_binary:
@@ -2462,7 +2495,7 @@ class DockMateVSApp(tk.Tk):
             # Older runs expanded rDock once for every Vina exhaustiveness
             # value even though rDock ignores that parameter. Normalize and
             # collapse those legacy duplicates before calculating statistics.
-            complete.loc[complete["engine"] == "rdock", "exhaustiveness"] = np.nan
+            complete.loc[~complete["engine"].map(lambda name: capabilities_for(name).supports_exhaustiveness), "exhaustiveness"] = np.nan
             legacy_identity = [
                 column for column in (
                     "pdb_id", "ligand_resname", "ligand_chain", "target_name", "engine",
@@ -2908,7 +2941,11 @@ class DockMateVSApp(tk.Tk):
         rdock_runs = None
         rdock_seed = None
         rdock_radius = None
-        if engine == "rdock":
+        selected_engines = (
+            [name for name, variable in self.protocol_engine_vars.items() if variable.get()]
+            if self.mode_var.get() == "protocol_development" else [engine]
+        )
+        if any(capabilities_for(name).requires_cavity_preparation for name in selected_engines):
             logger.info(
                 "Collecting rDock config | root={} runs={} seed={} radius={}",
                 self.rdock_root_var.get(),
@@ -2930,8 +2967,16 @@ class DockMateVSApp(tk.Tk):
         obabel_timeout = self._collect_obabel_timeout()
         if obabel_timeout is None:
             return None
+        try:
+            variable = self.__dict__.get("engine_options_var")
+            engine_options = json.loads(variable.get() or "{}") if variable is not None else {}
+            validate_engine_options(engine_options)
+        except (ValueError, TypeError) as exc:
+            messagebox.showerror("Engine options", str(exc))
+            return None
         return {
             "engine": engine,
+            **({"engine_options": engine_options} if engine_options else {}),
             "obabel_timeout_sec": obabel_timeout,
             "box_margin": box_margin,
             "apo_site_mode": self.apo_site_mode_var.get(),
@@ -3365,7 +3410,7 @@ class DockMateVSApp(tk.Tk):
             # here means this IS the structure's own crystal ligand.
             has_reference_pose=True,
         )
-        engine = "rdock" if best_result.output_file.suffix in (".sd", ".sdf") else "smina"
+        engine = best_result.engine or "unknown"
         protocol_attempts = [
             {
                 "protocol": attempt.protocol_name,
@@ -3676,45 +3721,19 @@ class DockMateVSApp(tk.Tk):
             output_file = None
             docking_result = None
 
-            if engine_name in ("smina", "vina"):
-                binary = single_cfg["smina_binary"] if engine_name == "smina" else single_cfg["vina_binary"]
-                scoring = single_cfg["scoring"] if engine_name == "smina" else "vina"
-
-                engine = SminaDockingEngine(
-                    smina_binary=binary,
-                    scoring_function=scoring,
-                    exhaustiveness=single_cfg["exhaustiveness"],
-                    num_modes=single_cfg["num_modes"],
-                    energy_range=single_cfg["energy_range"],
-                    cpu=single_cfg["cpu"],
-                    seed=single_cfg["seed"],
-                    timeout_sec=single_cfg["timeout"]
-                )
-                output_path = variant_dir / "docked.pdbqt"
-                docking_result = engine.dock(
-                    receptor_path=str(receptor_pdbqt),
-                    ligand_path=str(ligand_pdbqt),
-                    center=binding_site.center,
-                    size=binding_site.size,
-                    output_path=str(output_path)
-                )
-                if docking_result.success:
-                    output_file = Path(output_path)
-            else:
-                docking_result = pipeline._dock_with_rdock(
-                    receptor_pdb=pdb_file,
-                    ligand_smiles=variant_smiles,
-                    ligand_name=variant_label,
-                    binding_site=binding_site,
-                    output_dir=variant_dir,
-                    prepared_receptor_pdb=receptor_pdb,
-                    reference_ligand_pdb=crystal_ligand_pdb,
-                    radius_override=single_cfg["rdock_radius"],
-                    runs=single_cfg["rdock_runs"],
-                    seed=single_cfg["rdock_seed"]
-                )
-                if docking_result.get("success"):
-                    output_file = Path(docking_result["output_file"])
+            capability = get_engine(engine_name).capabilities
+            engine = create_engine(engine_name, single_cfg)
+            output_path = variant_dir / ("docked" + capability.output_suffix)
+            receptor_input = receptor_pdb if capability.receptor_format == "pdb" else receptor_pdbqt
+            ligand_input = Path(ligand_pdbqt).with_suffix(".sdf") if capability.ligand_format == "sdf" else ligand_pdbqt
+            docking_result = engine.dock(
+                receptor_path=str(receptor_input), ligand_path=str(ligand_input),
+                center=binding_site.center, size=binding_site.size, output_path=str(output_path),
+                ligand_smiles=variant_smiles, ligand_name=variant_label,
+                prepared_receptor_pdb=receptor_pdb, reference_ligand_pdb=crystal_ligand_pdb,
+            )
+            if docking_result.success:
+                output_file = output_path
 
             metrics = {}
             rmsd = 999.9
@@ -3731,11 +3750,8 @@ class DockMateVSApp(tk.Tk):
                 )
                 rmsd = metrics.get("best_rmsd", 999.9) if metrics else 999.9
                 best_score = metrics.get("best_score")
-            if best_score is None:
-                if engine_name in ("smina", "vina") and docking_result:
-                    best_score = docking_result.poses[0].score if docking_result.poses else None
-                elif docking_result:
-                    best_score = docking_result.get("score")
+            if best_score is None and docking_result:
+                best_score = docking_result.best_score
 
             variant_results.append({
                 "label": variant_label,
@@ -3965,22 +3981,13 @@ class DockMateVSApp(tk.Tk):
             output = cls._command_version(command)
             return "\n".join(output.splitlines()[:5]) if output else None
 
-        for name, key in (("vina", "vina_binary"), ("smina", "smina_binary")):
-            raw_path = single.get(key)
-            if not raw_path:
-                continue
-            binary_path = str(Path(raw_path).expanduser())
-            binaries[name] = {
-                "path": binary_path,
-                "version": short_version([binary_path, "--version"]),
-            }
-        rdock_root = single.get("rdock_root")
-        if rdock_root:
-            rdock_binary = Path(rdock_root).expanduser() / "bin/rbdock"
-            if rdock_binary.exists():
-                binaries["rdock"] = {
-                    "path": str(rdock_binary),
-                    "version": short_version([str(rdock_binary), "-h"]),
+        for name in registered_engines():
+            registration = get_engine(name)
+            for binary, path in registration.binary_paths(single).items():
+                binaries[binary] = {
+                    "engine": name,
+                    "path": path,
+                    "version": short_version([path, *registration.version_args]),
                 }
 
         return {
@@ -5058,7 +5065,7 @@ class DockMateVSApp(tk.Tk):
         # Legacy rDock sweeps duplicated identical conditions for every Vina
         # exhaustiveness level, even though rDock does not use exhaustiveness.
         working.loc[
-            working["engine"].astype(str).str.lower().eq("rdock"),
+            ~working["engine"].map(lambda name: capabilities_for(name).supports_exhaustiveness),
             "exhaustiveness",
         ] = "N/A"
         identity_columns = [
@@ -5423,7 +5430,7 @@ class DockMateVSApp(tk.Tk):
         # Older runs repeated identical rDock work for each Vina
         # exhaustiveness value even though rDock does not use that parameter.
         working.loc[
-            working["engine"].astype(str).str.lower() == "rdock", "exhaustiveness"
+            ~working["engine"].map(lambda name: capabilities_for(name).supports_exhaustiveness), "exhaustiveness"
         ] = "N/A"
         identity_columns = [
             column for column in (
@@ -5434,7 +5441,7 @@ class DockMateVSApp(tk.Tk):
             if column in working.columns
         ]
         if identity_columns:
-            rdock_mask = working["engine"].astype(str).str.lower() == "rdock"
+            rdock_mask = ~working["engine"].map(lambda name: capabilities_for(name).supports_exhaustiveness)
             working = pd.concat(
                 [
                     working[~rdock_mask],
@@ -5586,7 +5593,7 @@ class DockMateVSApp(tk.Tk):
 
         factor_effects = []
         preferred_order = {
-            "Engine": {"smina": 0, "vina": 1, "rdock": 2},
+            "Engine": {name: index for index, name in enumerate(registered_engines())},
             "Water": {"remove all": 0, "selective": 1, "retain all": 2},
             "Ranking": {"docking": 0, "rescored": 1},
         }
@@ -6398,11 +6405,7 @@ class DockMateVSApp(tk.Tk):
 
     @staticmethod
     def _protocol_engine_color(engine: str) -> str:
-        return {
-            "smina": "#177E89",
-            "vina": "#D97732",
-            "rdock": "#5B8E3E",
-        }.get(str(engine).lower(), "#60758A")
+        return capabilities_for(engine).color
 
     @staticmethod
     def _draw_chart_tooltip(

@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 import numpy as np
 from matplotlib.figure import Figure
 from dockmate_vs.gui.ui_scale import scale_figure, widget_scale
+from dockmate_vs.docking.registry import docking_score_label
 
 
 COLORS = ("#1876A3", "#C56B23", "#348447", "#C53D4B", "#8660A8", "#428C8C", "#BD599B")
@@ -28,12 +29,7 @@ def _method_label(value) -> str:
 
 def _docking_method(record, docking_scoring) -> str:
     engine = str(record.get("engine") or "").strip().lower()
-    if engine == "vina":
-        return "Vina (docking)"
-    if engine == "smina":
-        method = _method_label(docking_scoring)
-        return f"{method} (docking)" if method else "Smina docking (method unknown)"
-    return f"{engine.capitalize()} (docking)" if engine else "Docking (method unknown)"
+    return docking_score_label(engine, _method_label(docking_scoring)) if engine else "Docking (method unknown)"
 
 
 def unknown_docking_data(records, docking_scoring=None) -> list:

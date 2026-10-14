@@ -23,6 +23,7 @@ from loguru import logger
 from dockmate_vs.gui.app import DockMateVSApp, RedockResult
 from dockmate_vs.adaptive_docking import AdaptiveDockingPipeline
 from dockmate_vs.config.schema import LigandPreparationConfig
+from dockmate_vs.docking.registry import get_engine, registered_engines, validate_engine_options
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -172,8 +173,11 @@ def load_campaign_config(path: Path, mode: str) -> dict:
     AdaptiveDockingPipeline.validate_variant_mode(single["ligand_variant_mode"])
     if single.get("charge_handling") not in {"preserve", "neutralize"}:
         raise ValueError("single.charge_handling must be preserve or neutralize")
-    if single.get("engine") not in {"vina", "smina", "rdock"}:
-        raise ValueError("single.engine must be vina, smina, or rdock")
+    get_engine(single.get("engine"))
+    validate_engine_options(single.get("engine_options"))
+    if (mode == "screen" and config["rescore"].get("enable")
+            and not get_engine(single["engine"]).capabilities.supports_score_only_rescoring):
+        raise ValueError(f"Engine {single['engine']} does not support workflow rescoring")
     if single.get("water_handling") not in {"remove_all", "retain_all", "selective"}:
         raise ValueError(
             "single.water_handling must be remove_all, retain_all, or selective"
@@ -230,7 +234,7 @@ def load_campaign_config(path: Path, mode: str) -> dict:
     sweep["seeds"] = [int(item) for item in sweep["seeds"]]
     if any(item <= 0 for item in sweep["exhaustiveness"]):
         raise ValueError("protocol_sweep.exhaustiveness values must be greater than zero")
-    unsupported_engines = set(sweep["engines"]) - {"vina", "smina", "rdock"}
+    unsupported_engines = set(sweep["engines"]) - set(registered_engines())
     if unsupported_engines:
         raise ValueError(
             "Unsupported protocol engine(s): " + ", ".join(sorted(unsupported_engines))
@@ -429,15 +433,26 @@ def doctor(strict: bool = False) -> int:
             print(f"  MISSING {package}")
             missing_required.append(package)
 
-    print("Docking tools:")
-    required_tools = ("vina", "smina", "obabel")
-    optional_tools = ("rbdock", "rbcavity", "fpocket")
     missing_tools = []
-    for name in required_tools + optional_tools:
+    print("Registered docking engines:")
+    for name in registered_engines():
+        registration = get_engine(name)
+        print(f"  {name}:")
+        paths = registration.binary_paths({"rdock_root": os.environ.get("RBT_ROOT")})
+        if not paths:
+            print("    No external binaries declared")
+        for binary, path in paths.items():
+            location = shutil.which(path)
+            status = "OK" if location else ("MISSING" if registration.required_by_doctor else "OPTIONAL")
+            print(f"    {status:<9}{binary}: {location or 'not found'}")
+            if not location and registration.required_by_doctor:
+                missing_tools.append(binary)
+    print("Preparation and site tools:")
+    for name in ("obabel", "fpocket"):
         location = shutil.which(name)
-        status = "OK" if location else ("OPTIONAL" if name in optional_tools else "MISSING")
+        status = "OK" if location else ("MISSING" if name == "obabel" else "OPTIONAL")
         print(f"  {status:<9}{name}: {location or 'not found'}")
-        if not location and name in required_tools:
+        if not location and name == "obabel":
             missing_tools.append(name)
 
     print("Host visualization integrations (not included in the core container):")

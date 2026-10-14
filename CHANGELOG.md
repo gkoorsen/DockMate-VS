@@ -5,6 +5,22 @@ uses semantic versioning after the initial public release.
 
 ## [Unreleased]
 
+### Added
+
+- Explicit docking-engine registry shared by GUI/headless campaigns, adaptive
+  dispatch, diagnostics and provenance, with documented capabilities and custom
+  engine options. Built-in Smina, Vina and rDock adapters retain legacy settings.
+- `dockmate-vs export` for selected saved poses as SDF or receptor-ligand PDB,
+  with verified prepared topology, source metadata and an accompanying ligand
+  SDF for complex exports. No MD parameterization or system setup is performed.
+- Headless extension-campaign, adapter, resume and pose-export round-trip tests.
+
+### Fixed
+
+- rDock protocol sweeps now pass each condition's seed to the adapter. The
+  rDock condition-version marker changes so previously cached conditions using
+  a fixed seed are not silently reused.
+
 ## [0.1.2] - 2026-10-13
 
 ### Added

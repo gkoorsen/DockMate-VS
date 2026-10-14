@@ -34,9 +34,10 @@ else:
 # Enums for configuration options
 
 class DockingEngine(str, Enum):
-    """Available docking engines."""
+    """Compatibility constants; runtime engines are defined in the registry."""
     SMINA = "smina"
     VINA = "vina"
+    RDOCK = "rdock"
 
 
 class FlexibilityMode(str, Enum):
@@ -308,8 +309,8 @@ class EnsembleConfig(BaseModel):
 class DockingConfig(BaseModel):
     """Configuration for docking execution."""
 
-    engine: DockingEngine = Field(
-        default=DockingEngine.SMINA,
+    engine: str = Field(
+        default="smina",
         description="Docking engine to use"
     )
     flexibility_mode: FlexibilityMode = Field(
@@ -358,6 +359,11 @@ class DockingConfig(BaseModel):
         default="vina",
         description="Scoring function (e.g., 'vina', 'vinardo')"
     )
+
+    @validator("engine")
+    def validate_engine(cls, value):
+        from dockmate_vs.docking.registry import get_engine
+        return get_engine(value).name
 
     @root_validator
     def validate_flexibility_config(cls, values):

@@ -126,54 +126,107 @@ terms. A favourable summary alone is not sufficient provenance.
 
 ### Adding a docking engine
 
-Engine extensions currently require source changes. Installing another binary
-or adding a name to a YAML file does not register an engine. There is no public
-plugin registry or entry-point discovery API in this release.
+Engine registration is explicit in `dockmate_vs/docking/__init__.py`. Installing
+a binary alone does not register it; automatic entry-point discovery is not
+implemented. GUI selectors, headless validation, protocol sweeps, adaptive
+dispatch, score labels, provenance, and `doctor` use the shared registry.
 
-1. Implement `DockingEngine` in `dockmate_vs/docking/base.py`: `dock()` accepts
-   receptor/ligand paths, box center and size, and an output path;
-   `parse_output()` reads the saved poses; `get_version()` reports the binary
-   version. Return the `DockingPose`/`DockingResult` types from that same module.
-   `docking/smina.py` is the existing adapter example. The similarly named
-   dataclass in `adaptive_docking.py` represents an adaptive protocol attempt,
-   not this adapter interface.
-2. Preserve pose order and the score for each pose. The current adapter contract
-   and campaign baseline ranking assume **lower is better**. Do not pass a
-   higher-is-better score through unchanged. Document any normalization, retain
-   raw values in metadata, and avoid calling unitless scores kcal/mol. Save
-   poses in a format supported by `_load_poses_and_scores()` in `gui/app.py`, or
-   extend that reader and the viewer/topology conversion tests.
-3. Wire the adapter into `DockMateVSApp._run_single_case()`, used by both GUI and
-   `HeadlessDockMateRunner` campaigns. Handle its actual receptor/ligand format,
-   binding-site preparation, sampling controls, timeout, and output path.
-   Headless campaigns reuse this method without constructing Tk. Separately
-   update `AdaptiveDockingPipeline._run_single_protocol()` if the engine will
-   participate in the adaptive protocol cascade.
-4. Add selection and validation in `headless.load_campaign_config()` and the
-   GUI's engine selectors, `_collect_single_config()`, and protocol-sweep
-   expansion. Update the `DockingEngine` enum in `config/schema.py` for the
-   standalone configuration API. Exhaustiveness does not apply to all engines;
-   rDock additionally needs cavity preparation, runs, and cavity provenance.
-   Implement only the controls the new engine supports. Score-only rescoring
-   remains a separate Smina operation and needs compatible pose files.
-5. Record version, preparation, sampling, and score semantics in the manifest.
-   Review `_protocol_resume_signature()` and condition identities in `gui/app.py`
-   so incompatible results cannot be reused. Update score-source labels and
-   units in `gui/unknown_charts.py`, dependency reporting in `headless.doctor()`,
-   installation instructions, and third-party notices where applicable.
+1. Implement the `DockingEngine` ABC in `docking/base.py`: `dock()`,
+   `parse_output()`, and `get_version()`. Return its `DockingResult` and
+   `DockingPose` dataclasses, not the adaptive-attempt dataclass.
+2. Override `from_config(config)` when the adapter needs binaries or custom
+   options. It receives common campaign settings plus the selected engine's
+   options in `config["engine_options"]`; its `binaries` mapping contains
+   resolved paths. The base implementation forwards common sampling settings
+   and custom options to the constructor. Adapters must validate their options,
+   impose subprocess timeouts, and report failures.
+3. Declare capabilities and register the adapter once:
 
-At minimum, add two kinds of tests:
+   ```python
+   # In docking/__init__.py, after importing the adapter:
+   from .my_engine import MyDockEngine
+   register_engine(
+       "mydock", MyDockEngine,
+       EngineCapabilities(
+           binary_names=("mydock",),
+           supports_exhaustiveness=False,
+           requires_cavity_preparation=True,
+           site_definition_label="mydock_cavity_v1",
+           supports_score_only_rescoring=False,
+           receptor_format="pdb", ligand_format="sdf", output_suffix=".sdf",
+           docking_score_label="MyDock", score_units="",
+       ),
+   )
+   ```
 
-- An adapter test with mocked subprocess calls covering command arguments,
-  timeout/nonzero exit, parsed pose order/scores, and version reporting.
-- A campaign test using `HeadlessDockMateRunner` and a tiny local workbook,
-  covering Protocol Development expansion, exported results, and resume. Follow
-  `tests/test_headless_cli.py` and `tests/test_screening_integration.py`; prove
-  the engine is reached through the campaign path without initializing Tk.
+| Capability | Contract |
+| --- | --- |
+| `supports_exhaustiveness` | Enables the GUI control and exhaustiveness sweep; otherwise each seed/box/water condition runs once. |
+| `requires_cavity_preparation` | The adapter owns cavity preparation; exposes cavity settings and marks legacy site provenance. |
+| `site_definition_label` | Versioned site-definition identity used for resume; change it when cavity semantics change. The CSV field retains the legacy name `rdock_cavity_version`. |
+| `supports_score_only_rescoring` | Output is compatible with the workflow's separate Smina rescoring step, not a claim that the adapter has native score-only mode. Unsupported rescore sweeps are rejected. |
+| `binary_names` | Executables shown by `doctor` and captured in run provenance. |
+| `receptor_format`, `ligand_format` | Prepared receptor PDB/PDBQT and ligand SDF/PDBQT, respectively. |
+| `output_suffix` | `.pdbqt`, `.sdf`, or `.sd`. The adapter must write the requested output path. |
+| `scoring_functions` | Optional selectable scoring names; one entry fixes the choice, zero means no scoring selector. |
+| `score_units`, `docking_score_label`, `color` | Score-axis labeling and engine comparison styling; do not label unitless scores kcal/mol. |
 
-Also perform a real-binary smoke run and a GUI selection check before claiming
-support. A dummy adapter test establishes integration, not scientific validation
-of the external program.
+Common legacy settings (`smina_binary`, `vina_binary`, `rdock_root`,
+`rdock_runs`, and `rdock_radius`) still work. Custom options and binary overrides
+go under `single.engine_options` in YAML:
+
+```yaml
+single:
+  engine: mydock
+  engine_options:
+    mydock:
+      binaries:
+        mydock: /absolute/path/to/mydock
+      custom_sampling: 20
+protocol_sweep:
+  engines: [mydock]
+```
+
+The GUI's **Engine options (JSON)** field accepts the corresponding mapping,
+for example `{"mydock":{"binaries":{"mydock":"/absolute/path/to/mydock"},"custom_sampling":20}}`.
+Options are saved in the manifest and included in protocol-resume compatibility.
+The adapter defines which custom options it accepts. The cavity panel retains
+rDock's legacy settings; other cavity engines use their own engine-options keys.
+`doctor` reports registered binaries using PATH and RBT_ROOT; it does not load a
+campaign's custom binary overrides. Optional engines do not make `doctor
+--strict` fail unless registered with `required_by_doctor=True`.
+
+Preserve output pose order, one-based mode numbers, and scores. The campaign
+contract is **lower is better**. Normalize higher-is-better scores in both
+the saved output and the returned result; document that normalization and retain
+raw scores in metadata. PDBQT output needs Vina-style score remarks (or Smina
+minimizedAffinity); SDF/SD needs a `SCORE` or `SCORE.INTER` property. These are the
+formats understood by the shared results reader and pose viewer.
+
+`dock()` also receives workflow context in keyword arguments:
+`ligand_smiles`, `ligand_name`, `prepared_receptor_pdb`, and
+`reference_ligand_pdb`. Consume or ignore these explicitly, never forward them
+as arbitrary command-line flags. Preserve PDBQT atom serials, names, types and
+the prepared input geometry before docking for strict pose export. SDF output
+must preserve the prepared ligand's chemistry.
+
+The adaptive cascade's default composition remains Smina/Vina and optional
+rDock. A programmatic caller can supply `DockingProtocol(engine="mydock", ...)`
+entries through `pipeline.protocols`; execution uses the same registry.
+Registration does not automatically add an engine to that scientific cascade.
+
+Add at least two tests:
+
+- Adapter tests with mocked subprocess calls: arguments, timeout/nonzero exit,
+  output order/scores and version handling.
+- A headless protocol campaign over a tiny local workbook: real dispatch,
+  condition expansion, result export, resume, and refusal of incompatible
+  options. `tests/test_engine_registry.py` demonstrates a registered dummy
+  adapter without constructing Tk.
+
+Also perform a real-binary smoke run and GUI selection check before claiming
+scientific support for a new engine. Registration supplies integration, not
+validation of an external docking program.
 
 ### Preparation and binding sites
 

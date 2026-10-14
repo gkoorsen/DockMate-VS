@@ -94,7 +94,9 @@ Loading screening results runs in a progress window that logs topology
 recovery, PoseBusters checks, and PLIP contact calculations for each pose.
 Results tables can be copied to the clipboard or exported directly to Excel.
 
-For file formats and conversion to downstream simulation inputs, see
+Use `dockmate-vs export --run "/path/to/run" --list-cases` to list saved cases,
+then export a case as SDF or a receptor-ligand PDB with verified prepared
+topology. For command examples, requirements, and downstream simulation inputs, see
 [Outputs and MD handoff](docs/md_handoff.md). Contributors adding an engine
 should follow [Adding a docking engine](docs/architecture.md#adding-a-docking-engine).
 

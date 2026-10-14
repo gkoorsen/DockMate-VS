@@ -69,7 +69,52 @@ RMSD is not evidence that docking itself failed.
    or residue identifiers. Do not independently align the ligand or regenerate
    its 3D coordinates. Keep the selected SDF alongside the complex PDB.
 
-For an arbitrary saved PDBQT pose, a basic conversion can extract model 1:
+## Exporting a saved pose
+
+The `export` command automates the coordinate/topology handoff without docking
+again, minimising the pose, or changing saved results:
+
+```bash
+dockmate-vs export --run "/path/to/run" --list-cases
+dockmate-vs export --run "/path/to/run" --case "CASE_ID" --pose 1 \
+  --format sdf --output "/path/to/exports/pose1.sdf"
+dockmate-vs export --run "/path/to/run" --case "CASE_ID" --pose 1 \
+  --format complex-pdb --output "/path/to/exports/complex.pdb"
+```
+
+`--pose` is **one-based docking-file order**, not a rescored rank or the pose with
+the lowest RMSD. Consult the results table before choosing it. Older protocol
+results without case IDs use their case-directory names. Both screening and
+protocol run folders are supported, including relocated copies; `--list-cases`
+marks missing outputs. Ambiguous case IDs and existing destination files are
+rejected. Without `--output`, new files go into the current working directory.
+
+For PDBQT, the matching prepared variant SDF **and** PDBQT are required. Atom
+coordinates from that preparation pair establish the mapping, and preserved
+PDBQT atom identities transfer the docked coordinates onto the SDF topology.
+Mismatches fail rather than infer new bonds. A regenerated SDF whose coordinates
+do not match the original prepared PDBQT is insufficient for this strict route.
+For SDF/SD output, export verifies chemical equivalence and maps the saved pose
+onto its prepared topology. Historical rDock output uses the actual input SDF
+inside the docking directory when available.
+
+Mapped atom coordinates are retained. Ordinary hydrogens omitted from PDBQT are
+rebuilt with RDKit without minimisation; unsupported/missing nonstandard atoms
+cause an error. A JSON sidecar records source files, canonical SMILES, pose
+number and the count of rebuilt hydrogens. Review hydrogen geometry downstream.
+Export also checks atom count and canonical SMILES through an SDF round trip
+before writing files; inconsistent chemistry or stereochemistry is rejected.
+
+`complex-pdb` also requires `receptor_prepared.pdb`. It adds the ligand as residue
+`LIG` on an unused chain with unique atom serials; `--ligand-resname DRG` changes
+the name. It writes a companion `complex.ligand.sdf` retaining bond orders,
+because PDB alone does not preserve the complete ligand chemistry.
+These are **geometry/topology exports, not simulation-ready systems**: no
+force-field parameters, solvation, ion placement, MD decks or free-energy
+protocols are generated.
+
+For manual inspection of older PDBQT-only output, basic conversion can extract
+model 1:
 
 ```bash
 obabel -ipdbqt "/path/to/docked.pdbqt" -f 1 -l 1 \
@@ -80,8 +125,8 @@ Change both model selectors to the desired pose number. PDBQT lacks a complete
 chemical graph, so this route can infer incorrect bond orders or aromaticity.
 Validate the inferred molecule against the matching prepared SDF and transfer
 docked coordinates with an explicit atom mapping. Do not use raw conversion as
-proof of chemical equivalence. DockMate-VS currently has no general-purpose
-`export` command for arbitrary poses.
+proof of chemical equivalence. Restore the matching preparation files to use
+the verified export route above.
 
 ## Downstream preparation
 

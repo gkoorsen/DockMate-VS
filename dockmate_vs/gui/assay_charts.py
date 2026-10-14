@@ -6,6 +6,7 @@ import numpy as np
 from matplotlib.figure import Figure
 from dockmate_vs.gui.ui_scale import scale_figure, widget_scale
 from scipy.stats import spearmanr
+from dockmate_vs.docking.registry import capabilities_for
 
 
 ACTIVE = "#177E89"
@@ -45,9 +46,10 @@ def docking_diagnostics(records: Iterable[Mapping]) -> dict:
             [p[2] for p in paired], [-p[0] for p in paired]
         ).statistic)
     score_label = "Docking score"
-    if engines and engines <= {"vina", "smina"}:
-        engine_label = next(iter(engines)).capitalize() if len(engines) == 1 else "Vina/Smina"
-        score_label = f"{engine_label} docking score (kcal/mol)"
+    units = {capabilities_for(engine).score_units for engine in engines}
+    if engines and len(units) == 1 and next(iter(units)):
+        engine_label = "/".join(name.capitalize() for name in sorted(engines, reverse=True))
+        score_label = f"{engine_label} docking score ({next(iter(units))})"
     return {"points": points, "score_label": score_label,
             "spearman_negative_score": correlation}
 

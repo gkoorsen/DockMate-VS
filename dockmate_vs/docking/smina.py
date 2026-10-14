@@ -56,6 +56,26 @@ class SminaDockingEngine(DockingEngine):
         >>> print(f"Best score: {result.best_score} kcal/mol")
     """
 
+    binary_name = "smina"
+    fixed_scoring = None
+
+    @classmethod
+    def from_config(cls, config):
+        options = config.get("engine_options") or {}
+        unexpected = set(options) - {"binaries"}
+        if unexpected:
+            raise ValueError(f"Unsupported {cls.binary_name} engine options: {', '.join(sorted(unexpected))}")
+        binaries = options.get("binaries", {})
+        return cls(
+            smina_binary=binaries.get(cls.binary_name, cls.binary_name),
+            scoring_function=cls.fixed_scoring or config.get("scoring", "vina"),
+            exhaustiveness=config.get("exhaustiveness", 8),
+            num_modes=config.get("num_modes", 9),
+            energy_range=config.get("energy_range", 3.0),
+            cpu=config.get("cpu", 1), seed=config.get("seed", 42),
+            timeout_sec=config.get("timeout", 1200),
+        )
+
     def __init__(
         self,
         smina_binary: str = "smina",
@@ -131,6 +151,10 @@ class SminaDockingEngine(DockingEngine):
         size: np.ndarray,
         output_path: Optional[str] = None,
         flexible_residues: Optional[str] = None,
+        ligand_smiles: Optional[str] = None,
+        ligand_name: Optional[str] = None,
+        prepared_receptor_pdb: Optional[Path] = None,
+        reference_ligand_pdb: Optional[Path] = None,
         **kwargs
     ) -> DockingResult:
         """

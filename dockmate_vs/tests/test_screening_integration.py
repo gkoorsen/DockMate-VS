@@ -108,7 +108,7 @@ def _mock_case(monkeypatch, tmp_path, scores, failed=()):
     FakeSminaEngine.scores = scores
     FakeSminaEngine.failed = set(failed)
     monkeypatch.setattr(redock_module, "AdaptiveDockingPipeline", FakePipeline)
-    monkeypatch.setattr(redock_module, "SminaDockingEngine", FakeSminaEngine)
+    monkeypatch.setattr(redock_module, "create_engine", lambda name, config: FakeSminaEngine())
     site = BindingSite(
         center=np.zeros(3),
         size=np.ones(3) * 20,

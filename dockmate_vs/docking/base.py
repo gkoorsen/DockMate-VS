@@ -34,12 +34,12 @@ class DockingPose:
     Single docking pose result.
 
     Attributes:
-        score: Binding affinity score (kcal/mol)
+        score: Engine score, normalized to lower-is-better; units are engine-specific
         rmsd_lb: Lower bound RMSD from best pose (Angstroms)
         rmsd_ub: Upper bound RMSD from best pose (Angstroms)
         coordinates: Ligand atom coordinates (Nx3 array)
         pdbqt: PDBQT format output
-        mode_number: Pose number (1 = best)
+        mode_number: One-based pose number in the saved output file
     """
     score: float
     rmsd_lb: float = 0.0
@@ -56,8 +56,8 @@ class DockingResult:
 
     Attributes:
         ligand_id: Ligand identifier
-        poses: List of docking poses (sorted by score)
-        best_score: Best binding affinity (kcal/mol)
+        poses: Docking poses in the same order as the saved output file
+        best_score: Minimum normalized engine score
         success: Whether docking completed successfully
         runtime: Docking runtime (seconds)
         error_message: Error message if docking failed
@@ -140,6 +140,18 @@ class DockingEngine(ABC):
             f"exhaustiveness={exhaustiveness}, num_modes={num_modes}, cpu={cpu}"
         )
 
+    @classmethod
+    def from_config(cls, config):
+        """Build from campaign settings; adapters may extend this for options."""
+        options = dict(config.get("engine_options") or {})
+        options.pop("binaries", None)
+        return cls(
+            exhaustiveness=config.get("exhaustiveness", 8),
+            num_modes=config.get("num_modes", 9),
+            energy_range=config.get("energy_range", 3.0),
+            cpu=config.get("cpu", 1), seed=config.get("seed", 42), **options,
+        )
+
     @abstractmethod
     def dock(
         self,
@@ -154,8 +166,8 @@ class DockingEngine(ABC):
         Perform docking calculation.
 
         Args:
-            receptor_path: Path to receptor PDBQT file
-            ligand_path: Path to ligand PDBQT file
+            receptor_path: Prepared receptor path in the registered receptor_format
+            ligand_path: Prepared ligand path in the registered ligand_format
             center: Box center coordinates (x, y, z)
             size: Box dimensions (x, y, z)
             output_path: Optional path for output file

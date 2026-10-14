@@ -67,6 +67,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--threshold", type=float, default=None, help="Override the RMSD success threshold"
     )
 
+    export = commands.add_parser("export", help="Export a pose with prepared-ligand topology")
+    export.add_argument("--run", required=True, type=Path, help="Run folder or results file")
+    export.add_argument("--case", help="Case ID from --list-cases")
+    export.add_argument("--list-cases", action="store_true", help="List case IDs and docked output files")
+    export.add_argument("--pose", type=int, default=1, help="One-based pose in docking file order, not rescored rank")
+    export.add_argument("--format", choices=("sdf", "complex-pdb"), default="sdf")
+    export.add_argument("--output", type=Path, help="New output path (default: current directory)")
+    export.add_argument("--ligand-resname", default="LIG", help="Ligand residue name in the complex PDB")
+
     doctor = commands.add_parser("doctor", help="Check Python and docking-tool dependencies")
     doctor.add_argument(
         "--strict",
@@ -93,6 +102,20 @@ def _configure_logging() -> None:
 
 
 def _run_headless(args: argparse.Namespace) -> int:
+    if args.command == "export":
+        from dockmate_vs.pose_export import export_cases, export_pose
+
+        if args.list_cases:
+            for case in export_cases(args.run):
+                missing = " [missing]" if case.get("error") else ""
+                print(f"{case['case_id']}\t{case['output']}{missing}")
+            return 0
+        if not args.case:
+            raise ValueError("export requires --case, or use --list-cases")
+        output = export_pose(args.run, args.case, args.pose, args.format, args.output, args.ligand_resname)
+        print(f"Exported: {output}")
+        print("Geometry/topology only; force-field parameters and MD system preparation are still required.")
+        return 0
     from dockmate_vs.headless import doctor, regenerate_report, run_campaign
 
     if args.command in {"protocol", "screen"}:

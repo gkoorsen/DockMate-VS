@@ -509,8 +509,15 @@ Always inspect representative prepared receptors and ligands before a large
 campaign. A completed conversion proves file compatibility, not chemical
 correctness.
 
+Use `dockmate-vs export --run "/path/to/run" --list-cases` to find a case ID.
+For example, `dockmate-vs export --run "/path/to/run" --case "CASE_ID" --pose 1
+--format sdf --output "/path/to/pose1.sdf"` exports that pose with the prepared
+ligand topology. Use `--format complex-pdb` for receptor-ligand coordinates and
+a companion ligand SDF. Pose numbers refer to docking-file order, not rescored
+rank. Existing output files are never overwritten.
+
 See [Outputs and MD handoff](docs/md_handoff.md) for score-table schemas,
-selected-pose SDF/PDB files, conversion examples, and the additional preparation
+required preparation files, export checks, and the additional preparation
 required by GROMACS, NAMD, AMBER, BFEE2, and BAT.py.
 
 ## 6. Protocol Development
@@ -519,7 +526,7 @@ required by GROMACS, NAMD, AMBER, BFEE2, and BAT.py.
 
 The protocol sweep can vary:
 
-- Vina, Smina, and installed rDock engines;
+- registered engines (built-in Vina, Smina and rDock, plus explicit extensions);
 - co-crystal box margins or fixed box dimensions;
 - remove-all, retain-all, and selective crystallographic-water handling;
 - exhaustiveness and random seed;
