@@ -1,7 +1,8 @@
 cff-version: 1.2.0
 message: >-
   If you use DockMate-VS, please cite the archived software release
-  and the associated SoftwareX article when available.
+  (DOI 10.5281/zenodo.23386925 for version 0.1.2) and the associated
+  SoftwareX article when available.
 title: DockMate-VS
 type: software
 authors:
@@ -15,6 +16,14 @@ date-released: 2026-10-13
 license: MIT
 repository-code: https://github.com/gkoorsen/DockMate-VS
 url: https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.2
+doi: 10.5281/zenodo.23386925
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23386925
+    description: Archived snapshot of version 0.1.2
+  - type: doi
+    value: 10.5281/zenodo.22283781
+    description: Concept DOI that always resolves to the latest version
 abstract: >-
   A spreadsheet-driven desktop application for reproducible molecular-docking
   protocol development, native-pose recovery, control enrichment, rescoring,
