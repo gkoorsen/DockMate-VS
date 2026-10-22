@@ -65,8 +65,9 @@ cd DockMate-VS
 ```
 Alternatively, download the source archive from the
 [current GitHub release](https://github.com/gkoorsen/DockMate-VS/releases/latest).
-The archived v0.1.1 distribution is available on
-[Zenodo](https://zenodo.org/records/22685196).
+Archived releases are available on
+[Zenodo](https://doi.org/10.5281/zenodo.22283781). The v0.1.3 Zenodo archive is
+pending; use its GitHub release URL until a version-specific DOI is assigned.
 
 Set up the environment:
 ```bash
@@ -340,27 +341,30 @@ troubleshooting, and results interpretation.
 
 ## ESR1 case-study materials
 
-The reconstruction-based [ESR1 supplement](supplementary/README.md) provides
-the exact subset identifiers, historical campaign settings, structure-free
-results, and scripts supporting the SoftwareX case study.
-Download the [supplement ZIP](supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip)
-and its [SHA-256 checksum](supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip.sha256).
+The reconstruction-based ESR1 case-study materials are supplied as journal
+supplementary material for the SoftwareX article. They provide the exact subset
+identifiers, historical campaign settings, structure-free results, and scripts.
+Repository copies of the [supplement documentation](supplementary/README.md),
+[supplement ZIP](supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip), and
+[SHA-256 checksum](supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip.sha256)
+are retained for convenience.
 LIT-PCBA structures must be obtained separately; they are not redistributed.
-This supplement is hosted on GitHub separately from the Zenodo software archive.
+The journal supplementary material is separate from the Zenodo software archive.
 
 ## Citation and support
 
 Citation metadata are provided in [`CITATION.cff`](CITATION.cff). Please cite
-the version used in your work. The current software version is **0.1.2**:
+the version used in your work. The current software version is **0.1.3**:
 
-> Koorsen, G. (2026). DockMate-VS (v0.1.2). GitHub.
-> https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.2
+> Koorsen, G. (2026). DockMate-VS (v0.1.3).
+> https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.3
 
-The DOI below identifies **v0.1.1**, not v0.1.2. No version-specific Zenodo DOI
-has yet been assigned to v0.1.2:
-
-> Koorsen, G. (2026). DockMate-VS (v0.1.1). Zenodo.
-> https://doi.org/10.5281/zenodo.22685196
+The v0.1.3 Zenodo upload is pending. Its version-specific DOI will be added to
+[`CITATION.cff`](CITATION.cff) after archival; until then, cite the release URL
+above. The [concept DOI](https://doi.org/10.5281/zenodo.22283781)
+identifies the version series rather than a fixed snapshot. The earlier
+[v0.1.2 archive](https://doi.org/10.5281/zenodo.23386925) predates the engine
+registry and pose-export command; those features are included in v0.1.3.
 
 When the SoftwareX article is available, cite both the article and the archived
 software release.
