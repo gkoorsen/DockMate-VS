@@ -25,6 +25,8 @@ uses semantic versioning after the initial public release.
 - Release documentation distinguishes archived versions, records the 309-test
   validation of the release baseline, and identifies the ESR1 case-study
   materials as journal supplementary material.
+- Test CI uses Ubuntu 24.04 so Python 3.9 remains available when
+  `ubuntu-latest` advances to Ubuntu 26.04.
 
 ## [0.1.2] - 2026-10-13
 
