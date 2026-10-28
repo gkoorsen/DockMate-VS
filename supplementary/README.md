@@ -12,7 +12,7 @@ submission; an actual journal upload is not asserted.
 
 The existing v0.1.3 software DOI does not identify these later evidence
 packages. The v0.1.4 source release includes these ZIPs and checksum files
-for Zenodo deposit; its version-specific DOI is pending. Historical software
+in the [Zenodo archive](https://doi.org/10.5281/zenodo.23744615). Historical software
 versions and executed-source identities inside the evidence must remain intact.
 
 ## Verify the downloaded archives

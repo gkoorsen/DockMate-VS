@@ -66,7 +66,8 @@ cd DockMate-VS
 Alternatively, download the source archive from the
 [current GitHub release](https://github.com/gkoorsen/DockMate-VS/releases/latest).
 The current release is **v0.1.4**, including the S1/S2 reproducibility packages.
-Its version-specific Zenodo DOI will be added after deposit. The earlier
+Its version-specific Zenodo DOI is
+[10.5281/zenodo.23744615](https://doi.org/10.5281/zenodo.23744615). The earlier
 [v0.1.3 DOI](https://doi.org/10.5281/zenodo.23563244) identifies only that release.
 
 Set up the environment:
@@ -363,11 +364,11 @@ study. The existing v0.1.3 software DOI does not identify these later packages.
 Citation metadata are provided in [`CITATION.cff`](CITATION.cff). Please cite
 the version used in your work. The current software version is **0.1.4**:
 
-> Koorsen, G. (2026). DockMate-VS (v0.1.4).
-> https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.4
+> Koorsen, G. (2026). DockMate-VS (v0.1.4). Zenodo.
+> https://doi.org/10.5281/zenodo.23744615
 
-The v0.1.4 version-specific Zenodo DOI is pending deposit. Until assigned, use
-the tagged GitHub release above. The [concept DOI](https://doi.org/10.5281/zenodo.22283781)
+The version-specific DOI above identifies v0.1.4 and is recorded in
+[`CITATION.cff`](CITATION.cff). The [concept DOI](https://doi.org/10.5281/zenodo.22283781)
 identifies the version series rather than a fixed snapshot. The earlier
 [v0.1.3 DOI](https://doi.org/10.5281/zenodo.23563244) identifies v0.1.3 and must
 not be used to cite the v0.1.4 source or its updated supplementary packages.
