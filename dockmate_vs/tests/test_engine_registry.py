@@ -143,6 +143,13 @@ def test_registered_engine_runs_and_resumes_real_protocol_campaign(example, monk
     assert "tk" not in HeadlessDockMateRunner().__dict__
     assert run_campaign(config, "protocol") == result_path
     assert len(calls) == 1
+    # A result created before the native-ligand preparation correction must
+    # not be silently resumed as if it used the corrected receptor/reference.
+    rows.drop(columns=["native_preparation_version"]).to_csv(result_path, index=False)
+    assert run_campaign(config, "protocol") == result_path
+    assert len(calls) == 2
+    assert run_campaign(config, "protocol") == result_path
+    assert len(calls) == 2
     payload["single"]["engine_options"]["example"]["binaries"]["example-dock"] = "/different/dock"
     config.write_text(yaml.safe_dump(payload))
     with pytest.raises(RuntimeError, match="settings have changed"):

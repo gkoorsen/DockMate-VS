@@ -5,6 +5,42 @@ uses semantic versioning after the initial public release.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-28
+
+### Added
+
+- Complete S1 (ESR1) and S2 (ACHE) reproducibility packages with checksums,
+  maintained analysis scripts and verification commands. S1 includes the
+  MW-controlled Figure 5/Table 3 analysis and hardened verifier; S2 includes
+  all 1,240 compounds, annotation diagnostics and two-panel Figure 6 code.
+- Source distributions include supplementary packages and regression fixtures;
+  the working manuscript and standalone submission figures remain local.
+
+- Explicit `screen-prepared` and `import-prepared` headless routes for intact
+  prepared MOL2 libraries, without external preparation or rescoring. Smina
+  batch output is parsed per compound with original MOL2 topology retained;
+  scores require a complete matching log or an explicit ID/mode CSV mapping.
+- Prepared-batch provenance, raw logs/poses, failure rows and separate
+  complete-population/evaluable-only ROC and precision-recall metrics. Tests
+  cover archived MOL2 records, partial failures, score direction and batching.
+
+### Fixed
+
+- Protocol charts use mutable redraw callbacks so loading results and switching
+  Top-1/5/10 pose-recovery cutoffs works without a tuple-assignment error.
+
+- Native-ligand reference extraction, box selection, chain detection and SMILES
+  fallback consistently select one non-polymer ligand residue. Explicit chains
+  are respected; protein residues sharing a ligand name (for example TYR) are
+  retained during receptor preparation. Protocol resume keys now distinguish
+  this preparation version from older results.
+- Coordinate-frame RMSD evaluates the same symmetry mappings with vectorized
+  distances, avoiding repeated coordinate extraction in nested Python loops.
+  Correspondence searches have an explicit 60-second limit.
+- Binding-site metadata distinguishes total atom counts from heavy-atom counts.
+- Smina/Vina unsupported-atom errors include a structured failure category and
+  an explicit no-substitution policy; input chemistry is never silently changed.
+
 ## [0.1.3] - 2026-10-22
 
 ### Added

@@ -1,0 +1,48 @@
+{
+  "repository": "https://github.com/vktrannguyen/MLSF-protocol",
+  "commit": "d748694de32f2737bdad92d8c84b352c3a6bf8f1",
+  "doi": "10.1038/s41596-023-00885-w",
+  "selection": "First two input/output records of each library; record bytes unchanged. Scores and labels subset by exact ID. No original stdout logs were archived; tests generate clearly synthetic score tables.",
+  "files": [
+    {
+      "fixture": "actives.mol2",
+      "source": "ACHE/DEKOIS2.0/ACHE-DEKOIS-actives.mol2",
+      "records": [
+        1,
+        2
+      ],
+      "source_sha256": "db8f3efa5efd57cf248bd75ea72ba67a24328aa4afbc159f1535b2f818e1d0de",
+      "fixture_sha256": "58c404ad72ad7af6d333bea4d1c55ae365883d92d600181df76d2b81260e3ebc"
+    },
+    {
+      "fixture": "actives-docked.mol2",
+      "source": "ACHE/DEKOIS2.0/ACHE-DEKOIS-actives-docked.mol2",
+      "records": [
+        1,
+        2
+      ],
+      "source_sha256": "fa89bde84f6b5f9b301e16ac176369d4e93cfbd5843aa4f17a48ecb17d4e1031",
+      "fixture_sha256": "c69c508a94cf5c73cf9492e4a9e9d2ccde2c98dadca057bceb338f8d15b73d87"
+    },
+    {
+      "fixture": "decoys.mol2",
+      "source": "ACHE/DEKOIS2.0/ACHE-DEKOIS-decoys.mol2",
+      "records": [
+        1,
+        2
+      ],
+      "source_sha256": "b3a37b5215ddea1f3b78deeb1306e6dc7332aa670fbd2077dd3d9614bbbe281c",
+      "fixture_sha256": "8a710c8d10e3c00f04ba905fdf7c50fcf8666f5c40c0b025b82a4bf004075ca8"
+    },
+    {
+      "fixture": "decoys-docked.mol2",
+      "source": "ACHE/DEKOIS2.0/ACHE-DEKOIS-decoys-docked.mol2",
+      "records": [
+        1,
+        2
+      ],
+      "source_sha256": "0cdd2baae07b78308a16d84049117b432fd1b4f756ae387b9585547fb7735e90",
+      "fixture_sha256": "28146e608d0d0e82ea00c2c95b9696b42f1dfa7fed144314931f4f5c1b1151a0"
+    }
+  ]
+}

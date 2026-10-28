@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from dockmate_vs.gui.ui_scale import FONT_ROLES, font_spec, load_ui_scale, save_ui_scale
 
@@ -46,3 +47,58 @@ def test_chart_control_redraw_keeps_scale_without_display():
     redraw()
     pending.pop()()
     assert draws == ["draw", (1.5, 1.5), "draw", (1.5, 1.5)]
+
+
+def test_protocol_charts_install_and_switch_all_cutoffs_without_display(monkeypatch, tmp_path):
+    import dockmate_vs.gui.app as app_module
+
+    class Variable:
+        def __init__(self, master=None, value=None):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    for name in ("Frame", "Label", "Canvas"):
+        monkeypatch.setattr(app_module.tk, name, lambda *args, **kwargs: Mock())
+    for name in ("StringVar", "IntVar"):
+        monkeypatch.setattr(app_module.tk, name, Variable)
+    monkeypatch.setattr(app_module.ttk, "Notebook", lambda *args, **kwargs: Mock())
+    controls = []
+
+    def radio(*args, **kwargs):
+        controls.append(kwargs)
+        return Mock()
+
+    monkeypatch.setattr(app_module.ttk, "Radiobutton", radio)
+    path = tmp_path / "protocol_development_results.csv"
+    path.write_text(
+        "pdb_id,ligand_resname,engine,status,best_rmsd,top1_rmsd,top5_rmsd,top10_rmsd\n"
+        "1ABC,LIG,smina,complete,0.5,1.5,0.7,0.5\n"
+    )
+    app = object.__new__(app_module.DockMateVSApp)
+    for name in ("_draw_protocol_scatter", "_draw_factor_effect_chart", "_draw_grouped_horizontal_chart"):
+        monkeypatch.setattr(app, name, Mock())
+    redraws = []
+
+    def install(canvas, draw):
+        redraw = Mock(side_effect=draw)
+        redraws.append(redraw)
+        redraw()
+        return redraw
+
+    monkeypatch.setattr(app, "_install_chart", install)
+    parent = Mock()
+    app._populate_protocol_charts(parent, path)
+
+    assert len(redraws) == 6
+    assert [control["value"] for control in controls] == [1, 5, 10]
+    assert parent._protocol_top_n_var.get() == 1
+    for control in controls[1:]:
+        control["variable"].set(control["value"])
+        control["command"]()
+        assert f"Top-{control['value']}" in parent._protocol_pose_note_var.get()
+    assert [redraw.call_count for redraw in redraws] == [3] * 6

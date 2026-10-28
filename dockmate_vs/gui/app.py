@@ -96,7 +96,7 @@ PROTOCOL_RMSD_EQUIVALENCE_TOLERANCE = 0.25
 PROTOCOL_SUCCESS_EQUIVALENCE_TOLERANCE = 0.10
 PROTOCOL_CANDIDATE_LIMIT = 8
 SCREENING_POSE_QUALITY_LIMIT = 5
-RECEPTOR_PREPARATION_CACHE_VERSION = "receptor-preparation-v1"
+RECEPTOR_PREPARATION_CACHE_VERSION = "receptor-preparation-v2-hetero-identity"
 SCREENING_RESUME_VERSION = "shared-receptor-v1"
 CHARGE_HANDLING_OPTIONS = {
     "Preserve input charges": "preserve",
@@ -2049,7 +2049,10 @@ class DockMateVSApp(tk.Tk):
             pose_version = row.get("rescore_pose_version")
             if not pose_version:
                 pose_version = "legacy"
-            return (*identity, str(cavity_version), str(pose_version))
+            return (*identity, str(cavity_version), str(pose_version),
+                    str(row.get("native_preparation_version", "legacy")))
+
+        from dockmate_vs.utils.ligand_selection import NATIVE_PREPARATION_VERSION
 
         completed = {
             condition_key(row) for row in rows
@@ -2062,7 +2065,8 @@ class DockMateVSApp(tk.Tk):
                 (pair["pdb_id"], pair["site_ligand"], engine, box["label"], rescore_method,
                  water, -1 if not capabilities_for(engine).supports_exhaustiveness else exhaustiveness, seed,
                  capabilities_for(engine).site_definition_label,
-                 "all_poses_v2" if rescore_method != "none" else "baseline_v2")
+                 "all_poses_v2" if rescore_method != "none" else "baseline_v2",
+                 NATIVE_PREPARATION_VERSION)
                 not in completed
                 for candidate_pair, engine, box, rescore_method, water, exhaustiveness, seed
                 in self._expand_protocol_conditions([pair], sweep)
@@ -2095,6 +2099,7 @@ class DockMateVSApp(tk.Tk):
                 water, -1 if not capabilities_for(engine_name).supports_exhaustiveness else exhaustiveness, seed,
                 capabilities_for(engine_name).site_definition_label,
                 "all_poses_v2" if rescore_method != "none" else "baseline_v2",
+                NATIVE_PREPARATION_VERSION,
             )
             label = (
                 f"{pdb_id} {site_ligand}: {engine_name}, {box['label']}, "
@@ -2111,6 +2116,7 @@ class DockMateVSApp(tk.Tk):
 
             row = {
                 "pdb_id": pdb_id, "ligand_resname": site_ligand,
+                "native_preparation_version": NATIVE_PREPARATION_VERSION,
                 "engine": engine_name, "box_definition": box["label"],
                 "rescore_method": rescore_method,
                 "rdock_cavity_version": (
@@ -5876,14 +5882,14 @@ class DockMateVSApp(tk.Tk):
                 thresholds=[(2.0, "2 A")],
             )
 
-        draw_callbacks = (
+        draw_callbacks = [
             _draw_pose,
             _draw_rescore,
             _draw_runtime,
             _draw_effects,
             _draw_structure_success,
             _draw_structure_rmsd,
-        )
+        ]
 
         def _select_top_n() -> None:
             top_n = int(top_n_var.get())
@@ -7343,14 +7349,14 @@ class DockMateVSApp(tk.Tk):
         ))
 
     def _detect_ligand_chain(self, pdb_path: Path, ligand_resname: str) -> Optional[str]:
+        from dockmate_vs.utils.ligand_selection import biopython_ligand
         parser = PDB.PDBParser(QUIET=True)
         structure = parser.get_structure("protein", str(pdb_path))
-        for model in structure:
-            for chain in model:
-                for residue in chain:
-                    if residue.resname == ligand_resname:
-                        return chain.id.strip()
-        return None
+        try:
+            residue = biopython_ligand(structure, ligand_resname)
+            return residue.get_parent().id.strip()
+        except ValueError:
+            return None
 
     def _is_reference_ligand(
         self,
@@ -7441,21 +7447,10 @@ class DockMateVSApp(tk.Tk):
         parser = PDB.PDBParser(QUIET=True)
         structure = parser.get_structure("protein", str(pdb_file))
 
-        ligand_residue = None
-        for model in structure:
-            for chain in model:
-                if ligand_chain and chain.id != ligand_chain:
-                    continue
-                for residue in chain:
-                    if residue.resname == ligand_resname:
-                        ligand_residue = residue
-                        break
-                if ligand_residue:
-                    break
-            if ligand_residue:
-                break
-
-        if not ligand_residue:
+        from dockmate_vs.utils.ligand_selection import biopython_ligand
+        try:
+            ligand_residue = biopython_ligand(structure, ligand_resname, ligand_chain)
+        except ValueError:
             return None
 
         temp_pdb = pdb_file.parent / f"{ligand_resname}_tmp.pdb"

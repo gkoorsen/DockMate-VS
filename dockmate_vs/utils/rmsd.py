@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from rdkit import Chem, RDLogger
 from rdkit.Chem import rdFMCS
+from scipy.spatial.distance import cdist
 from typing import Optional
 
 
@@ -169,8 +170,12 @@ def coordinate_rmsd(
         completeRingsOnly=False,
         matchValences=False,
         bondCompare=rdFMCS.BondCompare.CompareAny,
-        atomCompare=rdFMCS.AtomCompare.CompareElements
+        atomCompare=rdFMCS.AtomCompare.CompareElements,
+        timeout=60,
     )
+
+    if mcs.canceled:
+        raise ValueError("RMSD atom correspondence search exceeded its 60-second limit")
 
     if mcs.numAtoms != ref_atoms:
         raise ValueError(
@@ -190,16 +195,17 @@ def coordinate_rmsd(
     if not ref_matches or not probe_matches:
         raise ValueError("MCS substructure match failed")
 
-    ref_conf = ref_noh.GetConformer()
-    probe_conf = probe_noh.GetConformer()
-    best = float("inf")
-    for ref_match in ref_matches:
-        ref_xyz = np.asarray([ref_conf.GetAtomPosition(i) for i in ref_match])
-        for probe_match in probe_matches:
-            probe_xyz = np.asarray([probe_conf.GetAtomPosition(i) for i in probe_match])
-            value = float(np.sqrt(np.mean(np.sum((ref_xyz - probe_xyz) ** 2, axis=1))))
-            best = min(best, value)
-    return best
+    ref_positions = ref_noh.GetConformer().GetPositions()
+    probe_positions = probe_noh.GetConformer().GetPositions()
+    if not np.isfinite(ref_positions).all() or not np.isfinite(probe_positions).all():
+        raise ValueError("RMSD requires finite coordinates")
+    # Evaluate exactly the same pairs of mappings as the historical nested
+    # loop. Extract coordinates once, then compute squared distances in C.
+    # No centering, fitting, pruning, or change to the symmetry-match cap.
+    references = ref_positions[np.asarray(ref_matches)].reshape(len(ref_matches), -1)
+    probes = probe_positions[np.asarray(probe_matches)].reshape(len(probe_matches), -1)
+    distances = cdist(references, probes, metric="sqeuclidean")
+    return float(np.sqrt(distances.min() / ref_atoms))
 
 
 def _rmsd_via_mcs(ref_mol: Chem.Mol, probe_mol: Chem.Mol) -> float:

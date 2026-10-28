@@ -1,0 +1,52 @@
+{
+ "Docking score (as reported)": [
+  0.6946,
+  0.6287,
+  0.7546
+ ],
+ "Molecular weight alone": [
+  0.7122,
+  0.6598,
+  0.7604
+ ],
+ "Score, MW dependence removed (linear)": [
+  0.6375,
+  0.5692,
+  0.7025
+ ],
+ "Score, MW dependence removed (rank)": [
+  0.5937,
+  0.5241,
+  0.6582
+ ],
+ "MW-matched active/inactive pairs": [
+  0.5487,
+  0.4681,
+  0.6232
+ ],
+ "Docking score within MW tertile 1 (150-212 Da)": [
+  0.3818,
+  0.1237,
+  0.6568
+ ],
+ "Docking score within MW tertile 2 (212-302 Da)": [
+  0.64,
+  0.5212,
+  0.7528
+ ],
+ "Docking score within MW tertile 3 (302-667 Da)": [
+  0.5774,
+  0.4893,
+  0.6684
+ ],
+ "Spearman rho, score vs MW": [
+  -0.6489,
+  null,
+  null
+ ],
+ "Partial Spearman, -score vs activity | MW": [
+  0.0762,
+  null,
+  null
+ ]
+}

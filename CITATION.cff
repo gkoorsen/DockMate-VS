@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: >-
   If you use DockMate-VS, please cite the archived software release
-  (DOI 10.5281/zenodo.23563244 for version 0.1.3) and the associated
+  (version 0.1.4; version-specific Zenodo DOI pending) and the associated
   SoftwareX article when available.
 title: DockMate-VS
 type: software
@@ -11,16 +11,12 @@ authors:
     orcid: https://orcid.org/0000-0001-5159-1806
     affiliation: Department of Biochemistry, University of Johannesburg
     email: gkoorsen@uj.ac.za
-version: 0.1.3
-date-released: 2026-10-22
+version: 0.1.4
+date-released: 2026-10-28
 license: MIT
 repository-code: https://github.com/gkoorsen/DockMate-VS
-url: https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.3
-doi: 10.5281/zenodo.23563244
+url: https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.4
 identifiers:
-  - type: doi
-    value: 10.5281/zenodo.23563244
-    description: Archived snapshot of version 0.1.3
   - type: doi
     value: 10.5281/zenodo.22283781
     description: Concept DOI that always resolves to the latest version

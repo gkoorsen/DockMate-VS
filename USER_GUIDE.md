@@ -263,6 +263,98 @@ scripts/dockmate-docker screen examples/campaign.screen.yml
 See `docs/architecture.md` for component ownership, campaign data flow, output
 contracts, and the supported extension points for engines and analyses.
 
+### Prepared MOL2 batch screening and archive import
+
+For execution/analysis reproduction with already prepared inputs, use the
+explicit headless batch route:
+
+```bash
+dockmate-vs screen-prepared --config prepared.yml
+dockmate-vs import-prepared --config archived.yml
+```
+
+`screen-prepared` copies the supplied MOL2 bytes unchanged and invokes Smina once
+per library. It bypasses workbook handling, receptor/ligand preparation, variant
+enumeration and rescoring. Smina's own internal input handling still applies.
+This route evaluates prepared-input execution, not DockMate's preparation pipeline.
+
+Example execution configuration (all paths relative to the YAML file):
+
+```yaml
+receptor: inputs/receptor.mol2
+reference_ligand: inputs/reference.mol2  # or center: [x, y, z], never both
+size: [30.0, 30.0, 30.0]
+labels: inputs/labels.csv
+output_dir: results/prepared_screen   # must not already exist
+smina_binary: /path/to/smina
+scoring: vina
+exhaustiveness: 1
+num_modes: 1
+energy_range: 3.0
+cpu: 1
+seed: 0
+timeout_sec: 14400  # illustrative limit for EACH ENTIRE library, not each molecule
+batches:
+  - ligands: inputs/actives.mol2
+  - ligands: inputs/decoys.mol2
+```
+
+The search settings and batch timeout must be explicit. Freeze them before
+execution; the example timeout is not a published parameter. With
+`reference_ligand`, the centre is the midpoint of all-atom coordinate extrema,
+including hydrogen atoms, and Smina receives `--autobox_ligand` plus the explicit
+box dimensions. It is not the centroid-based co-crystal margin convention used
+by the normal preparation campaign.
+
+The labels CSV requires `compound_id,label`, with one exact MOL2 title per row.
+Labels are `active`, `decoy`, `inactive` or `unknown` (case-insensitive). IDs must
+be unique across libraries and match the label population exactly. Unknowns are
+retained in results and excluded from enrichment calculations.
+
+`import-prepared` runs no external tools. Provide `receptor`, `labels`, a new
+`output_dir`, and batches with `ligands`, `poses` and `scores` paths. For example:
+
+```yaml
+receptor: inputs/receptor.mol2
+labels: inputs/labels.csv
+output_dir: results/archive_import
+scoring: vina
+score_columns:
+  id_column: ID
+  score_column: Score
+  higher_is_better: true  # explicitly negate an archived positive ranking score
+batches:
+  - ligands: inputs/actives.mol2
+    poses: archive/actives-docked.mol2
+    scores: archive/combined-scores.csv
+  - ligands: inputs/decoys.mol2
+    poses: archive/decoys-docked.mol2
+    scores: archive/combined-scores.csv
+```
+
+By default a score CSV uses `compound_id,score`, with lower scores better and one
+pose per compound. For multiple poses, set `score_columns.mode_column` to the
+column holding one-based per-compound pose numbers. A combined score CSV may be
+shared by libraries; unknown IDs and duplicate compound/mode keys are errors.
+Score direction is never guessed. For a complete successful Smina run, a batch
+can instead specify `log: stdout.log` and `log_complete: true`. Smina's unnamed
+score tables are matched only when every input/output ID, order and pose count
+agrees. Do not use `log_complete` for interrupted or failed processes.
+
+Outputs include byte-preserved inputs and poses, logs for executed batches,
+checksums and commands in `run_manifest.json`/`batch_NNN/command.json`, standard
+`DockingResult` entries in `prepared_results.json`, `screening_results.csv`, and
+`enrichment_summary.json`. Each expected compound has a result row. Scores from
+failed, timed-out or ambiguously mapped execution batches remain unassigned;
+partial raw output is preserved. A batch runtime is not fabricated into
+per-compound runtimes. The CLI exits nonzero when any compound fails.
+
+Enrichment reports ROC-AUC, trapezoidal PR-AUC and average precision separately.
+`all_labelled_metrics` is null if any labelled compound failed; the explicitly
+named `evaluable_only_metrics` reports the available subset and its counts.
+This route currently provides headless/API results and CSV/JSON export; it is
+not a GUI results-folder or `dockmate-vs export` integration.
+
 ## 4. Spreadsheet schema
 
 Column names are matched case-insensitively where supported. Recommended names
@@ -762,6 +854,32 @@ current release.
 
 This is expected for non-native compounds. RMSD is only meaningful when the
 docked molecule matches an experimental reference ligand.
+
+### Native ligands with amino-acid residue names
+
+Free ligands such as TYR are selected from HETATM records rather than protein
+ATOM residues sharing their name. Reference extraction and box calculation use
+the same first matching ligand copy in the requested chain; an explicit missing
+chain is an error. Receptor preparation removes the original hetero ligand
+before PDBFixer can rewrite its record type, preserving protein residues.
+The box's `ligand_atoms` counts all selected atoms, including any crystallographic
+hydrogens; `ligand_heavy_atoms` gives the separate heavy-atom count. RMSD uses
+heavy atoms in the existing receptor frame without fitting.
+
+Receptor caches and protocol resume keys record the native-preparation version.
+Older preparations are not silently reused after this correction. A campaign
+manifest mismatch can prevent resuming an older run; retain that run and use a
+new output directory for corrected results. Opening a results folder alone
+does not repair previously prepared receptors or docking outputs.
+
+### Unsupported PDBQT atom types
+
+If Smina/Vina rejects an atom type, such as vanadium (`V`), the result remains a
+failure with the engine diagnostic and structured `unsupported_atom_type`
+metadata. DockMate does not replace or delete that atom automatically. Report
+the failure in attempted-case denominators. Any substitution must be an explicit
+preparation decision recorded in a separate configuration and input checksum
+set; it changes the receptor model and is not a correction to the original run.
 
 ### Covalent complex skipped
 

@@ -934,14 +934,13 @@ class AdaptiveDockingPipeline:
         ligand_chain: str
     ) -> Path:
         """Extract crystal ligand from PDB for RMSD reference."""
+        from dockmate_vs.utils.ligand_selection import ligand_atom_indices
+
         output_pdb = self.output_dir / "crystal_ligand.pdb"
-        target_res_id = None
         saw_model = False
         in_first_model = True
 
-        selected_lines = []
-        available_chains = set()
-        requested_chain_residues = set()
+        atom_lines = []
         with open(pdb_file) as f_in:
             for line in f_in:
                 if line.startswith('MODEL'):
@@ -958,23 +957,13 @@ class AdaptiveDockingPipeline:
                 if not line.startswith(('HETATM', 'ATOM')):
                     continue
 
-                res = line[17:20].strip()
-                chain = line[21:22].strip()
-                if res == ligand_resname:
-                    available_chains.add(chain or "<blank>")
-                if line.startswith('HETATM') and (ligand_chain is None or chain == ligand_chain):
-                    requested_chain_residues.add(f"{res} {line[22:26].strip()}{line[26:27].strip()}")
-                if res != ligand_resname:
-                    continue
-                if ligand_chain is not None and chain != ligand_chain:
-                    continue
-                res_seq = line[22:26].strip()
-                ins_code = line[26:27].strip()
-                res_id = (res_seq, ins_code)
-                if target_res_id is None:
-                    target_res_id = res_id
-                if res_id == target_res_id:
-                    selected_lines.append(line)
+                atom_lines.append(line)
+
+        records = [(line[:6].strip(), line[17:20].strip(), line[21:22].strip(),
+                    line[22:27].strip()) for line in atom_lines]
+        selected_lines = [atom_lines[i] for i in ligand_atom_indices(
+            records, ligand_resname, ligand_chain
+        )]
 
         # Keep one coordinate per atom when the crystal reports alternate
         # conformations. Feeding both A/B locations to RMSD and box generation
@@ -997,14 +986,6 @@ class AdaptiveDockingPipeline:
                 if line[16:17].strip():
                     line = line[:16] + " " + line[17:]
                 f_out.write(line)
-
-        if output_pdb.stat().st_size == 0:
-            raise ValueError(
-                f"No ligand found: resname={ligand_resname}, chain={ligand_chain}. "
-                f"Available chains for {ligand_resname}: {', '.join(sorted(available_chains)) or 'none'}. "
-                f"HETATM residues in requested chain: {', '.join(sorted(requested_chain_residues)) or 'none'}. "
-                "The workbook Chain column selects the ligand copy."
-            )
 
         return output_pdb
 

@@ -65,8 +65,9 @@ cd DockMate-VS
 ```
 Alternatively, download the source archive from the
 [current GitHub release](https://github.com/gkoorsen/DockMate-VS/releases/latest).
-The v0.1.3 Zenodo archive DOI is
-[10.5281/zenodo.23563244](https://doi.org/10.5281/zenodo.23563244).
+The current release is **v0.1.4**, including the S1/S2 reproducibility packages.
+Its version-specific Zenodo DOI will be added after deposit. The earlier
+[v0.1.3 DOI](https://doi.org/10.5281/zenodo.23563244) identifies only that release.
 
 Set up the environment:
 ```bash
@@ -338,31 +339,38 @@ detected and skipped.
 See [`USER_GUIDE.md`](USER_GUIDE.md) for complete workflow instructions,
 troubleshooting, and results interpretation.
 
-## ESR1 case-study materials
+## Case-study materials
 
-The reconstruction-based ESR1 case-study materials are supplied as journal
-supplementary material for the SoftwareX article. They provide the exact subset
-identifiers, historical campaign settings, structure-free results, and scripts.
-Repository copies of the [supplement documentation](supplementary/README.md),
-[supplement ZIP](supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip), and
-[SHA-256 checksum](supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip.sha256)
-are retained for convenience.
-LIT-PCBA structures must be obtained separately; they are not redistributed.
-The journal supplementary material is separate from the Zenodo software archive.
+The ESR1 and ACHE reproducibility packages are included in this repository so
+they remain accessible independently of journal supplementary-file hosting:
+
+- [S1: ESR1 reconstruction and analysis](supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip)
+  ([SHA-256](supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip.sha256)),
+  including the molecular-weight-controlled Figure 5/Table 3 analysis.
+- [S2: ACHE matched rerun](supplementary/packages/DockMate-VS_ACHE_Reproduction_S2.zip)
+  ([SHA-256](supplementary/packages/DockMate-VS_ACHE_Reproduction_S2.zip.sha256)),
+  including the frozen evidence, independent analysis and Figure 6 regeneration.
+
+See the [supplement documentation](supplementary/README.md) for contents and
+verification commands. Both packages have been prepared for submission; no
+journal upload is implied. S1 excludes LIT-PCBA structures, which must be
+obtained separately. The archived packages retain the original run provenance;
+a subsequent software release does not change which code generated each case
+study. The existing v0.1.3 software DOI does not identify these later packages.
 
 ## Citation and support
 
 Citation metadata are provided in [`CITATION.cff`](CITATION.cff). Please cite
-the version used in your work. The current software version is **0.1.3**:
+the version used in your work. The current software version is **0.1.4**:
 
-> Koorsen, G. (2026). DockMate-VS (v0.1.3). Zenodo.
-> https://doi.org/10.5281/zenodo.23563244
+> Koorsen, G. (2026). DockMate-VS (v0.1.4).
+> https://github.com/gkoorsen/DockMate-VS/releases/tag/v0.1.4
 
-The version-specific DOI above identifies v0.1.3 and is recorded in
-[`CITATION.cff`](CITATION.cff). The [concept DOI](https://doi.org/10.5281/zenodo.22283781)
+The v0.1.4 version-specific Zenodo DOI is pending deposit. Until assigned, use
+the tagged GitHub release above. The [concept DOI](https://doi.org/10.5281/zenodo.22283781)
 identifies the version series rather than a fixed snapshot. The earlier
-[v0.1.2 archive](https://doi.org/10.5281/zenodo.23386925) predates the engine
-registry and pose-export command; those features are included in v0.1.3.
+[v0.1.3 DOI](https://doi.org/10.5281/zenodo.23563244) identifies v0.1.3 and must
+not be used to cite the v0.1.4 source or its updated supplementary packages.
 
 When the SoftwareX article is available, cite both the article and the archived
 software release.

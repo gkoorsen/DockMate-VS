@@ -186,6 +186,20 @@ def test_screening_cases_share_one_deterministic_receptor_preparation(
         assert (tmp_path / case_name / "receptor_prepared.pdbqt").exists()
         assert (tmp_path / case_name / "receptor_prepared.pdb").exists()
 
+    import json
+    manifest = receptor_cache / "preparation_manifest.json"
+    legacy = json.loads(manifest.read_text())
+    legacy["cache_version"] = "receptor-preparation-v1"
+    manifest.write_text(json.dumps(legacy))
+    app._run_single_case(
+        pdb_file=pdb_file, ligand_name="case_corrected", ligand_chain="A",
+        smiles="CC", case_dir=tmp_path / "case_corrected", threshold=2.0,
+        single_cfg=_single_config("score"), ligand_resname="LIG",
+        site_mode="prediction", run_mode="screening", receptor_cache_dir=receptor_cache,
+    )
+    assert FakePipeline.prepare_receptor_calls == 2
+    assert json.loads(manifest.read_text())["cache_version"] != "receptor-preparation-v1"
+
 
 def test_default_variant_mode_docks_all_prepared_variants(monkeypatch, tmp_path):
     scores = {f"v{i}": -float(i) for i in range(1, 7)}

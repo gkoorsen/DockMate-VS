@@ -1,0 +1,11 @@
+analysis,auc,ci_low,ci_high,n,n_active,note
+Docking score (as reported),0.6946,0.6287,0.7546,880,80,average precision 0.1745
+Molecular weight alone,0.7122,0.6598,0.7604,880,80,MW used directly as the ranking score
+"Score, MW dependence removed (linear)",0.6375,0.5692,0.7025,880,80,residual of -score on MW
+"Score, MW dependence removed (rank)",0.5937,0.5241,0.6582,880,80,residual of rank(-score) on rank(MW)
+MW-matched active/inactive pairs,0.5487,0.4681,0.6232,160,80,"mean |dMW| 0.7 Da; mean over 1000 matchings, CI from 2000 pair bootstraps"
+Docking score within MW tertile 1 (150-212 Da),0.3818,0.1237,0.6568,293,6,within-stratum AUC
+Docking score within MW tertile 2 (212-302 Da),0.64,0.5212,0.7528,293,22,within-stratum AUC
+Docking score within MW tertile 3 (302-667 Da),0.5774,0.4893,0.6684,294,52,within-stratum AUC
+"Spearman rho, score vs MW",-0.6489,,,880,80,negative because lower score = more favourable
+"Partial Spearman, -score vs activity | MW",0.0762,,,880,80,unadjusted rho = 0.1938

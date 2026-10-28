@@ -154,24 +154,30 @@ class ProteinPreparation:
             # 1. Load PDB structure
             structure = self._load_pdb(pdb_path)
 
-            # 2. Fix structure with PDBFixer
-            structure = self._fix_structure(pdb_path, structure)
+            # Remove the original HETATM ligand before PDBFixer/OpenMM can
+            # rewrite it as ATOM (notably free amino-acid ligands such as TYR).
+            # Protein ATOM residues with the same name must remain intact.
+            if getattr(self.config, "remove_hetero_residues", None):
+                structure = self._remove_hetero_residues(
+                    structure, self.config.remove_hetero_residues
+                )
+                with tempfile.NamedTemporaryFile(suffix='.pdb', delete=False) as tmp:
+                    stripped_path = Path(tmp.name)
+                try:
+                    writer = PDB.PDBIO()
+                    writer.set_structure(structure)
+                    writer.save(str(stripped_path))
+                    structure = self._fix_structure(str(stripped_path), structure)
+                finally:
+                    stripped_path.unlink(missing_ok=True)
+            else:
+                structure = self._fix_structure(pdb_path, structure)
 
             # 3. Handle water molecules
             structure, waters_retained, waters_removed = self._handle_waters(
                 structure,
                 ligand_site_center
             )
-
-            # 3b. Strip requested heteroatoms (normally the co-crystal ligand
-            # that defines the docking site). Must happen before hydrogens are
-            # added and before PDBQT conversion, or the ligand ends up in the
-            # receptor and blocks its own pocket.
-            if getattr(self.config, "remove_hetero_residues", None):
-                structure = self._remove_hetero_residues(
-                    structure,
-                    self.config.remove_hetero_residues
-                )
 
             # Save clean structure without hydrogens (for PDBQT conversion)
             # Deep copy before hydrogen addition
@@ -381,8 +387,8 @@ class ProteinPreparation:
         Docking into a receptor that still contains its own co-crystal ligand
         silently produces nonsense: the pocket is occupied, so poses are pushed
         to the periphery and the crystal ligand cannot even reproduce its own
-        geometry. Comparison is case-insensitive because PDB resnames vary in
-        case and preparation may rewrite HETATM records as ATOM.
+        geometry. Only original hetero residues are removed; a protein residue
+        sharing the ligand name must never be deleted. Call before PDBFixer.
         """
         wanted = {str(r).strip().upper() for r in resnames if str(r).strip()}
         if not wanted:
@@ -395,6 +401,7 @@ class ProteinPreparation:
                     residue.get_id()
                     for residue in chain
                     if residue.get_resname().strip().upper() in wanted
+                    and residue.get_id()[0].strip().startswith('H_')
                 ]
                 for res_id in residues_to_remove:
                     chain.detach_child(res_id)

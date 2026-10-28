@@ -6,4 +6,6 @@ recursive-include docs *.md *.png
 recursive-include examples *.md *.yml *.xlsx *.png
 recursive-include docker Dockerfile *.yml
 recursive-include dockmate_vs/tests *.py
+recursive-include dockmate_vs/tests/fixtures *
+recursive-include supplementary *.md *.txt *.py *.json *.csv *.zip *.sha256
 global-exclude *.py[cod] .DS_Store

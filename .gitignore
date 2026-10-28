@@ -27,6 +27,7 @@ results/
 ligand_cache/
 **/ligand_cache/
 *.pdb
+!dockmate_vs/tests/fixtures/1x8x_tyr_excerpt.pdb
 *.pdbqt
 *.sd
 *.sdf
@@ -48,6 +49,12 @@ ligand_cache/
 # Local SoftwareX manuscript and submission preparation
 /manuscript/
 /dockmate_vs/manuscript/
+
+# Standalone submission figures stay local; evidence ZIPs remain distributable.
+/supplementary/esr1/publication/figures/
+/supplementary/ache/figures/
+/supplementary/ache/Figure_*.png
+/supplementary/ache/Figure_*.pdf
 
 # Legacy package tree retained locally for manuscript evidence and old outputs
 /docking_platform_gui/

@@ -1,5 +1,10 @@
 # Supplementary Material S1: ESR1 reconstruction and analysis
 
+Repository note: this directory contains the maintained analysis and verification
+sources. Extract [the complete S1 package](../packages/DockMate-VS_ESR1_Supplement_S1.zip)
+into a separate working directory before running the commands below. Its
+datasets and historical manifests are distributed inside that ZIP.
+
 This supplement supports the DockMate-VS SoftwareX case study for ESR1
 1XP1/AIH: the deterministic 80-active/800-inactive screen and the protocol sweep.
 It distributes source identifiers, calculated results, settings and analysis
@@ -8,6 +13,8 @@ No SMILES, molecular coordinate files, docking poses or third-party binaries
 are included. Source data must be obtained separately from their providers.
 
 ## Contents
+
+See [MW_CONTROLLED.md](MW_CONTROLLED.md) for the separate size-controlled Figure 5/Table 3 analysis, generating script and verification command.
 
 - `selection.csv`: the 880 source identifiers in the exact screening order.
   These are LIT-PCBA source identifiers (PubChem substance IDs), not PubChem CIDs.
@@ -138,7 +145,7 @@ This reconstruction-based distribution does not assert or grant redistribution
 rights over LIT-PCBA. Activity labels and source identifiers are attributed to
 LIT-PCBA; calculated scores and diagnostics are outputs of the case study.
 
-This ZIP is distributed through the DockMate-VS GitHub repository under
+This ZIP has been prepared for submission as journal supplementary material; the repository copy is located under
 `supplementary/packages/DockMate-VS_ESR1_Supplement_S1.zip`, separately from the
 Zenodo software archive. Cite a commit-specific GitHub permalink to identify
 the exact package used. The S1 filename is a package identifier, not a claim

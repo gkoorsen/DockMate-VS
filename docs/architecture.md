@@ -9,12 +9,16 @@ contracts, and intended extension points. User-facing operation is documented in
 - `dockmate-vs` starts the Tkinter GUI when no subcommand is supplied.
 - `dockmate-vs protocol --config FILE` runs a protocol-development campaign.
 - `dockmate-vs screen --config FILE` runs a frozen screening protocol.
+- `dockmate-vs screen-prepared --config FILE` executes intact prepared MOL2 libraries.
+- `dockmate-vs import-prepared --config FILE` imports saved MOL2 batches and scores.
 - `dockmate-vs report --run PATH` regenerates a report from saved raw results.
 - `dockmate-vs doctor [--strict]` reports available Python and external tools.
 
 `dockmate_vs/cli.py` owns command parsing. `dockmate_vs/headless.py` validates
 YAML/JSON campaign files and adapts the same campaign implementation used by the
-GUI; headless execution is not a separate docking pipeline.
+GUI for workbook campaigns. The explicit prepared-input route is owned by
+`dockmate_vs/prepared_screening.py`; it bypasses preparation and calls the Smina
+engine's batch API directly. It has no GUI dependency.
 
 ## Components
 
@@ -22,6 +26,7 @@ GUI; headless execution is not a separate docking pipeline.
 | --- | --- |
 | `dockmate_vs/gui/app.py` | Campaign orchestration, spreadsheet expansion, restart state, reporting, and desktop views |
 | `dockmate_vs/headless.py` | Configuration loading, non-interactive execution, report regeneration, and installation diagnostics |
+| `dockmate_vs/prepared_screening.py` | Prepared-library manifests, archive import, labels, batch execution and enrichment export |
 | `dockmate_vs/preparation/` | Protein repair/water policies and ligand variant/conformer preparation |
 | `dockmate_vs/binding_site/` | Co-crystal and configured binding-site definitions |
 | `dockmate_vs/docking/` | Docking-engine interfaces and Smina/Vina execution |
@@ -52,6 +57,31 @@ not implement a new docking score.
 6. Each completed case is written to restart state before the next case runs.
 7. Raw records are converted into structured JSON, tabular CSV, Markdown, and
    rendered GUI summaries. Reports can be regenerated without redocking.
+
+### Prepared-library batch flow
+
+`SminaDockingEngine.dock_batch()` invokes one Smina process per intact MOL2
+library. `docking/prepared_execution.py` records commands, input checksums, raw
+stdout/stderr, poses and batch runtime. Its timeout covers the whole process,
+not individual compounds. Execution failures leave all expected IDs present
+with unassigned scores; no uncertain per-compound attempt/runtime is invented.
+
+`docking/mol2_batch.py` validates MOL2 records without chemical conversion.
+`parse_batch_output()` returns a separate `DockingResult` for each expected ID;
+each `DockingPose.mol2` retains the original topology and coordinates. A molecule
+may have several contiguous pose records; per-molecule modes are distinguished
+from global MOL2 record numbers in result metadata. An ID-keyed score CSV can
+describe incomplete archives. Anonymous Smina log tables require a complete,
+successful batch whose input/output ID order and pose counts agree. Otherwise
+mapping fails closed. Scores are never inferred from molecular coordinates.
+
+`prepared_screening.py` snapshots inputs, validates explicit active/negative/
+unknown labels and exports `prepared_results.json`, `screening_results.csv`,
+`enrichment_summary.json` and `run_manifest.json`. Complete-labelled-population
+metrics remain null if a labelled compound failed; evaluable-only metrics carry
+their own counts. Unknowns remain in results but are excluded from enrichment.
+These headless results do not yet use the workbook/GUI results-folder contract
+or the prepared-topology `export` command.
 
 Network access is required only for unresolved public structures during
 preflight. Locally available inputs, preparation, docking, analysis, and report

@@ -25,6 +25,7 @@ except ImportError:
     HAS_MDANALYSIS = False
 
 from loguru import logger
+from dockmate_vs.utils.ligand_selection import ligand_atom_indices
 
 
 class BindingSiteError(Exception):
@@ -52,6 +53,7 @@ class BindingSite:
     ligand_atoms: int
     source_pdb: str
     self_docking_result: Optional['SelfDockingResult'] = None
+    ligand_heavy_atoms: Optional[int] = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -61,6 +63,8 @@ class BindingSite:
             'ligand_resname': self.ligand_resname,
             'ligand_chain': self.ligand_chain,
             'ligand_atoms': self.ligand_atoms,
+            'ligand_atom_count_kind': 'total_including_hydrogens',
+            'ligand_heavy_atoms': self.ligand_heavy_atoms,
             'source_pdb': self.source_pdb
         }
         if self.self_docking_result:
@@ -171,21 +175,22 @@ class BindingSiteDefinition:
         # Find ligand
         ligand = self._find_ligand(universe, ligand_resname, ligand_chain)
 
-        # Extract actual ligand chain (may differ from specified if fallback was used)
-        actual_chain = ligand.segments[0].segid
+        try:
+            actual_chain = ligand.chainIDs[0]
+        except (AttributeError, NoDataError):
+            actual_chain = ligand.segments[0].segid
         if ligand_chain is None:
             ligand_chain = actual_chain
             logger.info(f"Auto-detected ligand chain: {ligand_chain}")
-        elif ligand_chain != actual_chain:
-            logger.warning(
-                f"Specified chain '{ligand_chain}' does not contain ligand. "
-                f"Using actual chain '{actual_chain}'"
-            )
-            ligand_chain = actual_chain
 
         # Calculate box parameters
         center = self._calculate_center(ligand)
         size = self._calculate_size(ligand)
+        try:
+            heavy_atoms = sum(str(element).upper() not in {'H', 'D', 'T'}
+                              for element in ligand.elements)
+        except (AttributeError, NoDataError):
+            heavy_atoms = None
 
         site = BindingSite(
             center=center,
@@ -193,7 +198,8 @@ class BindingSiteDefinition:
             ligand_resname=ligand_resname,
             ligand_chain=ligand_chain,
             ligand_atoms=len(ligand.atoms),
-            source_pdb=str(pdb_path)
+            source_pdb=str(pdb_path),
+            ligand_heavy_atoms=heavy_atoms,
         )
 
         logger.info(
@@ -223,29 +229,21 @@ class BindingSiteDefinition:
         Raises:
             BindingSiteError: If ligand not found
         """
-        # Build selection string
-        if ligand_chain:
-            selection = f"resname {ligand_resname} and segid {ligand_chain}"
-        else:
-            selection = f"resname {ligand_resname}"
-
-        logger.debug(f"Searching for ligand with selection: {selection}")
-
         try:
-            ligand = universe.select_atoms(selection)
-        except Exception as e:
-            raise BindingSiteError(f"Failed to select ligand: {e}")
-
-        if len(ligand.atoms) == 0:
-            # Try alternative selection without segid
-            selection = f"resname {ligand_resname}"
-            ligand = universe.select_atoms(selection)
-
-            if len(ligand.atoms) == 0:
-                raise BindingSiteError(
-                    f"Ligand '{ligand_resname}' not found in structure. "
-                    f"Available residues: {set(universe.residues.resnames)}"
-                )
+            chains = universe.atoms.chainIDs
+        except (AttributeError, NoDataError):
+            chains = universe.atoms.segids
+        try:
+            types = universe.atoms.record_types
+        except (AttributeError, NoDataError):
+            types = ['ATOM'] * len(universe.atoms)
+        records = list(zip(types, universe.atoms.resnames, chains,
+                           universe.atoms.resindices))
+        try:
+            indices = ligand_atom_indices(records, ligand_resname, ligand_chain)
+        except ValueError as exc:
+            raise BindingSiteError(str(exc)) from exc
+        ligand = universe.atoms[indices]
 
         ligand = self._collapse_alternate_locations(ligand)
 

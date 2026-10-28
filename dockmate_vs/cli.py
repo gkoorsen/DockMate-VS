@@ -55,6 +55,8 @@ def _build_parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("protocol", "Run a headless protocol-development campaign"),
         ("screen", "Run a headless virtual-screening campaign"),
+        ("screen-prepared", "Run intact prepared MOL2 batches without preparation"),
+        ("import-prepared", "Import MOL2 batch poses with explicit scores or complete Smina logs"),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument(
@@ -102,6 +104,15 @@ def _configure_logging() -> None:
 
 
 def _run_headless(args: argparse.Namespace) -> int:
+    if args.command in {"screen-prepared", "import-prepared"}:
+        import json
+        from dockmate_vs.prepared_screening import run_prepared
+
+        output = run_prepared(args.config, execute=args.command == "screen-prepared")
+        summary = json.loads((output.parent / "enrichment_summary.json").read_text())
+        print(f"Results: {output}")
+        print(f"Compounds: {summary['total']}; failures: {summary['failed_total']}")
+        return 1 if summary['failed_total'] else 0
     if args.command == "export":
         from dockmate_vs.pose_export import export_cases, export_pose
 

@@ -40,13 +40,15 @@ class DockingPose:
         coordinates: Ligand atom coordinates (Nx3 array)
         pdbqt: PDBQT format output
         mode_number: One-based pose number in the saved output file
+        mol2: Original MOL2 record, when returned by a prepared-input batch
     """
     score: float
-    rmsd_lb: float = 0.0
-    rmsd_ub: float = 0.0
+    rmsd_lb: Optional[float] = 0.0
+    rmsd_ub: Optional[float] = 0.0
     coordinates: Optional[np.ndarray] = None
     pdbqt: Optional[str] = None
     mode_number: int = 1
+    mol2: Optional[str] = None
 
 
 @dataclass

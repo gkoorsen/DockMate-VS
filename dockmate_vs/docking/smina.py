@@ -59,6 +59,21 @@ class SminaDockingEngine(DockingEngine):
     binary_name = "smina"
     fixed_scoring = None
 
+    @staticmethod
+    def failure_details(stderr):
+        """Classify engine-reported unsupported types without altering chemistry."""
+        match = re.search(r'"([^"\n]+)" is not a valid AutoDock type', stderr or "")
+        if not match:
+            return stderr or "Unknown error", {}
+        atom_type = match.group(1)
+        message = (
+            f"Unsupported PDBQT atom type '{atom_type}'; engine input parsing failed. "
+            "Input atoms were retained unchanged. Any substitution requires an "
+            "explicit, separately documented preparation protocol.\n" + stderr.strip()
+        )
+        return message, {"failure_stage": "input_parsing", "failure_category": "unsupported_atom_type",
+                         "unsupported_atom_type": atom_type, "atom_substitution_policy": "none"}
+
     @classmethod
     def from_config(cls, config):
         options = config.get("engine_options") or {}
@@ -225,13 +240,14 @@ class SminaDockingEngine(DockingEngine):
                 logger.debug(f"Smina stderr: {result.stderr}")
 
             if result.returncode != 0:
-                error_msg = result.stderr if result.stderr else "Unknown error"
+                error_msg, failure_metadata = self.failure_details(result.stderr)
                 logger.error(f"Smina failed: {error_msg}")
                 return DockingResult(
                     ligand_id=ligand_id,
                     success=False,
                     error_message=error_msg,
-                    runtime=runtime
+                    runtime=runtime,
+                    metadata=failure_metadata,
                 )
 
             # Parse output
@@ -422,6 +438,22 @@ class SminaDockingEngine(DockingEngine):
         except Exception as e:
             logger.error(f"Failed to parse output file {output_file}: {e}")
             raise DockingError(f"Output parsing failed: {e}")
+
+    @staticmethod
+    def parse_batch_output(output_file, expected_ids, *, log_text=None, score_rows=None):
+        """Parse intact MOL2 batch output into one DockingResult per compound."""
+        from .mol2_batch import parse_mol2_batch
+        return parse_mol2_batch(output_file, expected_ids, log_text=log_text, score_rows=score_rows)
+
+    def dock_batch(self, receptor_path, ligand_path, center, size, output_dir, *, autobox_ligand=None):
+        """Dock an already prepared MOL2 library once, bypassing preparation.
+
+        Returns BatchExecution. The configured timeout applies to the whole
+        library. Failed batches retain logs/poses and explicit unassigned rows.
+        """
+        from .prepared_execution import dock_prepared_batch
+        return dock_prepared_batch(self, receptor_path, ligand_path, center, size,
+                                   output_dir, autobox_ligand)
 
     def _extract_coordinates(self, model_text: str) -> np.ndarray:
         """
